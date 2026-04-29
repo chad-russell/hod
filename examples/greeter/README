@@ -1,0 +1,19 @@
+# Greeter Example — C program compiled from source
+#
+# This example exercises the full build pipeline:
+#   1. Generate a C source file (Process recipe)
+#   2. Compile it with gcc (Process recipe with dependency)
+#   3. Run the compiled binary and capture output (Process recipe)
+#
+# Recipe hashes:
+#   source:  148a1160f4afec0a893023c646f0d17050bbd49f2813ec7879c7ea47cbe9e707
+#   compile: 45038849595acad2986008bfbd93ab3ba62ea3cec031fcedbf4a35ec505eb66c
+#   test:    23abd18cc528b0b6f177ed88e4b26d86a2a5c384bc120b914926f9bdd593eac6
+#
+# Build order:
+#   1. hod build examples/greeter/01-greeter-source.hod
+#   2. hod build examples/greeter/02-greeter-compile.hod
+#   3. hod build examples/greeter/03-greeter-test.hod
+#
+# Then inspect:
+#   hod ls-output <output-hash> --recursive --long

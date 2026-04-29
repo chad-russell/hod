@@ -1,0 +1,10 @@
+# Hello World Example
+#
+# Recipe hash:
+#   hello-process: bc3b9b52b534f520b9a7c619f956b4935d59b78b69991a6a4f895d898169c174
+#
+# Build:
+#   hod build examples/hello-world/01-hello.hod
+#
+# Then inspect the output with:
+#   hod ls-output <output-hash>

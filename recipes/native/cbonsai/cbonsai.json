@@ -1,0 +1,26 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/cbonsai-v1.4.2\n\n# Build cbonsai — single C file, needs ncursesw\n# We skip pkg-config and pass flags directly since we have a static ncurses\nCC=/deps/seed/bin/gcc \\\nCFLAGS=\"-O2 -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw\" \\\nLDFLAGS=\"-static -L/deps/ncurses/lib\" \\\nmake cbonsai LDLIBS=\"-lncursesw -ltinfo -lpanelw\"\n\nmkdir -p $OUT/bin\ncp cbonsai $OUT/bin/cbonsai\nchmod +x $OUT/bin/cbonsai"
+  ],
+  "env": [{"key": "PATH", "value": "/deps/seed/bin"}],
+  "dependencies": [
+    {
+      "name": "ncurses",
+      "recipe_hash": "5b75a79e4ac0edc4572f3ee9c293b27fffa2f8350daccb2fa758e382230df102"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "17ca4d6cebde3caffb22c0423dc6513b8f4857b2c684235874dad8cf87603df6"
+    }
+  ],
+  "unsafe_flags": 0
+}

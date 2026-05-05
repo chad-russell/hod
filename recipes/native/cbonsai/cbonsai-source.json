@@ -1,0 +1,6 @@
+{
+  "type": "download",
+  "url": "https://gitlab.com/jallbrit/cbonsai/-/archive/v1.4.2/cbonsai-v1.4.2.tar.gz",
+  "hash_algorithm": "blake3",
+  "expected_hash": "727a0553ab357619b9fa0f3dc71614f11ad8ff51120b83dc9567abbc0d520997"
+}

@@ -12,7 +12,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 use hod::build::{self, BuildOptions};
-use hod::hash::{hex_to_hash, hash_to_hex};
+use hod::hash::{hash_bytes, hex_to_hash, hash_to_hex};
 use hod::store::{Store, StoreConfig};
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,39 @@ enum Commands {
         #[arg(long, short)]
         recursive: bool,
     },
+
+    /// Encode a JSON recipe file to binary .hod format.
+    Encode {
+        /// Path to the JSON recipe file to encode.
+        json_file: PathBuf,
+
+        /// Write the binary .hod output to this path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Decode a binary .hod recipe file to JSON.
+    Decode {
+        /// Path to the binary .hod recipe file to decode.
+        hod_file: PathBuf,
+
+        /// Write the JSON output to this path (stdout if omitted).
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Compute the BLAKE3 hash of a file.
+    #[command(name = "hash-file")]
+    HashFile {
+        /// Path to the file to hash.
+        file: PathBuf,
+    },
+
+    /// Import a .hod recipe file into the store.
+    ImportRecipe {
+        /// Path to the `.hod` recipe file to import.
+        recipe_file: PathBuf,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +130,10 @@ fn main() {
             long,
             recursive,
         } => cmd_ls_output(hash, store, long, recursive),
+        Commands::Encode { json_file, output } => cmd_encode(json_file, output),
+        Commands::Decode { hod_file, output } => cmd_decode(hod_file, output),
+        Commands::HashFile { file } => cmd_hash_file(file),
+        Commands::ImportRecipe { recipe_file } => cmd_import_recipe(recipe_file),
     }
 }
 
@@ -229,6 +266,134 @@ fn cmd_ls_output(
         process::exit(10);
     }
 
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod encode`
+// ---------------------------------------------------------------------------
+
+fn cmd_encode(json_file: PathBuf, output: Option<PathBuf>) -> ! {
+    use hod::recipe::Recipe;
+
+    let json_str = match std::fs::read_to_string(&json_file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: error reading {}: {e}", json_file.display());
+            process::exit(1);
+        }
+    };
+
+    let recipe: Recipe = match serde_json::from_str(&json_str) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: error parsing JSON: {e}");
+            process::exit(1);
+        }
+    };
+
+    let encoded = recipe.encode();
+    let hash_hex = hash_to_hex(&hash_bytes(&encoded));
+
+    if let Some(out_path) = output {
+        if let Err(e) = std::fs::write(&out_path, &encoded) {
+            eprintln!("hod: error writing {}: {e}", out_path.display());
+            process::exit(1);
+        }
+    }
+
+    // Print the recipe hash to stdout
+    println!("{hash_hex}");
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod decode`
+// ---------------------------------------------------------------------------
+
+fn cmd_decode(hod_file: PathBuf, output: Option<PathBuf>) -> ! {
+    use hod::recipe::Recipe;
+
+    let hod_bytes = match std::fs::read(&hod_file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("hod: error reading {}: {e}", hod_file.display());
+            process::exit(1);
+        }
+    };
+
+    let recipe: Recipe = match Recipe::decode(&hod_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: error decoding .hod file: {e}");
+            process::exit(1);
+        }
+    };
+
+    let json = serde_json::to_string_pretty(&recipe).unwrap();
+
+    match output {
+        Some(out_path) => {
+            if let Err(e) = std::fs::write(&out_path, json.as_bytes()) {
+                eprintln!("hod: error writing {}: {e}", out_path.display());
+                process::exit(1);
+            }
+        }
+        None => print!("{json}"),
+    }
+
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod hash-file`
+// ---------------------------------------------------------------------------
+
+fn cmd_hash_file(file: PathBuf) -> ! {
+    let data = match std::fs::read(&file) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("hod: error reading {}: {e}", file.display());
+            process::exit(1);
+        }
+    };
+
+    let hash_hex = hash_to_hex(&hash_bytes(&data));
+    println!("{hash_hex}");
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod import-recipe`
+// ---------------------------------------------------------------------------
+
+fn cmd_import_recipe(recipe_file: PathBuf) -> ! {
+    let recipe_bytes = match std::fs::read(&recipe_file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("hod: error reading {}: {e}", recipe_file.display());
+            process::exit(1);
+        }
+    };
+
+    // Validate it's a real recipe
+    if let Err(e) = hod::recipe::Recipe::decode(&recipe_bytes) {
+        eprintln!("hod: invalid recipe: {e}");
+        process::exit(3);
+    }
+
+    let config = StoreConfig { path: None };
+    let store = match Store::open(&config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let hash_hex = hash_to_hex(&hash_bytes(&recipe_bytes));
+    store.store_recipe(&recipe_bytes).unwrap();
+    println!("{hash_hex}");
     process::exit(0);
 }
 

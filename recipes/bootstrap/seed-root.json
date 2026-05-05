@@ -1,0 +1,22 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/busybox/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "BB=/deps/busybox/busybox\nset -e\n\n$BB mkdir -p $OUT/bin $OUT/lib $OUT/include $OUT/tmp\n\n$BB cp -a /deps/musl/x86_64-linux-musl-native/bin/* $OUT/bin/\n$BB cp -a /deps/musl/x86_64-linux-musl-native/lib/* $OUT/lib/ 2>/dev/null || true\n$BB cp -a /deps/musl/x86_64-linux-musl-native/include/* $OUT/include/ 2>/dev/null || true\nif [ -d /deps/musl/x86_64-linux-musl-native/x86_64-linux-musl ]; then\n  $BB cp -a /deps/musl/x86_64-linux-musl-native/x86_64-linux-musl $OUT/\nfi\nif [ -d /deps/musl/x86_64-linux-musl-native/libexec ]; then\n  $BB cp -a /deps/musl/x86_64-linux-musl-native/libexec $OUT/\nfi\nif [ -d /deps/musl/x86_64-linux-musl-native/share ]; then\n  $BB cp -a /deps/musl/x86_64-linux-musl-native/share $OUT/\nfi\nif [ -d /deps/musl/x86_64-linux-musl-native/usr ]; then\n  $BB cp -a /deps/musl/x86_64-linux-musl-native/usr $OUT/\nfi\n\n$BB cp /deps/busybox/busybox $OUT/bin/busybox\n$BB chmod +x $OUT/bin/busybox\n\nfor applet in $($BB --list); do\n  case $applet in\n    ar|as|ld|nm|objcopy|objdump|ranlib|readelf|strip|gcc|g++|cpp|c++|dwp|elfedit|gcov|gcov-dump|gcov-tool|gfortran|gprof|lto-dump|size|strings|addr2line|c++filt|gcc-ar|gcc-nm|gcc-ranlib) continue ;;\n  esac\n  if [ -e $OUT/bin/$applet ]; then continue; fi\n  $BB ln -sf busybox $OUT/bin/$applet 2>/dev/null || true\ndone\n\necho done > $OUT/seed-ready"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "busybox",
+      "recipe_hash": "4400c77b29493f69878e9f87661759b181aa699e346c9dea902861badf020d93"
+    },
+    {
+      "name": "musl",
+      "recipe_hash": "c9ddcf06d39784bb920c350686035168364e05892fedc110986ab3048cb41cd1"
+    }
+  ],
+  "unsafe_flags": 0
+}

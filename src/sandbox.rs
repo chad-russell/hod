@@ -29,6 +29,31 @@ use std::path::{Path, PathBuf};
 use crate::build::BuildError;
 
 // ---------------------------------------------------------------------------
+// Dependency mount info
+// ---------------------------------------------------------------------------
+
+/// A dependency to be mounted in the sandbox.
+///
+/// Each dep's output is bind-mounted at `/store/<shard>/<hex>/` and
+/// symlinked from `/deps/<name>/` for human-readable access. This layout
+/// mirrors the host store's staging directory structure, enabling
+/// store-relocated binaries (with AT_EXECFN bootstrap) to resolve their
+/// runtime dependencies inside the sandbox.
+#[derive(Debug, Clone)]
+pub struct DepMount {
+    /// Human-readable dependency name (e.g., "gcc", "glibc").
+    pub name: String,
+    /// Absolute host path to the dep's materialized output directory.
+    /// For directory artifacts, this is the staging path directly.
+    /// For file artifacts, this is a wrapper directory containing the file.
+    pub host_staging_path: PathBuf,
+    /// Store shard — first 2 hex chars of the output hash.
+    pub store_shard: String,
+    /// Full hex encoding of the output hash.
+    pub store_hex: String,
+}
+
+// ---------------------------------------------------------------------------
 // Sandbox configuration
 // ---------------------------------------------------------------------------
 
@@ -37,8 +62,13 @@ use crate::build::BuildError;
 pub struct SandboxConfig {
     /// Path to the sandbox root directory (in `store/tmp/`).
     pub sandbox_root: PathBuf,
-    /// Named dependencies: (name, path_to_materialized_output_on_host).
-    pub deps: Vec<(String, PathBuf)>,
+    /// Named dependencies to mount in the sandbox.
+    ///
+    /// Each dep is bind-mounted at `/store/<shard>/<hex>/` with a symlink
+    /// from `/deps/<name>/` for human-readable access. This mirrors the
+    /// host store's staging layout, enabling store-relocated binaries to
+    /// work inside the sandbox.
+    pub deps: Vec<DepMount>,
     /// Guest path where the process writes output (e.g. `/out`).
     pub out_path: PathBuf,
     /// Guest path to a writable temp directory (e.g. `/tmp`).
@@ -57,6 +87,11 @@ pub struct SandboxConfig {
     pub allow_networking: bool,
     /// If true, don't clean up sandbox dir on failure.
     pub keep_failed: bool,
+
+    /// If true, suppress streaming output from sandbox process.
+    pub quiet: bool,
+    /// If true, allow interactive terminal access inside sandbox (for debugging).
+    pub interactive: bool,
 }
 
 /// Result of running a sandboxed process.
@@ -86,15 +121,17 @@ pub fn setup_sandbox_filesystem(config: &SandboxConfig) -> Result<(), BuildError
     std::fs::create_dir_all(root).map_err(io_error)?;
 
     let dirs = [
-        "deps", "tmp", "dev", "proc", "out", "homeless-shelter",
-        "bin", "usr", "lib", "lib64", "etc", "sbin",
+        "store", "deps", "tmp", "dev", "proc", "out", "homeless-shelter",
+        "bin", "usr", "lib", "lib64", "etc", "sbin", "nix",
     ];
     for dir in &dirs {
         std::fs::create_dir_all(root.join(dir)).map_err(io_error)?;
     }
 
-    for (name, _) in &config.deps {
-        std::fs::create_dir_all(root.join("deps").join(name)).map_err(io_error)?;
+    // Create store mount points for each dependency
+    for dep in &config.deps {
+        let store_path = root.join("store").join(&dep.store_shard).join(&dep.store_hex);
+        std::fs::create_dir_all(&store_path).map_err(io_error)?;
     }
 
     Ok(())
@@ -247,7 +284,7 @@ mod linux_sandbox {
     /// rather than mounting fresh filesystems (which requires CAP_SYS_ADMIN).
     fn mount_filesystem(
         root: &Path,
-        deps: &[(String, PathBuf)],
+        deps: &[DepMount],
         allow_networking: bool,
     ) -> io::Result<()> {
         // Make all mounts private (don't propagate to parent namespace)
@@ -297,33 +334,45 @@ mod linux_sandbox {
             )
         })?;
 
-        // -- Essential host directories (bind-mount read-only) --
-        // These provide the base system needed for commands to run.
-        // The process recipe's command is resolved within deps, but for
-        // basic operation (shells, coreutils), we need the host's /usr, /bin,
-        // /lib, /lib64, /etc available inside the sandbox.
-        let host_dirs = ["/bin", "/usr", "/lib", "/lib64", "/etc", "/sbin"];
-        for dir in &host_dirs {
-            let host_dir = Path::new(dir);
-            if !host_dir.exists() {
-                continue;
+
+
+        // -- Dependencies --
+        // Each dep is bind-mounted at /store/<shard>/<hex>/ (mirroring the host
+        // store's staging layout) with a symlink from /deps/<name>/ for
+        // human-readable access. This allows store-relocated binaries (AT_EXECFN
+        // bootstrap) to resolve their runtime dependencies inside the sandbox.
+        let store_dir = root.join("store");
+        let deps_dir = root.join("deps");
+        std::fs::create_dir_all(&store_dir)?;
+        std::fs::create_dir_all(&deps_dir)?;
+
+        for dep in deps {
+            let store_path = store_dir.join(&dep.store_shard).join(&dep.store_hex);
+            std::fs::create_dir_all(&store_path)?;
+
+            // Clean up any previous entry at /deps/<name> (e.g., from shell reuse)
+            let symlink_path = deps_dir.join(&dep.name);
+            if symlink_path.is_symlink() {
+                let _ = std::fs::remove_file(&symlink_path);
+            } else if symlink_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&symlink_path);
+            } else if symlink_path.is_file() {
+                let _ = std::fs::remove_file(&symlink_path);
             }
-            let guest_dir = root.join(dir.trim_start_matches('/'));
-            if !guest_dir.exists() {
-                let _ = std::fs::create_dir_all(&guest_dir);
-            }
-            // Bind-mount read-only
+
+            // Bind-mount the dep's staging directory at /store/<shard>/<hex>/
             match mount(
-                Some(host_dir),
-                &guest_dir,
+                Some(&dep.host_staging_path),
+                &store_path,
                 None::<&str>,
                 MsFlags::MS_BIND | MsFlags::MS_REC,
                 None::<&str>,
             ) {
                 Ok(()) => {
+                    // Remount read-only
                     let _ = mount(
-                        Some(host_dir),
-                        &guest_dir,
+                        Some(&dep.host_staging_path),
+                        &store_path,
                         None::<&str>,
                         MsFlags::MS_BIND
                             | MsFlags::MS_REC
@@ -333,45 +382,14 @@ mod linux_sandbox {
                     );
                 }
                 Err(_) => {
-                    // Non-fatal: some dirs may not be bind-mountable
+                    // Fall back to recursive copy
+                    copy_dir_recursive(&dep.host_staging_path, &store_path)?;
                 }
             }
-        }
 
-        // -- Dependencies (bind-mount read-only or copy) --
-        for (name, host_path) in deps {
-            let guest_path = root.join("deps").join(name);
-            std::fs::create_dir_all(&guest_path)?;
-
-            if host_path.is_dir() {
-                match mount(
-                    Some(host_path),
-                    &guest_path,
-                    None::<&str>,
-                    MsFlags::MS_BIND | MsFlags::MS_REC,
-                    None::<&str>,
-                ) {
-                    Ok(()) => {
-                        // Remount read-only
-                        let _ = mount(
-                            Some(host_path),
-                            &guest_path,
-                            None::<&str>,
-                            MsFlags::MS_BIND
-                                | MsFlags::MS_REC
-                                | MsFlags::MS_REMOUNT
-                                | MsFlags::MS_RDONLY,
-                            None::<&str>,
-                        );
-                    }
-                    Err(_) => {
-                        // Fall back to recursive copy
-                        copy_dir_recursive(host_path, &guest_path)?;
-                    }
-                }
-            } else if host_path.exists() {
-                std::fs::copy(host_path, guest_path.join("data"))?;
-            }
+            // Create named symlink: /deps/<name> → ../store/<shard>/<hex>/
+            let symlink_target = format!("../store/{}/{}", dep.store_shard, dep.store_hex);
+            std::os::unix::fs::symlink(&symlink_target, &symlink_path)?;
         }
 
         // -- /tmp (writable) --
@@ -499,7 +517,12 @@ mod tests {
     fn test_sandbox_config_creation() {
         let config = SandboxConfig {
             sandbox_root: PathBuf::from("/tmp/test-sandbox"),
-            deps: vec![("bash".to_string(), PathBuf::from("/usr"))],
+            deps: vec![DepMount {
+                name: "bash".to_string(),
+                host_staging_path: PathBuf::from("/store/staging/ab/abcdef"),
+                store_shard: "ab".to_string(),
+                store_hex: "abcdef".to_string(),
+            }],
             out_path: PathBuf::from("/out"),
             tmp_path: PathBuf::from("/tmp"),
             home_path: PathBuf::from("/homeless-shelter"),
@@ -509,8 +532,11 @@ mod tests {
             work_dir: PathBuf::from("/"),
             allow_networking: false,
             keep_failed: false,
+            quiet: false,
+            interactive: false,
         };
         assert_eq!(config.deps.len(), 1);
+        assert_eq!(config.deps[0].name, "bash");
         assert!(!config.allow_networking);
     }
 }

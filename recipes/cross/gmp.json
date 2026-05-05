@@ -1,0 +1,26 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/gmp-6.3.0\n\n# Build GMP as a static-only library using the musl toolchain.\n# Static linking avoids the musl/glibc dynamic linker mismatch during\n# configure's test compilations. GCC will link the static archive directly.\nCC=/deps/seed/bin/gcc \\\nAR=/deps/seed/bin/ar \\\nRANLIB=/deps/seed/bin/ranlib \\\nCFLAGS=\"-O2\" \\\n./configure \\\n  --host=x86_64-linux-gnu \\\n  --prefix=/ \\\n  --disable-shared \\\n  --enable-static \\\n  --disable-cxx\n\nmake -j$(nproc)\nmake install DESTDIR=$OUT"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "0f9d6866f39d2c61099ebf720bc8e708e5064804319d0a1f0bbe06a4584c2300"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "ff68400bbb678dc4a1cce1ed09ad804e2800d7427382f6b22ade0001eb969c44"
+    }
+  ],
+  "unsafe_flags": 0
+}

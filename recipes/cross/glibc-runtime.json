@@ -1,0 +1,22 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\nmkdir -p $OUT\ncp -a /deps/glibc/lib/ld-linux-x86-64.so.2 $OUT/\ncp -a /deps/glibc/lib/libc.so.6 $OUT/\ncp -a /deps/glibc/lib/libc.so $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/libc-[0-9]*.so $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/libm.so.6 $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/libm-[0-9]*.so $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/libpthread.so.0 $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/libdl.so.2 $OUT/ 2>/dev/null || true\ncp -a /deps/glibc/lib/librt.so.1 $OUT/ 2>/dev/null || true"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "glibc",
+      "recipe_hash": "e85c8f099589c0000bc9c3ab9c9445a251a0bfb5a3cb1216880bcee7057d7aa7"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    }
+  ],
+  "unsafe_flags": 0
+}

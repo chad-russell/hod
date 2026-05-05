@@ -215,6 +215,7 @@ fn recipe_store_multiple_types() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
 
     let h1 = store.store_recipe(&file_recipe.encode()).expect("store file");

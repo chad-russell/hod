@@ -12,11 +12,13 @@
 //!
 //! See PRD §4 for the full format specification.
 
+use serde::{Deserialize, Serialize};
+
 use crate::encoding::{EncodeError, Encoder, Decoder};
 
 /// Convenience alias for recipe decode results.
 pub type Result<T> = std::result::Result<T, EncodeError>;
-use crate::hash::{hash_bytes, Hash};
+use crate::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,54 +63,59 @@ impl RecipeType {
 // ---------------------------------------------------------------------------
 
 /// A file with known content.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeFile {
     /// BLAKE3 hash of the file's contents (stored as a blob).
+    #[serde(with = "hash_serde")]
     pub content_blob_hash: Hash,
     /// Whether the file should be marked executable.
     pub executable: bool,
     /// Optional: hash of a Directory recipe providing packed resources.
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
     pub resources_hash: Option<Hash>,
 }
 
 /// A single named entry inside a directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryEntry {
     /// Entry filename (UTF-8, sorted lexicographically with siblings).
     pub name: String,
     /// BLAKE3 hash of the recipe that produces this entry.
+    #[serde(with = "hash_serde")]
     pub entry_hash: Hash,
 }
 
 /// A directory with named entries (sorted by name).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeDirectory {
     /// Entries sorted lexicographically by name.
     pub entries: Vec<DirectoryEntry>,
 }
 
 /// A symbolic link.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeSymlink {
     /// Symlink target (relative path).
     pub target: String,
 }
 
 /// A download recipe — fetch a URL with a known content hash.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeDownload {
     /// URL to fetch.
     pub url: String,
     /// Hash algorithm used for verification.
     pub hash_algorithm: HashAlgorithm,
     /// Expected hash of the fetched content.
+    #[serde(with = "hash_serde")]
     pub expected_hash: Hash,
 }
 
 /// Hash algorithms supported by Download recipes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum HashAlgorithm {
+    #[serde(rename = "blake3")]
     Blake3 = 0x01,
 }
 
@@ -122,23 +129,24 @@ impl HashAlgorithm {
 }
 
 /// A named dependency in a Process recipe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessDependency {
     /// Dependency name (e.g. `"bash"`). Mounted at `/deps/<name>/` in the sandbox.
     pub name: String,
     /// BLAKE3 hash of the dependency recipe.
+    #[serde(with = "hash_serde")]
     pub recipe_hash: Hash,
 }
 
 /// An environment variable in a Process recipe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvVar {
     pub key: String,
     pub value: String,
 }
 
 /// A process recipe — run a command in a sandbox.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeProcess {
     /// Target platform, e.g. `"x86_64-linux"`.
     pub platform: String,
@@ -151,15 +159,21 @@ pub struct RecipeProcess {
     /// Named dependencies, sorted by name.
     pub dependencies: Vec<ProcessDependency>,
     /// Optional working directory contents.
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
     pub workdir_hash: Option<Hash>,
     /// Optional initial output directory contents.
+    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
     pub output_scaffold_hash: Option<Hash>,
     /// Bitmask of unsafe flags. Bit 0 = allow networking.
     pub unsafe_flags: u8,
+    /// Runtime dependencies for ELF relocation (not encoded in binary format).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub runtime_deps: Option<Vec<String>>,
 }
 
 /// The top-level recipe enum — one of the five recipe types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Recipe {
     File(RecipeFile),
     Directory(RecipeDirectory),
@@ -418,6 +432,46 @@ impl Recipe {
             workdir_hash,
             output_scaffold_hash,
             unsafe_flags,
+            runtime_deps: None,
         }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serde helpers for Hash → hex string
+// ---------------------------------------------------------------------------
+
+mod hash_serde {
+    use crate::hash::{hash_to_hex, hex_to_hash, Hash};
+    use serde::{de, Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(hash: &Hash, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hash_to_hex(hash))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hash, D::Error> {
+        let s = String::deserialize(d)?;
+        hex_to_hash(&s).ok_or_else(|| de::Error::custom("invalid hash: expected 64 hex characters"))
+    }
+}
+
+mod option_hash_serde {
+    use crate::hash::{hash_to_hex, hex_to_hash, Hash};
+    use serde::{de, Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(opt: &Option<Hash>, s: S) -> Result<S::Ok, S::Error> {
+        match opt {
+            Some(h) => s.serialize_str(&hash_to_hex(h)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Hash>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            Some(s) => hex_to_hash(&s)
+                .map(Some)
+                .ok_or_else(|| de::Error::custom("invalid hash: expected 64 hex characters")),
+            None => Ok(None),
+        }
     }
 }

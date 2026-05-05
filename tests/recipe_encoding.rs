@@ -193,6 +193,7 @@ fn roundtrip_process_minimal() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
     let bytes = recipe.encode();
     let decoded = Recipe::decode(&bytes).unwrap();
@@ -228,6 +229,7 @@ fn roundtrip_process_full() {
         workdir_hash: Some(test_hash_c()),
         output_scaffold_hash: Some(test_hash()),
         unsafe_flags: 0x01, // allow networking
+        runtime_deps: None,
     });
     let bytes = recipe.encode();
     let decoded = Recipe::decode(&bytes).unwrap();
@@ -254,6 +256,7 @@ fn process_env_must_be_sorted() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
     let bytes = recipe.encode();
     let err = Recipe::decode(&bytes).unwrap_err();
@@ -287,6 +290,7 @@ fn process_deps_must_be_sorted() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
     let bytes = recipe.encode();
     let err = Recipe::decode(&bytes).unwrap_err();
@@ -333,6 +337,7 @@ fn determinism_same_recipe_same_hash() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
     let h1 = recipe.recipe_hash();
     let h2 = recipe.recipe_hash();
@@ -564,6 +569,7 @@ fn recipe_type_tag_matches_encode() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
+        runtime_deps: None,
     });
     assert_eq!(proc.encode()[4], 0x05);
 }

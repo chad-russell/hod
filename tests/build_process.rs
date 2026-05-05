@@ -2,11 +2,16 @@
 //!
 //! Tests the build orchestrator with pure recipes (File, Directory, Symlink),
 //! caching, and dependency resolution.
+//!
+//! Process-spawning tests are marked `#[ignore]` because the sandbox is fully
+//! hermetic — no host filesystem is available inside. These tests use the real
+//! hod store so that the seed-root (busybox) dependency is already cached.
+//! Run with: `cargo test --test build_process -- --test-threads=1 --ignored`
 
 use hod::build::{self, Artifact, BuildError, BuildOptions};
-use hod::hash::{hash_bytes, hash_to_hex, Hash};
+use hod::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
 use hod::recipe::*;
-use hod::store::Store;
+use hod::store::{Store, StoreConfig};
 
 use tempfile::TempDir;
 
@@ -20,6 +25,30 @@ fn test_store() -> (TempDir, Store) {
     let store = Store::open_at(tmp.path()).unwrap();
     (tmp, store)
 }
+
+/// Open the real (default) hod store. Used by integration tests that need
+/// pre-built dependencies like seed-root.
+fn real_store() -> Store {
+    Store::open(&StoreConfig { path: None }).unwrap()
+}
+
+/// Recipe hash for seed-root — provides busybox and the musl toolchain.
+/// Already built and cached in the real store.
+const SEED_ROOT_RECIPE_HASH: &str =
+    "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a";
+
+/// Create a seed-root ProcessDependency for use in sandboxed recipes.
+/// The seed-root output provides /deps/seed/bin/busybox (and sh, etc.).
+fn seed_dep() -> ProcessDependency {
+    ProcessDependency {
+        name: "seed".to_string(),
+        recipe_hash: hex_to_hash(SEED_ROOT_RECIPE_HASH).unwrap(),
+    }
+}
+
+/// Command to invoke busybox ash inside the sandbox.
+/// Requires seed-root as a dependency named "seed".
+const SANDBOX_SHELL: &str = "/deps/seed/bin/busybox";
 
 /// Default build options.
 fn default_opts() -> BuildOptions {
@@ -416,18 +445,20 @@ fn build_error_exit_codes() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore]
 fn build_process_hello_world() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
-        args: vec!["-c".to_string(), "echo 'hello world' > \"$OUT/hello.txt\"".to_string()],
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "echo 'hello world' > \"$OUT/hello.txt\"".to_string()],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -462,6 +493,7 @@ fn build_process_platform_mismatch() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let result = build_recipe(&store, &process_recipe, &default_opts());
@@ -476,18 +508,20 @@ fn build_process_platform_mismatch() {
 }
 
 #[test]
+#[ignore]
 fn build_process_exits_nonzero() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
-        args: vec!["-c".to_string(), "exit 42".to_string()],
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "exit 42".to_string()],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let result = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -501,21 +535,23 @@ fn build_process_exits_nonzero() {
 }
 
 #[test]
+#[ignore]
 fn build_process_with_env_vars() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
-        args: vec!["-c".to_string(), "echo $MY_VAR > \"$OUT/output.txt\"".to_string()],
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "echo $MY_VAR > \"$OUT/output.txt\"".to_string()],
         env: vec![EnvVar {
             key: "MY_VAR".to_string(),
             value: "test_value_123".to_string(),
         }],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -535,18 +571,20 @@ fn build_process_with_env_vars() {
 }
 
 #[test]
+#[ignore]
 fn build_process_writes_to_out() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
-        args: vec!["-c".to_string(), "echo 'output content' > \"$OUT/result.txt\"".to_string()],
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "echo 'output content' > \"$OUT/result.txt\"".to_string()],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -554,29 +592,34 @@ fn build_process_writes_to_out() {
 }
 
 #[test]
+#[ignore]
 fn build_process_with_dependency() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     // Create a script file recipe
-    let script_content = b"#!/bin/bash\necho 'from dependency'\n";
-    store_blob(&store, script_content);
+    let script_content = b"#!/bin/sh\necho 'from dependency'\n";
+    store.write_blob(script_content).unwrap();
     let file_recipe = make_file_recipe(script_content, true);
     let file_bytes = file_recipe.encode();
-    let _file_hash = store.store_recipe(&file_bytes).unwrap();
+    store.store_recipe(&file_bytes).unwrap();
 
     // Create a process that depends on the file recipe
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
-        args: vec!["-c".to_string(), "ls \"$DEPS/myscript/\" > \"$OUT/listing.txt\"".to_string()],
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "ls \"$DEPS/myscript/\" > \"$OUT/listing.txt\"".to_string()],
         env: vec![],
-        dependencies: vec![ProcessDependency {
-            name: "myscript".to_string(),
-            recipe_hash: file_recipe.recipe_hash(),
-        }],
+        dependencies: vec![
+            ProcessDependency {
+                name: "myscript".to_string(),
+                recipe_hash: file_recipe.recipe_hash(),
+            },
+            seed_dep(),
+        ],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -622,21 +665,24 @@ fn build_download_wrong_hash_fails() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn sandbox_hello_world_writes_to_out() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
+        command: SANDBOX_SHELL.to_string(),
         args: vec![
+            "sh".to_string(),
             "-c".to_string(),
             "echo 'hello sandbox' > $OUT/hello.txt".to_string(),
         ],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output_hash = build_recipe(
@@ -665,21 +711,24 @@ fn sandbox_hello_world_writes_to_out() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn sandbox_env_vars_set_correctly() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
+        command: SANDBOX_SHELL.to_string(),
         args: vec![
+            "sh".to_string(),
             "-c".to_string(),
             "echo OUT=$OUT DEPS=$DEPS HOME=$HOME > $OUT/env.txt".to_string(),
         ],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output_hash = build_recipe(
@@ -715,13 +764,15 @@ fn sandbox_env_vars_set_correctly() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn sandbox_user_env_vars_set() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
+        command: SANDBOX_SHELL.to_string(),
         args: vec![
+            "sh".to_string(),
             "-c".to_string(),
             "echo $MY_SANDBOX_VAR > $OUT/var.txt".to_string(),
         ],
@@ -729,10 +780,11 @@ fn sandbox_user_env_vars_set() {
             key: "MY_SANDBOX_VAR".to_string(),
             value: "sandbox_value_42".to_string(),
         }],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output_hash = build_recipe(
@@ -760,21 +812,24 @@ fn sandbox_user_env_vars_set() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn sandbox_build_failure_captures_logs() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
+        command: SANDBOX_SHELL.to_string(),
         args: vec![
+            "sh".to_string(),
             "-c".to_string(),
             "echo 'failing message' >&2; exit 7".to_string(),
         ],
         env: vec![],
-        dependencies: vec![],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let result = build_recipe(
@@ -802,12 +857,13 @@ fn sandbox_build_failure_captures_logs() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore]
 fn sandbox_deps_populated() {
-    let (_tmp, store) = test_store();
+    let store = real_store();
 
     // Create a file recipe that we'll use as a dependency
     let dep_content = b"dependency file content";
-    store_blob(&store, dep_content);
+    store.write_blob(dep_content).unwrap();
     let file_recipe = make_file_recipe(dep_content, false);
     let file_bytes = file_recipe.encode();
     store.store_recipe(&file_bytes).unwrap();
@@ -817,19 +873,24 @@ fn sandbox_deps_populated() {
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
-        command: "/bin/bash".to_string(),
+        command: SANDBOX_SHELL.to_string(),
         args: vec![
+            "sh".to_string(),
             "-c".to_string(),
             "ls $DEPS > $OUT/ls_deps.txt".to_string(),
         ],
         env: vec![],
-        dependencies: vec![ProcessDependency {
-            name: "mydep".to_string(),
-            recipe_hash: file_recipe.recipe_hash(),
-        }],
+        dependencies: vec![
+            ProcessDependency {
+                name: "mydep".to_string(),
+                recipe_hash: file_recipe.recipe_hash(),
+            },
+            seed_dep(),
+        ],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
+        runtime_deps: None,
     });
 
     let output_hash = build_recipe(

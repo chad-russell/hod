@@ -1,1 +1,11 @@
+# Build artifacts
 target/
+
+# Dependencies
+node_modules/
+
+# Downloaded source tarballs and binaries (reproducible from upstream URLs)
+recipes/sources/
+
+# Local environment config
+.envrc

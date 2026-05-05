@@ -1,0 +1,6 @@
+{
+  "type": "download",
+  "url": "https://ftp.gnu.org/gnu/glibc/glibc-2.41.tar.xz",
+  "hash_algorithm": "blake3",
+  "expected_hash": "8f0057ecc7fb00714079015f25ef0b6c42c3580f68b48c52c2631ee8061e50b6"
+}

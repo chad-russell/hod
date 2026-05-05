@@ -1,0 +1,26 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\n# Create a minimal rsync shim for kernel headers_install\nmkdir -p /tmp/bin\ncat > /tmp/bin/rsync << 'RSYNC'\n#!/bin/sh\n# Minimal rsync: copy .h files from source dirs to destination\n# Kernel calls: rsync -mrl --include='*.h' ... <src>/ <dst>/\nargs=\"\"\nfor arg in \"$@\"; do\n  case \"$arg\" in -*) continue ;; esac\n  args=\"$args $arg\"\ndone\n# Last arg is destination, second-to-last is source\neval set -- $args\nwhile [ $# -gt 2 ]; do shift; done\nSRC=\"$1\"\nDST=\"$2\"\nmkdir -p \"$DST\"\ncd \"$SRC\"\nfind . -type f -name '*.h' | while IFS= read -r f; do\n  mkdir -p \"$DST/$(dirname \"$f\")\"\n  cp \"$f\" \"$DST/$f\"\ndone\nRSYNC\nchmod +x /tmp/bin/rsync\n\nexport PATH=/tmp/bin:/deps/seed/bin:/deps/shims/bin\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/linux-6.6.85\n\nmake headers_install \\\n  ARCH=x86 \\\n  INSTALL_HDR_PATH=$OUT \\\n  HOSTCC=/deps/seed/bin/gcc\n\n# The kernel installs directly to $OUT/ (e.g., $OUT/linux/, $OUT/asm/).\n# Wrap in include/ so auto-PATH detects it as a header dep.\nmkdir -p /tmp/hdr_tmp\ncp -a $OUT/* /tmp/hdr_tmp/\nrm -rf $OUT/*\nmkdir -p $OUT/include\ncp -a /tmp/hdr_tmp/* $OUT/include/\nrm -rf /tmp/hdr_tmp\n\n# Clean up generated non-header artifacts\nfind $OUT -name '..cmd' -delete\nfind $OUT -name '.install' -delete\nfind $OUT -name '*.c' -delete"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "20c565286533f188744496503328b9d04dda2958e27573ef3ffa3900a6e53717"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "d07b9af79e78fb4ececbd354140ecc7bc4edca707e32292295a2dfa7957ba2e8"
+    }
+  ],
+  "unsafe_flags": 0
+}

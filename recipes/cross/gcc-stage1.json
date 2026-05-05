@@ -1,0 +1,49 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/gcc-13.2.0\n\n# Patch: install libraries to /lib/ not /lib64/\nsed -e '/m64=/s/lib64/lib/' -i gcc/config/i386/t-linux64\n\n# Create merged sysroot\nmkdir -p /tmp/sysroot/include /tmp/sysroot/lib\nfor item in /deps/glibc/*; do\n  base=$(basename \"$item\")\n  if [ -d \"$item\" ]; then\n    mkdir -p \"/tmp/sysroot/$base\"\n    cp -a \"$item/.\" \"/tmp/sysroot/$base/\" 2>/dev/null || true\n  else\n    cp -a \"$item\" \"/tmp/sysroot/$base\" 2>/dev/null || true\n  fi\ndone\ncp -a /deps/linux-headers/include/. /tmp/sysroot/include/ 2>/dev/null || true\nmkdir -p /tmp/sysroot/usr\nln -sf ../include /tmp/sysroot/usr/include\nln -sf ../lib /tmp/sysroot/usr/lib\n\n# Create target include dirs at the absolute path GCC's cross-compiler expects.\n# GCC bakes -isystem /opt/gcc/x86_64-linux-gnu/{include,sys-include} into xgcc's\n# specs. These are NOT remapped by --sysroot, so they must exist at that\n# literal path with the system headers present.\nmkdir -p /opt/gcc/x86_64-linux-gnu/include\nmkdir -p /opt/gcc/x86_64-linux-gnu/sys-include\ncp -a /tmp/sysroot/include/. /opt/gcc/x86_64-linux-gnu/include/\ncp -a /tmp/sysroot/include/. /opt/gcc/x86_64-linux-gnu/sys-include/\n\nmkdir build\ncd build\n\n../configure \\\n  --build=x86_64-linux-musl \\\n  --host=x86_64-linux-musl \\\n  --target=x86_64-linux-gnu \\\n  --prefix=/opt/gcc \\\n  --enable-languages=c,c++ \\\n  --enable-default-pie \\\n  --enable-default-ssp \\\n  --disable-nls \\\n  --disable-multilib \\\n  --disable-bootstrap \\\n  --disable-fixincludes \\\n  --disable-libsanitizer \\\n  --disable-lto \\\n  --with-gmp=/deps/gmp \\\n  --with-mpfr=/deps/mpfr \\\n  --with-mpc=/deps/mpc \\\n  --with-build-sysroot=/tmp/sysroot \\\n  CC=/deps/seed/bin/gcc \\\n  CXX=/deps/seed/bin/g++ \\\n  AR=/deps/seed/bin/ar \\\n  RANLIB=/deps/seed/bin/ranlib \\\n  LD=/deps/seed/bin/ld.bfd \\\n  AS_FOR_TARGET=/deps/seed/bin/as \\\n  LD_FOR_TARGET=/deps/seed/bin/ld.bfd \\\n  AR_FOR_TARGET=/deps/seed/bin/ar \\\n  NM_FOR_TARGET=/deps/seed/bin/nm \\\n  RANLIB_FOR_TARGET=/deps/seed/bin/ranlib \\\n  STRIP_FOR_TARGET=/deps/seed/bin/strip \\\n  OBJDUMP_FOR_TARGET=/deps/seed/bin/objdump \\\n  OBJCOPY_FOR_TARGET=/deps/seed/bin/objcopy\n\nmake -j$(nproc) all-gcc\nmake -j$(nproc) all-target-libgcc\nmake -j$(nproc) all-target-libstdc++-v3\n\n# Selective install (full 'make install' fails on unbuilt c++tools)\ncd gcc && make install-driver install-common install-headers-tar install-mkheaders install-gcc-ar DESTDIR=$OUT && cd ..\nmake install-target-libgcc install-target-libstdc++-v3 DESTDIR=$OUT\n\n# Flatten: move opt/gcc/* to top level\ncp -a $OUT/opt/gcc/. $OUT/\nrm -rf $OUT/opt\n\n# Move target-specific lib and include to top level\nif [ -d \"$OUT/x86_64-linux-gnu/lib\" ]; then\n  mkdir -p $OUT/lib\n  cp -a $OUT/x86_64-linux-gnu/lib/. $OUT/lib/ 2>/dev/null || true\nfi\nif [ -d \"$OUT/x86_64-linux-gnu/include\" ]; then\n  mkdir -p $OUT/include\n  cp -a $OUT/x86_64-linux-gnu/include/. $OUT/include/ 2>/dev/null || true\nfi\nrm -rf $OUT/x86_64-linux-gnu"
+  ],
+  "env": [
+    {"key": "C_INCLUDE_PATH", "value": "/deps/seed/include:/deps/seed/x86_64-linux-musl/include"},
+    {"key": "LIBRARY_PATH", "value": "/deps/seed/lib:/deps/seed/lib/gcc/x86_64-linux-musl/13:/deps/gmp/lib:/deps/mpfr/lib:/deps/mpc/lib"}
+  ],
+  "dependencies": [
+    {
+      "name": "glibc",
+      "recipe_hash": "e85c8f099589c0000bc9c3ab9c9445a251a0bfb5a3cb1216880bcee7057d7aa7"
+    },
+    {
+      "name": "gmp",
+      "recipe_hash": "628f43fb18ed78630ab69dbee399ad2cc9460ddb93f4b655df85e03a87c2cf80"
+    },
+    {
+      "name": "linux-headers",
+      "recipe_hash": "ff08778e94c68ffc2d878d0e8170ec6546deeec167f52c03e4f1b6e509e1e1b1"
+    },
+    {
+      "name": "mpc",
+      "recipe_hash": "e1a94a0e51dd806674a35de036de570b950294f6fc52601faedbba482f4dbebc"
+    },
+    {
+      "name": "mpfr",
+      "recipe_hash": "d02ef13442acf7fe862d3c619f5d7396c17b2c07488cb4eb6375a3e280305b2e"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "0f9d6866f39d2c61099ebf720bc8e708e5064804319d0a1f0bbe06a4584c2300"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "9eda44f590a617df59622f59332f3fc8824032f94fa0ce7a3c416d1e8e87ee49"
+    }
+  ],
+  "unsafe_flags": 0
+}

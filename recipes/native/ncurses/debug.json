@@ -1,0 +1,22 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\necho \"=== DEBUG: checking deps layout ===\"\nls -la /deps/\necho \"---\"\nls -la /deps/source/\necho \"---\"\nls -la /store/\necho \"---\"\nfile /deps/source/source || echo 'file cmd not available'\necho \"---\"\n\nmkdir -p /tmp/ncurses\ntar xzf /deps/source/source -C /tmp/ncurses\nls -la /tmp/ncurses/ncurses-6.6/configure\n./tmp/ncurses-6.6/configure --help | head -3\n\necho done > $OUT/test.txt"
+  ],
+  "env": [{"key": "PATH", "value": "/deps/seed/bin"}],
+  "dependencies": [
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "064eec2213bcde95d915c820fe4136eaf8c0a73ac61ea5b6aac0f3c50f116004"
+    }
+  ],
+  "unsafe_flags": 0
+}

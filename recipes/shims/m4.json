@@ -1,0 +1,26 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/m4-*\n\nCC=/deps/seed/bin/gcc \\\nAR=/deps/seed/bin/ar \\\nRANLIB=/deps/seed/bin/ranlib \\\nCFLAGS=\"-O2\" \\\nLDFLAGS=\"-static\" \\\n./configure --prefix=/ --disable-dependency-tracking\n\nmake -j$(nproc)\n\nmkdir -p $OUT/bin\ncp src/m4 $OUT/bin/m4\nchmod +x $OUT/bin/m4"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "20c565286533f188744496503328b9d04dda2958e27573ef3ffa3900a6e53717"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "b40678640e1bf20b721006b13c91deabc8416caf34cf7bd019d78e5842b1ea75"
+    }
+  ],
+  "unsafe_flags": 0
+}

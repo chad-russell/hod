@@ -1,0 +1,26 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\n# Create fake makeinfo and file commands\nmkdir -p /tmp/fake-bin\necho '#!/bin/sh' > /tmp/fake-bin/makeinfo && echo 'exit 0' >> /tmp/fake-bin/makeinfo && chmod +x /tmp/fake-bin/makeinfo\ncat > /tmp/fake-bin/file << 'FEOF'\n#!/bin/sh\necho \"$1: ELF 64-bit LSB executable, x86-64\"\nexit 0\nFEOF\nchmod +x /tmp/fake-bin/file\nexport PATH=/tmp/fake-bin:$PATH\n\n# Extract source\ntar xf /deps/source/source -C /tmp\ncd /tmp/binutils-2.42\n\n# Build in a separate directory\nmkdir -p /tmp/binutils-build && cd /tmp/binutils-build\n\n# Force static linking by wrapping gcc with -static\n# binutils' build system sometimes ignores LDFLAGS for final linking\ncat > /tmp/gcc-static << 'EOF'\n#!/bin/sh\nexec /deps/seed/bin/gcc -static \"$@\"\nEOF\ncat > /tmp/g++-static << 'EOF'\n#!/bin/sh\nexec /deps/seed/bin/g++ -static \"$@\"\nEOF\nchmod +x /tmp/gcc-static /tmp/g++-static\n\nCC=/tmp/gcc-static \\\nCXX=/tmp/g++-static \\\nAR=/deps/seed/bin/ar \\\nRANLIB=/deps/seed/bin/ranlib \\\nNM=/deps/seed/bin/nm \\\nSTRIP=/deps/seed/bin/strip \\\nMAKEINFO=/tmp/fake-bin/makeinfo \\\nCFLAGS=\"-O2\" \\\nCXXFLAGS=\"-O2\" \\\n/tmp/binutils-2.42/configure \\\n  --prefix=/ \\\n  --disable-werror \\\n  --disable-nls \\\n  --disable-gdb \\\n  --disable-gdbserver \\\n  --disable-sim \\\n  --disable-gold \\\n  --disable-gprofng \\\n  --disable-lto \\\n  --enable-deterministic-archives\n\nmake -j$(nproc)\nmake install DESTDIR=$OUT\n\n# Verify and strip\nfor bin in $OUT/bin/*; do\n  if [ -f \"$bin\" ] && [ -x \"$bin\" ]; then\n    if /deps/seed/bin/readelf -l \"$bin\" 2>/dev/null | grep -q INTERP; then\n      echo \"WARNING: $bin is dynamically linked!\"\n    else\n      echo \"OK: $bin is static\"\n    fi\n    /deps/seed/bin/strip \"$bin\" 2>/dev/null || true\n  fi\ndone\n\n# Clean up\nrm -rf $OUT/share $OUT/include $OUT/etc $OUT/sbin 2>/dev/null || true"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "0f9d6866f39d2c61099ebf720bc8e708e5064804319d0a1f0bbe06a4584c2300"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "934c0be0af2d7926f28be00aa50c964d8b128c9c26c1dfab8494890101e7f21e"
+    }
+  ],
+  "unsafe_flags": 0
+}

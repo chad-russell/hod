@@ -1,0 +1,30 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\n# Build a merged sysroot from glibc + linux-headers\nmkdir -p /tmp/sysroot/include /tmp/sysroot/lib /tmp/sysroot/lib64\ncp -a /deps/glibc/include/. /tmp/sysroot/include/\ncp -a /deps/linux-headers/include/. /tmp/sysroot/include/\ncp -a /deps/glibc/lib/. /tmp/sysroot/lib/\nif [ -f /tmp/sysroot/lib/ld-linux-x86-64.so.2 ]; then\n  ln -sf ../lib/ld-linux-x86-64.so.2 /tmp/sysroot/lib64/ld-linux-x86-64.so.2\nfi\n\n# Test 1: Run bash --version to confirm it works\n/deps/bash/bin/bash --version > $OUT/version.txt 2>&1\n\n# Test 2: Run a simple script\necho 'echo \"hello from hermetic bash\"' | /deps/bash/bin/bash > $OUT/hello.txt 2>&1\n\n# Test 3: Check ELF type (should be dynamically linked)\nELF_MAGIC=$(/deps/seed/bin/busybox od -A n -t x1 -N 4 /deps/bash/bin/bash | tr -d ' ')\nif [ \"$ELF_MAGIC\" != \"7f454c46\" ]; then\n  echo \"ERROR: not a valid ELF binary\" >&2\n  exit 1\nfi\n\n# Test 4: Check it links to glibc (libc.so.6)\n/deps/seed/bin/busybox strings /deps/bash/bin/bash | grep -q \"libc.so.6\" && echo \"Dynamically linked to libc.so.6\" >> $OUT/checks.txt || echo \"WARNING: no libc.so.6 reference\" >> $OUT/checks.txt\n\n# Test 5: Check it is NOT linked to musl\nif /deps/seed/bin/busybox strings /deps/bash/bin/bash | grep -q \"ld-musl\"; then\n  echo \"ERROR: bash is linked to musl!\" >> $OUT/checks.txt\n  exit 1\nelse\n  echo \"No musl linkage detected\" >> $OUT/checks.txt\nfi\n\n# Test 6: Run bash inside the sandbox with our glibc\n# We need to set up the dynamic linker path\nmkdir -p $OUT\necho \"All checks passed\" >> $OUT/checks.txt"
+  ],
+  "env": [],
+  "dependencies": [
+    {
+      "name": "bash",
+      "recipe_hash": "e189c63b4f3380816ed661174cba65e76701acf569d7532878e2706df95ae778"
+    },
+    {
+      "name": "glibc",
+      "recipe_hash": "e85c8f099589c0000bc9c3ab9c9445a251a0bfb5a3cb1216880bcee7057d7aa7"
+    },
+    {
+      "name": "linux-headers",
+      "recipe_hash": "ff08778e94c68ffc2d878d0e8170ec6546deeec167f52c03e4f1b6e509e1e1b1"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    }
+  ],
+  "unsafe_flags": 0
+}

@@ -1,0 +1,6 @@
+{
+  "type": "download",
+  "url": "https://ftp.gnu.org/gnu/coreutils/coreutils-9.5.tar.gz",
+  "hash_algorithm": "blake3",
+  "expected_hash": "04b361e2793fd1c1eddf38535a700a89e9f84183b1b97fe6c927cd9f81aec028"
+}

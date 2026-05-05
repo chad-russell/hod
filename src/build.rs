@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::encoding::EncodeError;
-use crate::hash::{hash_bytes, hash_to_hex, Hash};
+use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
 use crate::recipe::{
     Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink,
     RecipeType,
@@ -558,27 +558,38 @@ fn build_process(
     let guest_tmp = PathBuf::from("/tmp");
     let guest_home = PathBuf::from("/homeless-shelter");
 
-    // Host-side paths for materialized deps
-    let host_deps_dir = sandbox_root.join("deps");
-    std::fs::create_dir_all(&host_deps_dir)?;
-
-    // Materialize dependency outputs into sandbox_root/deps/<name>/ on the host
-    // (these will be bind-mounted or available inside the sandbox)
-    let mut dep_paths: Vec<(String, PathBuf)> = Vec::new();
+    // Build dep mounts — each dep is bind-mounted at /store/<shard>/<hex>/
+    // with a symlink from /deps/<name>/ inside the sandbox. This mirrors the
+    // host store's staging layout, enabling store-relocated binaries to work.
+    let mut dep_mounts: Vec<crate::sandbox::DepMount> = Vec::new();
     for (name, output_hash) in &dep_outputs.named {
         if name.starts_with('<') {
             // Skip internal deps like <workdir>, <scaffold>
             continue;
         }
-        let dep_mount = host_deps_dir.join(name);
-        std::fs::create_dir_all(&dep_mount)?;
         let staging_path = artifact_staging_path(store, output_hash);
+        let shard = hash_shard(output_hash);
+        let hex = hash_to_hex(output_hash);
+
         if staging_path.is_dir() {
-            copy_dir_recursive(&staging_path, &dep_mount)?;
+            dep_mounts.push(crate::sandbox::DepMount {
+                name: name.clone(),
+                host_staging_path: staging_path,
+                store_shard: shard,
+                store_hex: hex,
+            });
         } else if staging_path.exists() {
-            std::fs::copy(&staging_path, dep_mount.join("data"))?;
+            // File artifact — wrap in a directory for bind-mounting
+            let wrapper_dir = sandbox_root.join("wrap").join(name);
+            std::fs::create_dir_all(&wrapper_dir)?;
+            std::fs::copy(&staging_path, wrapper_dir.join(name))?;
+            dep_mounts.push(crate::sandbox::DepMount {
+                name: name.clone(),
+                host_staging_path: wrapper_dir,
+                store_shard: shard,
+                store_hex: hex,
+            });
         }
-        dep_paths.push((name.clone(), dep_mount));
     }
 
     // Handle output scaffold — pre-populate the out directory
@@ -605,10 +616,55 @@ fn build_process(
         }
     }
 
-    // Build environment variables (use guest paths inside the sandbox)
+    // Build environment variables with proper precedence:
+    //   1. Auto-env (PATH, LIBRARY_PATH, C_INCLUDE_PATH from deps)
+    //   2. Recipe env (overrides auto-env)
+    //   3. Standard builder env (OUT, DEPS, HOME, TMPDIR — always wins)
     let mut env = std::collections::HashMap::new();
 
-    // Standard env vars (PRD §4.2) — point to guest paths inside the sandbox
+    // --- Layer 1: Auto-env from deps ---
+    // Scan dep staging paths for bin/, lib/, include/ subdirs.
+    // Sort by dep name for determinism.
+    let mut auto_path_parts: Vec<String> = Vec::new();
+    let mut auto_library_path_parts: Vec<String> = Vec::new();
+    let mut auto_c_include_path_parts: Vec<String> = Vec::new();
+
+    for (name, output_hash) in &dep_outputs.named {
+        // Skip internal deps (<workdir>, <scaffold>, <resources>)
+        if name.starts_with('<') {
+            continue;
+        }
+        let dep_guest_path = format!("/deps/{}", name);
+        let dep_staging = artifact_staging_path(store, output_hash);
+
+        if dep_staging.join("bin").is_dir() {
+            auto_path_parts.push(format!("{}/bin", dep_guest_path));
+        }
+        if dep_staging.join("lib").is_dir() {
+            auto_library_path_parts.push(format!("{}/lib", dep_guest_path));
+        }
+        if dep_staging.join("include").is_dir() {
+            auto_c_include_path_parts.push(format!("{}/include", dep_guest_path));
+        }
+    }
+
+    // Deps are already sorted by name (from the recipe), so the lists are deterministic.
+    if !auto_path_parts.is_empty() {
+        env.insert("PATH".to_string(), auto_path_parts.join(":"));
+    }
+    if !auto_library_path_parts.is_empty() {
+        env.insert("LIBRARY_PATH".to_string(), auto_library_path_parts.join(":"));
+    }
+    if !auto_c_include_path_parts.is_empty() {
+        env.insert("C_INCLUDE_PATH".to_string(), auto_c_include_path_parts.join(":"));
+    }
+
+    // --- Layer 2: Recipe env vars (override auto-env) ---
+    for var in &p.env {
+        env.insert(var.key.clone(), var.value.clone());
+    }
+
+    // --- Layer 3: Standard builder env vars (always win) ---
     env.insert("OUT".to_string(), guest_out.to_string_lossy().to_string());
     env.insert("DEPS".to_string(), guest_deps.to_string_lossy().to_string());
     env.insert("TMPDIR".to_string(), guest_tmp.to_string_lossy().to_string());
@@ -618,17 +674,7 @@ fn build_process(
         store.root().to_string_lossy().to_string(),
     );
 
-    // User-specified env vars (override standard if conflict)
-    for var in &p.env {
-        env.insert(var.key.clone(), var.value.clone());
-    }
 
-    // Inherit some standard env vars from the host
-    for key in &["PATH", "TERM", "LANG", "LC_ALL", "TZ"] {
-        if let Ok(val) = std::env::var(key) {
-            env.entry(key.to_string()).or_insert(val);
-        }
-    }
 
     // Build command args (argv[0] is the command itself)
     let mut cmd_args = vec![p.command.clone()];
@@ -647,7 +693,7 @@ fn build_process(
     // Run the sandboxed process
     let sandbox_config = crate::sandbox::SandboxConfig {
         sandbox_root: sandbox_root.clone(),
-        deps: dep_paths,
+        deps: dep_mounts,
         out_path: guest_out.clone(),
         tmp_path: guest_tmp,
         home_path: guest_home,
@@ -657,6 +703,8 @@ fn build_process(
         work_dir: guest_work_dir,
         allow_networking,
         keep_failed: options.keep_failed,
+        quiet: options.quiet,
+        interactive: false,
     };
 
     let result = crate::sandbox::run_sandboxed(sandbox_config)?;

@@ -1,0 +1,42 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\necho \"=== Hod Self-Hosting Validation ===\"\necho\n\n# Build a merged sysroot from glibc + linux-headers\nmkdir -p /tmp/sysroot/include /tmp/sysroot/lib /tmp/sysroot/lib64\ncp -a /deps/glibc/include/. /tmp/sysroot/include/\ncp -a /deps/linux-headers/include/. /tmp/sysroot/include/\ncp -a /deps/glibc/lib/. /tmp/sysroot/lib/\nif [ -f /tmp/sysroot/lib/ld-linux-x86-64.so.2 ]; then\n  ln -sf ../lib/ld-linux-x86-64.so.2 /tmp/sysroot/lib64/ld-linux-x86-64.so.2\nfi\n\n# Test 1: Version checks for build tools (all available inside sandbox)\necho \"--- Test 1: Build tool versions ---\"\n/deps/gcc-stage1/bin/x86_64-linux-gnu-gcc --version | head -1\n/deps/shims/bin/make --version | head -1\n/deps/binutils/bin/readelf --version | head -1\n/deps/seed/bin/busybox --help | head -1\necho\n\n# Test 2: Compile a multi-file C program using make\necho \"--- Test 2: Multi-file C program with make ---\"\nmkdir -p /tmp/build\n\ncat > /tmp/build/main.c << 'EOF'\n#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include \"util.h\"\n\nint main(int argc, char *argv[]) {\n    printf(\"hello from self-hosting hod!\\n\");\n    printf(\"greeting: %s\\n\", get_greeting());\n    printf(\"add(2,3) = %d\\n\", add(2, 3));\n    printf(\"argc=%d argv[0]=%s\\n\", argc, argv[0]);\n\n    // Test malloc\n    char *buf = malloc(1024);\n    if (buf) {\n        strcpy(buf, \"malloc works\");\n        printf(\"%s\\n\", buf);\n        free(buf);\n    }\n\n    // Test file I/O\n    FILE *f = fopen(\"/tmp/build/testfile.txt\", \"w\");\n    if (f) {\n        fprintf(f, \"file I/O works\\n\");\n        fclose(f);\n    }\n    f = fopen(\"/tmp/build/testfile.txt\", \"r\");\n    if (f) {\n        char line[256];\n        if (fgets(line, sizeof(line), f)) {\n            printf(\"read: %s\", line);\n        }\n        fclose(f);\n    }\n\n    return 0;\n}\nEOF\n\ncat > /tmp/build/util.h << 'EOF'\nconst char *get_greeting(void);\nint add(int a, int b);\nEOF\n\ncat > /tmp/build/util.c << 'EOF'\n#include \"util.h\"\nconst char *get_greeting(void) { return \"from hermetic toolchain\"; }\nint add(int a, int b) { return a + b; }\nEOF\n\ncat > /tmp/build/Makefile << 'MAKEEOF'\nCC = /deps/gcc-stage1/bin/x86_64-linux-gnu-gcc --sysroot=/tmp/sysroot -B/deps/seed/bin/\nCFLAGS = -O2 -no-pie\nLDFLAGS = -L/deps/gcc-stage1/lib -L/deps/gcc-stage1/lib/gcc/x86_64-linux-gnu/13.2.0\n\nall: hello\n\nhello: main.o util.o\n\t$(CC) $(CFLAGS) $(LDFLAGS) -o hello main.o util.o\n\n%.o: %.c\n\t$(CC) $(CFLAGS) -c $< -o $@\n\n.PHONY: clean\nclean:\n\trm -f *.o hello\nMAKEEOF\n\ncd /tmp/build\n/deps/shims/bin/make\necho\n\n# Test 3: Run the compiled binary\necho \"--- Test 3: Run compiled binary ---\"\n/tmp/build/hello\necho\n\n# Test 4: Inspect the binary - verify glibc linkage and no musl\necho \"--- Test 4: Binary inspection ---\"\n/deps/binutils/bin/readelf -d /tmp/build/hello 2>&1 | grep NEEDED\n/deps/binutils/bin/readelf -l /tmp/build/hello 2>&1 | grep INTERP\n\n# Check for musl references - this should find nothing\nif strings /tmp/build/hello | grep -q musl 2>/dev/null; then\n  echo \"FAIL: binary contains musl references\"\n  exit 1\nelse\n  echo \"PASS: no musl references found\"\nfi\n\n# Verify binary is dynamically linked to glibc\nif /deps/binutils/bin/readelf -d /tmp/build/hello | grep -q 'NEEDED.*libc.so.6'; then\n  echo \"PASS: linked against glibc (libc.so.6)\"\nelse\n  echo \"FAIL: not linked against glibc\"\n  exit 1\nfi\n\n# Verify binary uses glibc dynamic linker\nif /deps/binutils/bin/readelf -l /tmp/build/hello | grep -q 'interp.*ld-linux-x86-64'; then\n  echo \"PASS: uses glibc dynamic linker (ld-linux-x86-64.so.2)\"\nelse\n  echo \"FAIL: not using glibc dynamic linker\"\n  exit 1\nfi\n\necho\n\n# Test 5: Strip the binary with hermetic strip\n/deps/seed/bin/strip /tmp/build/hello\necho \"PASS: strip succeeded\"\necho\n\n# Write outputs\nmkdir -p $OUT\ncp /tmp/build/hello $OUT/hello\necho \"all self-hosting validation tests passed\" > $OUT/result.txt\n\necho \"=== All self-hosting validation tests passed ===\""
+  ],
+  "env": [
+    {"key": "C_INCLUDE_PATH", "value": "/deps/gcc-stage1/include:/deps/glibc/include:/deps/linux-headers/include"},
+    {"key": "LIBRARY_PATH", "value": "/deps/glibc/lib:/deps/gcc-stage1/lib:/deps/gcc-stage1/lib/gcc/x86_64-linux-gnu/13.2.0"}
+  ],
+  "dependencies": [
+    {
+      "name": "binutils",
+      "recipe_hash": "7269bd110f99483e9bd20fd0764e5fc5bba96d9d0255f6e92a6521d87093ee6a"
+    },
+    {
+      "name": "gcc-stage1",
+      "recipe_hash": "893ce1170357ce6b14a551b305cb895405fe0ad823efd62e477c3ad40bef1936"
+    },
+    {
+      "name": "glibc",
+      "recipe_hash": "e85c8f099589c0000bc9c3ab9c9445a251a0bfb5a3cb1216880bcee7057d7aa7"
+    },
+    {
+      "name": "linux-headers",
+      "recipe_hash": "ff08778e94c68ffc2d878d0e8170ec6546deeec167f52c03e4f1b6e509e1e1b1"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "0f9d6866f39d2c61099ebf720bc8e708e5064804319d0a1f0bbe06a4584c2300"
+    }
+  ],
+  "runtime_deps": ["glibc"],
+  "unsafe_flags": 0
+}

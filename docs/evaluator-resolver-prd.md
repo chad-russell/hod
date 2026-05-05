@@ -1,8 +1,10 @@
 # Hod Evaluator & Resolver — PRD
 
 **Date:** 2026-05-01
-**Status:** Draft
+**Status:** Deferred design / not implemented
 **Author:** Design session
+
+> Current status: this resolver/path-reference design is not implemented in this checkout. The near-term recipe authoring path is the single-phase TypeScript SDK in [`recipe-compiler-design.md`](recipe-compiler-design.md), which computes concrete dependency hashes up front via TS imports and `hod encode`. `hod build` currently accepts only concrete hash dependencies, and there is no `hod resolve` command.
 
 ---
 

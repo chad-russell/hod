@@ -1,96 +1,123 @@
 # AGENTS.md — Hod
 
-Hod is a deterministic, content-addressed build system written in Rust. The full product specification lives in **PRD.md** — read it top to bottom before making changes.
+Hod is a deterministic, content-addressed build system written in Rust. This file is the agent quick-start and table of contents; keep detailed design material in `docs/` and implementation status in code/tests.
 
-## Key Concepts
+> Current note: there is no top-level `PRD.md` in this checkout. Older comments may still say “see PRD”; treat the docs below plus the Rust/TS source as the current authority.
 
-- **Recipe files** (`.hod`) are the fundamental unit of work. They are deterministic binary records that form a DAG of build operations. No live object graphs, no runtime serialization.
-- **Content addressing** via BLAKE3. A recipe's identity is `blake3(recipe_bytes)` — the hash is computed externally, never stored in the file.
-- **Sandboxed builds** using Linux namespaces. Process recipes run in isolated mount/PID/IPC/UTS/network namespaces.
-- **Separation of concerns**: The builder only reads `.hod` files. Evaluation (source code → recipes) is explicitly out of scope for V1.
-- **Packed executables**: Outputs are relocatable via relative RPATH — no hardcoded store paths in binaries.
+## Project Map
 
-## Architecture
-
-```
-.hod files on disk → hod build (builder daemon) → Store (SQLite + filesystem)
-```
-
-Three layers, only the right two exist in V1:
-1. **Evaluator** (future, out of scope)
-2. **Recipe files** — binary `.hod` files, each a single recipe node
-3. **Builder + Store** — reads recipes, resolves DAG, builds in sandboxes, stores outputs
-
-## Project Structure (Target)
+### Core Rust
 
 ```
 src/
-  main.rs          CLI entry point, argument parsing
-  recipe.rs        Recipe types, binary encoding/decoding, hashing
-  store.rs         Store abstraction (SQLite + filesystem)
-  store/db.rs      SQLite operations
-  store/blobs.rs   Blob storage (read/write/dedup)
-  store/recipes.rs Recipe storage (read/write/query)
-  build.rs         Build orchestrator (DAG resolution, caching)
-  sandbox.rs       Linux namespace sandbox setup
-  packed.rs        Packed executable (ELF patching)
-  hash.rs          BLAKE3 hashing utilities           ✅ exists
-  encoding.rs      Binary encoding helpers             ✅ exists
-  download.rs      URL fetching with hash verification
-tests/
-  recipe_encoding.rs, build_process.rs, store_basic.rs, fixtures/
+  main.rs          CLI entry point (`build`, `ls-output`, `encode`, `decode`, `hash-file`, `import-recipe`)
+  lib.rs           crate module exports
+  recipe.rs        recipe types, deterministic binary encoding/decoding, JSON serde
+  encoding.rs      binary encoding helpers
+  hash.rs          BLAKE3 hashing, hex, filesystem sharding helpers
+  store.rs         store facade (SQLite + filesystem)
+  store/           DB, blob, and recipe storage internals
+  build.rs         DAG resolution, caching, artifact staging, recipe builders
+  sandbox.rs       Linux sandbox setup for Process recipes
+  download.rs      Download builder using external `curl`
+  packed.rs        current packed-output support for `File.resources_hash`
+  relocate.rs      store-relative ELF relocation prototype/design code; not wired into `build.rs`
 ```
 
-## What's Implemented
+### TypeScript SDK
 
-- `src/encoding.rs` — `Encoder`/`Decoder` for deterministic binary serialization with round-trip tests.
-- `src/hash.rs` — BLAKE3 hashing, hex encoding/decoding, filesystem sharding helpers with tests.
-- `src/recipe.rs` — Recipe data types, binary encoding/decoding, content hashing with tests.
-- `src/store.rs` + `src/store/` — SQLite + filesystem content-addressed store (blobs, recipes, outputs, build logs, dependencies) with tests.
-- `src/build.rs` — Build orchestrator: DAG resolution, output caching, recipe-specific builders for File/Directory/Symlink/Process.
-- `src/download.rs` — Download recipe builder stub (awaiting reqwest dependency).
-- `Cargo.toml` — depends on `blake3`, `clap` (derive), `hex`, `rusqlite`. Dev-dep: `tempfile`.
+```
+js/
+  src/             Bun/TypeScript SDK that shells out to the `hod` CLI
+  tests/           Bun tests for the SDK
+```
+
+The SDK currently provides `fileFromPath`, `download`, `process`, `dep`, `fromHod`, `fromJson`, `writeHod`, and `writeJson`.
+
+### Recipes and tests
+
+```
+recipes/           checked-in JSON/.hod recipes and some TS recipe experiments
+tests/             Rust unit/integration tests; many sandbox/bootstrap tests are #[ignore]
+examples/          small example recipes
+plans/             planning notes, not necessarily current implementation
+```
+
+## Docs Table of Contents
+
+- `docs/recipe-compiler-design.md` — current near-term recipe-authoring design: a Bun/TypeScript SDK emits JSON and binary `.hod` files by shelling out to `hod encode`/`decode`/`hash-file`.
+- `docs/recipe-compiler-tasks.md` — task checklist and implementation progress for the TS SDK and CLI encode/decode work.
+- `docs/debugging-builds.md` — current build-debugging workflow. `hod shell` and `hod import-file` are not implemented in this checkout.
+- `docs/relocatable-binaries-guide.md` — current packed executable behavior plus future store-relative/AT_EXECFN relocation design. Read the status notes carefully before implementing relocation.
+- `docs/evaluator-resolver-prd.md` — deferred resolver/path-reference design. Not implemented; current recipes use concrete BLAKE3 dependency hashes.
+
+## Core Concepts and Contracts
+
+- **Recipe files** (`.hod`) are deterministic binary records. They form a build DAG through recipe hashes.
+- **Content addressing** uses BLAKE3. A recipe’s identity is `blake3(recipe_bytes)`; the hash is computed externally and is never stored inside the file.
+- **Binary format is the contract.** Avoid ad-hoc extensions. New recipe types or format changes should be documented first and must preserve deterministic encoding.
+- **Builder inputs are concrete recipes.** `hod build` expects dependencies to be concrete 32-byte recipe hashes. Path refs/resolution are a deferred design, not current behavior.
+- **Store** is SQLite metadata plus sharded filesystem content under `$HOD_STORE` or `$XDG_DATA_HOME/hod`.
+- **Process builds are sandboxed on Linux.** Current code uses user and mount namespaces, and a network namespace unless `unsafe_flags & 0x01` allows networking. Do not assume PID/IPC/UTS isolation unless you verify/update `src/sandbox.rs`.
 
 ## Recipe Binary Format
 
-The recipe file envelope is:
+Envelope:
 
-```
+```text
 "HOD" (3 bytes) | version (u8) | type (u8) | body_len (u32 LE) | body
 ```
 
-Recipe types: `File` (0x01), `Directory` (0x02), `Symlink` (0x03), `Download` (0x04), `Process` (0x05).
+Current recipe type tags:
 
-Encoding rules (see PRD §4.3): all integers LE, all strings UTF-8 with fixed-width length prefix, lists length-prefixed and sorted where specified, hashes raw 32-byte BLAKE3, optional fields use presence byte, no padding, no field tags.
+| Type | Tag | Status |
+|------|-----|--------|
+| `File` | `0x01` | buildable |
+| `Directory` | `0x02` | buildable |
+| `Symlink` | `0x03` | buildable |
+| `Download` | `0x04` | buildable via `curl` |
+| `Process` | `0x05` | buildable via sandbox |
+| `Unpack` | `0x06` | encodes/decodes; build is currently a stub |
 
-## Key Dependencies
+Encoding rules: little-endian integers; UTF-8 strings with fixed-width length prefixes; raw 32-byte hashes; presence byte for optional fields; no padding or field tags. Lists that represent maps/sets must be sorted by their key (`Directory.entries`, process env, process dependencies).
 
-| Crate | Purpose |
-|-------|---------|
-| `blake3` | All hashing |
-| `rusqlite` | SQLite store backend (planned) |
-| `nix` | Linux namespace/clone/mount syscalls (planned) |
-| `clap` (derive) | CLI argument parsing |
-| `reqwest` | HTTP client for downloads (planned) |
-| `goblin` + `memchr` | ELF parsing for packed executables (planned) |
+## Current Caveats Agents Should Know
 
-## Reference: Brioche
+- `PRD.md` is absent; do not add references to it unless it is restored.
+- `hod shell`, `hod import-file`, and `hod resolve` are not current CLI commands.
+- `runtime_deps` exists in Process JSON/TS SDK but is not encoded into `.hod` bytes and is not currently acted on by `build.rs`.
+- `src/relocate.rs` is prototype code and is not exported from `lib.rs` or integrated into the builder.
+- Some docs/tests mention AT_EXECFN bootstrap functions that are not present in current `src/packed.rs`; verify code before relying on that design.
+- `Unpack` recipes can be represented and hashed, but `build_unpack` returns “not yet implemented”.
+- `TASKS.md` is older session context and may be stale; cross-check it against source before following it.
 
-Hod draws significant inspiration from **brioche**, a JS-based content-addressed build system. The key problem Hod solves that brioche has is eliminating the live JS object graph / serialization bottleneck (see PRD §2).
+## Dependencies
 
-Brioche source code for reference:
-- **`~/Code/brioche`** — the brioche build system itself (Rust + JS runtime)
-- **`~/Code/brioche-packages`** — the brioche package repository
-
-When implementing store operations, sandboxing, or packed executables, the brioche codebase is a useful reference for how a similar system approaches these problems. Look at brioche's approach, then implement the hod-specific design from PRD.md.
+| Crate/tool | Purpose |
+|------------|---------|
+| `blake3`, `hex` | hashing and hex encoding |
+| `serde`, `serde_json` | JSON recipe encode/decode CLI |
+| `clap` | CLI parsing |
+| `rusqlite` | SQLite store metadata |
+| `nix`, `unshare` | Linux namespace sandbox setup |
+| `goblin`, `memchr` | ELF/RPATH parsing and patching |
+| external `curl` | Download recipe fetching |
+| Bun | TypeScript SDK tests/recipe generation |
 
 ## Working Conventions
 
-- **Rust edition 2021**, MSRV per Cargo.toml.
-- Run `cargo test -- --test-threads=1` before considering work done.
-  - The sandbox uses Linux user namespaces which are rate-limited by the kernel.
-  - Running tests with default thread count (>4) causes namespace exhaustion and multi-minute stalls.
-  - With `--test-threads=1`, the full suite (163 tests) completes in ~1.2s.
-- All encoding must be deterministic — one valid encoding per value, always.
-- New recipe types or format changes must be specified in PRD.md first.
-- The binary format is the contract — no ad-hoc extensions.
+- Rust edition: 2021.
+- Prefer `rg`, `find`, and targeted file reads before editing.
+- Run `cargo test -- --test-threads=1` before considering Rust changes done when a Rust toolchain is available.
+- Do not run ignored bootstrap/sandbox integration tests unless requested; they can require network access and long builds.
+- Preserve deterministic encoding: one value must have one valid byte representation.
+- When editing docs, separate “implemented now” from “planned/design”.
+
+## Brioche Reference
+
+Hod draws inspiration from Brioche, especially around content-addressed builds, sandboxing, and packed executables. Reference checkouts may exist at:
+
+- `~/Code/brioche`
+- `~/Code/brioche-packages`
+
+Use them for ideas, but implement Hod-specific behavior from this repository’s docs and source.

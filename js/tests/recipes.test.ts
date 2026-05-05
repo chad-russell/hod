@@ -1,7 +1,7 @@
 //! Tests for recipe constructors (fileFromPath, process, dep).
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { fileFromPath, dep, process, writeHod, writeJson, fromHod, fromJson } from "../src/index.js";
+import { fileFromPath, dep, process, download, writeHod, writeJson, fromHod, fromJson } from "../src/index.js";
 import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -156,6 +156,41 @@ describe("writeHod / writeJson", () => {
     expect(buf[0]).toBe(0x48); // 'H'
     expect(buf[1]).toBe(0x4f); // 'O'
     expect(buf[2]).toBe(0x44); // 'D'
+  });
+});
+
+describe("download", () => {
+  test("creates a Download recipe", async () => {
+    const recipe = await download({
+      url: "https://example.com/foo.tar.gz",
+      hash: "a".repeat(64),
+    });
+    expect(recipe.hash).toHaveLength(64);
+    expect(recipe.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(recipe.json).toEqual({
+      type: "download",
+      url: "https://example.com/foo.tar.gz",
+      hash_algorithm: "blake3",
+      expected_hash: "a".repeat(64),
+    });
+  });
+
+  test("round-trips through encode/decode", async () => {
+    const recipe = await download({
+      url: "https://example.com/bar.tar.xz",
+      hash: "b".repeat(64),
+    });
+
+    const hodPath = join(TMP, "download-test.hod");
+    await writeHod(recipe, hodPath);
+
+    const imported = await fromHod(hodPath);
+    expect(imported.hash).toBe(recipe.hash);
+    expect(imported.json).toEqual(recipe.json);
+  });
+
+  test("rejects invalid hash", async () => {
+    await expect(download({ url: "https://example.com", hash: "not-a-hash" })).rejects.toThrow(/invalid hash/);
   });
 });
 

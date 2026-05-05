@@ -1,11 +1,20 @@
-# Build artifacts
+# Rust build artifacts
 target/
 
-# Dependencies
+# JavaScript/Bun dependencies
 node_modules/
+js/node_modules/
 
 # Downloaded source tarballs and binaries (reproducible from upstream URLs)
 recipes/sources/
 
-# Local environment config
-.envrc
+# Nix / direnv local state
+.direnv/
+result
+result-*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+.DS_Store

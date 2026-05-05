@@ -1,7 +1,9 @@
 # Recipe Compiler — Design
 
 **Date:** 2026-05-04
-**Status:** Draft
+**Status:** Partially implemented
+
+> Current status: the Rust CLI commands and the basic Bun/TypeScript SDK exist. The SDK is intentionally single-phase and produces concrete-hash recipes; it does not use the deferred resolver/path-reference design in [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md).
 
 ## 1. Goal
 
@@ -25,13 +27,13 @@ hod encode / hod decode / hod hash-file
 .hod files (binary) + .json files (human-readable)
 ```
 
-**Single-phase.** No resolver. JS module execution order is topological — `import`ed modules evaluate before the importer. Leaf recipes (File, Download) have no recipe dependencies and compute their hashes immediately. Process recipes reference dep hashes that are already known because the dep module already ran. The circular dependency problem does not exist in a DAG.
+**Single-phase.** No resolver. JS module execution order is topological — `import`ed modules evaluate before the importer. Leaf recipes (File, Download) have no recipe dependencies and compute their hashes immediately. Process recipes reference dep hashes that are already known because the dep module already ran. The circular dependency problem does not exist in a DAG. This is the current implementation direction; path refs and `hod resolve` are deferred.
 
 **No BLAKE3 in TypeScript.** All hashing is delegated to the `hod` CLI via subprocess. The TS library constructs JSON, shells out to `hod encode`, and captures the resulting hash from stdout.
 
-## 3. CLI Additions
+## 3. CLI Commands
 
-Three new subcommands for the `hod` binary. These are thin wrappers around existing functionality (serde JSON ↔ binary encode/decode, BLAKE3 hashing).
+These subcommands exist in the `hod` binary and are thin wrappers around serde JSON ↔ binary encode/decode plus BLAKE3 hashing.
 
 ### 3.1 `hod encode`
 
@@ -40,7 +42,7 @@ hod encode <input.json> [--output <output.hod>]
 ```
 
 - Reads a JSON recipe from `<input.json>`
-- Encodes it to binary `.hod` format using the existing `Recipe::decode_json` → `Recipe::encode` path
+- Deserializes it with `serde_json` into `Recipe`, then encodes it with `Recipe::encode()`
 - If `--output` is given, writes the `.hod` binary to that path
 - Prints the BLAKE3 hash of the encoded bytes to stdout (hex, 64 chars)
 - Exit 0 on success, non-zero on error (invalid JSON, unknown recipe type, etc.)
@@ -112,7 +114,7 @@ const bash = await process({
   env: { CC: "gcc", CFLAGS: "-O2" },
   dependencies: [
     dep("glibc", glibcRecipe),
-    dep("seed", "../bootstrap/seed-root.hod"),
+    dep("seed", await fromHod("../bootstrap/seed-root.hod")),
   ],
   runtime_deps: ["glibc"],
 });
@@ -121,7 +123,8 @@ const bash = await process({
 The `dependencies` list accepts `dep()` entries whose hash argument can be:
 - A `BuiltRecipe` object (from another TS module or constructor)
 - A string hex hash (if you already know it)
-- A path to an existing `.hod` or `.json` file (the library reads and resolves it)
+
+For existing files, first call `fromHod(path)` or `fromJson(path)`, then pass the returned `BuiltRecipe` to `dep()`.
 
 ### 4.3 Dependency helper
 
@@ -129,21 +132,22 @@ The `dependencies` list accepts `dep()` entries whose hash argument can be:
 
 Creates a dependency entry. `hashSource` is one of:
 - A `BuiltRecipe` — uses `.hash`
-- A string — treated as a hex hash (for hardcoded/known hashes)
-- A path string ending in `.hod` or `.json` — the library shells out to resolve it
+- A string — treated as a 64-character hex hash (for hardcoded/known hashes)
+
+Path strings are intentionally rejected by `dep()` today; use `fromHod()` or `fromJson()` explicitly.
 
 ```typescript
-dep("glibc", glibcRecipe)           // BuiltRecipe from import
-dep("seed", seedRecipe)             // BuiltRecipe from import
-dep("source", "../bash-source.hod") // path to existing file
-dep("manual", "891a64e6...")        // hardcoded hex hash
+dep("glibc", glibcRecipe)            // BuiltRecipe from import
+dep("seed", seedRecipe)              // BuiltRecipe from import
+dep("source", await fromHod("../bash-source.hod"))
+dep("manual", "891a64e6...")         // hardcoded hex hash
 ```
 
 ### 4.4 Import helpers
 
 #### `fromHod(path)`
 
-Reads an existing `.hod` file, shells out to `hod decode` to get the JSON, then to `hod encode` to get the hash. Returns `Promise<BuiltRecipe>`.
+Reads an existing `.hod` file, shells out to `hod decode` to get the JSON, and uses `hod hash-file` on the `.hod` bytes to get the recipe hash. Returns `Promise<BuiltRecipe>`.
 
 ```typescript
 const glibc = await fromHod("../cross/glibc.hod");
@@ -175,15 +179,9 @@ Writes the JSON representation to disk. Pure TypeScript (just `JSON.stringify` +
 writeJson(bash, "./bash.json");
 ```
 
-#### `importToStore(recipe, storePath?)`
+#### Store import
 
-Imports the recipe into the hod store. Equivalent to `hod import-recipe <hod-file>`. Returns the hash.
-
-```typescript
-importToStore(bash);
-```
-
-*(Note: `hod import-recipe` may not exist yet — this is a placeholder for a store-import command.)*
+The Rust CLI now has `hod import-recipe <recipe.hod>`, but the TS SDK does not currently expose `importToStore()`. Use `writeHod()` followed by `hod import-recipe` if you need to import from scripts. Current limitation: `import-recipe` does not accept a `--store` flag.
 
 ## 5. Usage Patterns
 
@@ -279,17 +277,16 @@ A single entry point that imports everything and builds all recipes:
 
 ```typescript
 // recipes/build.ts
-import { importToStore } from "hod-sdk";
+import { writeHod } from "hod-sdk";
 import { glibcRecipe } from "./glibc/glibc.ts";
 import { bashRecipe } from "./bash/bash.ts";
 import { gccRecipe } from "./gcc/gcc.ts";
 
-// Import all to store
-importToStore(glibcRecipe);
-importToStore(bashRecipe);
-importToStore(gccRecipe);
+await writeHod(glibcRecipe, "./out/glibc.hod");
+await writeHod(bashRecipe, "./out/bash.hod");
+await writeHod(gccRecipe, "./out/gcc.hod");
 
-console.log("All recipes built and imported.");
+console.log("All recipes written. Import with: hod import-recipe ./out/<name>.hod");
 ```
 
 Run with `bun run recipes/build.ts`.
@@ -307,8 +304,9 @@ hod/
 │   │   ├── process.ts      # process() constructor
 │   │   ├── file.ts         # fileFromPath() constructor
 │   │   ├── dep.ts          # dep() helper
-│   │   ├── encode.ts       # writeHod(), writeJson(), importToStore()
+│   │   ├── output.ts       # writeHod(), writeJson()
 │   │   ├── import.ts       # fromHod(), fromJson()
+│   │   ├── download.ts     # download() constructor
 │   │   └── cli.ts          # Shell-out wrappers for hod encode/decode/hash-file
 │   └── tests/
 │       └── ...             # Bun test files
@@ -330,9 +328,9 @@ hod/
 | Topic | Decision | Notes |
 |-------|----------|-------|
 | Caching `hod encode` calls | Deferred | If the same JSON is encoded multiple times (e.g., imported by N recipes), the CLI is invoked N times. Can add an in-memory cache in the TS layer later. |
-| `hod import-recipe` command | TBD | May not exist yet. Needed for `importToStore()`. Could be `hod encode --import` or a separate command. |
-| Download recipe support | Deferred | Start with Process + File. Add `download()` constructor when needed. |
-| Directory / Symlink / Unpack recipes | Deferred | Add constructors when needed. |
+| TS `importToStore()` helper | Deferred | `hod import-recipe` exists, but the SDK does not wrap it yet; CLI also lacks `--store`. |
+| Download recipe support | Implemented | `download()` constructor exists. |
+| Directory / Symlink / Unpack recipe constructors | Deferred | `Unpack` exists in Rust encode/decode but its builder is a stub. |
 | `hod encode` stdin mode | Nice-to-have | `echo '<json>' | hod encode --output foo.hod` would let the TS library pipe JSON via stdin instead of writing a temp file. Avoids temp file cleanup. |
 | Recipe validation in TS | Nice-to-have | The TS constructors could validate required fields (non-empty command, sorted deps, etc.) before shelling out. But `hod encode` already validates — the TS layer can be thin. |
 

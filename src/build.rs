@@ -18,7 +18,7 @@ use crate::encoding::EncodeError;
 use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
 use crate::recipe::{
     Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink,
-    RecipeType,
+    RecipeType, RecipeUnpack,
 };
 use crate::store::Store;
 
@@ -271,6 +271,7 @@ fn do_build(
         Recipe::Directory(d) => build_directory(store, d, &dep_outputs)?,
         Recipe::Symlink(s) => build_symlink(s),
         Recipe::Download(dl) => crate::download::build_download(store, dl)?,
+        Recipe::Unpack(u) => build_unpack(store, u)?,
         Recipe::Process(p) => build_process(store, p, &dep_outputs, options)?,
     };
 
@@ -509,6 +510,25 @@ fn build_symlink(s: &RecipeSymlink) -> Artifact {
     Artifact::Symlink {
         target: s.target.clone(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Unpack builder — extract a tar archive into a directory output
+// ---------------------------------------------------------------------------
+
+/// Build an Unpack recipe: fetch the archive blob from the store and extract
+/// it into a directory artifact.
+///
+/// Note: The actual tar extraction logic is not yet implemented. This stub
+/// returns an error indicating the feature is not yet available. The Unpack
+/// recipe type exists in the binary format and encode/decode path so that
+/// recipes can be constructed and hashed, but building them requires the
+/// full extraction pipeline.
+fn build_unpack(_store: &Store, _u: &RecipeUnpack) -> Result<Artifact> {
+    Err(BuildError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "unpack recipe building is not yet implemented",
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,5 +1072,6 @@ fn format_recipe_type(rt: RecipeType) -> &'static str {
         RecipeType::Symlink => "symlink",
         RecipeType::Download => "download",
         RecipeType::Process => "process",
+        RecipeType::Unpack => "unpack",
     }
 }

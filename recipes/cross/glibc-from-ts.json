@@ -1,0 +1,47 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/glibc-2.41\n\n# Glibc requires a separate build directory\nmkdir build\ncd build\n\n# Install configparms for sbin\necho \"rootsbindir=/sbin\" > configparms\n\n../configure \\\n  --host=x86_64-linux-gnu \\\n  --prefix=/ \\\n  --disable-werror \\\n  --enable-kernel=4.14 \\\n  --with-headers=/deps/linux-headers/include \\\n  CC=/deps/seed/bin/gcc \\\n  AR=/deps/seed/bin/ar \\\n  RANLIB=/deps/seed/bin/ranlib \\\n  AS=/deps/seed/bin/as \\\n  LD=/deps/seed/bin/ld.bfd \\\n  NM=/deps/seed/bin/nm \\\n  OBJDUMP=/deps/seed/bin/objdump \\\n  OBJCOPY=/deps/seed/bin/objcopy \\\n  STRIP=/deps/seed/bin/strip \\\n  AWK=/deps/shims/bin/gawk \\\n  BISON=/deps/shims/bin/bison \\\n  M4=/deps/shims/bin/m4 \\\n  PYTHON=/deps/python/bin/python3 \\\n  libc_cv_slibdir=/lib\n\nmake -j$(nproc)\n\n# Skip test-installation sanity check\nsed '/test-installation/s@$(PERL)@echo not running@' -i ../Makefile\n\nmake install DESTDIR=$OUT\n\n# Create essential directory structure\nmkdir -p $OUT/etc\nmkdir -p $OUT/var/cache/nscd\ntouch $OUT/etc/ld.so.conf\n\n# Create lib64 symlink for x86_64 compatibility\nmkdir -p $OUT/lib64\nln -sf ../lib/ld-linux-x86-64.so.2 $OUT/lib64/ld-linux-x86-64.so.2\n\n# Create /usr symlinks for FHS compatibility\nmkdir -p $OUT/usr\nln -sf ../lib $OUT/usr/lib\nln -sf ../include $OUT/usr/include\nln -sf ../lib64 $OUT/usr/lib64"
+  ],
+  "env": [
+    {
+      "key": "BISON_PKGDATADIR",
+      "value": "/deps/shims/share/bison"
+    },
+    {
+      "key": "CFLAGS",
+      "value": "-g -O2 -Wno-error -U_FORTIFY_SOURCE"
+    },
+    {
+      "key": "M4",
+      "value": "/deps/shims/bin/m4"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "linux-headers",
+      "recipe_hash": "ff08778e94c68ffc2d878d0e8170ec6546deeec167f52c03e4f1b6e509e1e1b1"
+    },
+    {
+      "name": "python",
+      "recipe_hash": "1a7c67bcc283ba368ece05b163e706b381b849b19c8df34958b4dab920fb5e89"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "shims",
+      "recipe_hash": "0f9d6866f39d2c61099ebf720bc8e708e5064804319d0a1f0bbe06a4584c2300"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "bb4a3b9453533b141111618d9cde0099bfece5a72371aab62ca004ae9b7f23b5"
+    }
+  ],
+  "unsafe_flags": 0
+}

@@ -531,7 +531,7 @@ fn recipe_type_from_u8() {
     assert_eq!(RecipeType::from_u8(0x04), Some(RecipeType::Download));
     assert_eq!(RecipeType::from_u8(0x05), Some(RecipeType::Process));
     assert_eq!(RecipeType::from_u8(0x00), None);
-    assert_eq!(RecipeType::from_u8(0x06), None);
+    assert_eq!(RecipeType::from_u8(0x06), Some(RecipeType::Unpack));
     assert_eq!(RecipeType::from_u8(0xFF), None);
 }
 

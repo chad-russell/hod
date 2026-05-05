@@ -179,13 +179,27 @@ fn roundtrip_process_full() {
     assert_json_roundtrip(&recipe);
 }
 
-// TODO: Unpack recipe type not yet implemented
-// #[test]
-// fn roundtrip_unpack_tar_gz() { ... }
+// Unpack recipe round-trip tests
 
-// TODO: Unpack recipe type not yet implemented
-// #[test]
-// fn roundtrip_unpack_tar_xz() { ... }
+#[test]
+fn roundtrip_unpack_tar_gz() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarGz,
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
+
+#[test]
+fn roundtrip_unpack_tar_xz() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_b(),
+        format: ArchiveFormat::TarXz,
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
 
 // ===========================================================================
 // JSON format validation
@@ -217,9 +231,22 @@ fn json_uses_snake_case_algorithm() {
     );
 }
 
-// TODO: Unpack recipe type not yet implemented
-// #[test]
-// fn json_unpack_uses_type_tag() { ... }
+#[test]
+fn json_unpack_uses_type_tag() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarGz,
+    });
+    let json = serde_json::to_string(&recipe).unwrap();
+    assert!(
+        json.contains("\"type\":\"unpack\""),
+        "should use 'unpack' tag"
+    );
+    assert!(
+        json.contains("\"format\":\"tar_gz\""),
+        "should use 'tar_gz' format"
+    );
+}
 
 #[test]
 fn json_hashes_are_lowercase_hex() {

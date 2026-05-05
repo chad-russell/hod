@@ -1,0 +1,31 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\n# Ensure /bin/sh exists for configure scripts with #!/bin/sh shebangs\nmkdir -p /bin\nln -sf /deps/seed/bin/busybox /bin/sh\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/ncurses-6.6\n\nCC=/deps/seed/bin/gcc \\\nAR=/deps/seed/bin/ar \\\nRANLIB=/deps/seed/bin/ranlib \\\nCFLAGS=\"-O2\" \\\nLDFLAGS=\"-static\" \\\nsh ./configure \\\n  --prefix=/ \\\n  --disable-shared \\\n  --enable-static \\\n  --enable-widec \\\n  --without-debug \\\n  --without-ada \\\n  --without-manpages \\\n  --without-tests \\\n  --without-cxx-binding \\\n  --disable-stripping\n\n/deps/make/bin/make -j$(nproc)\n/deps/make/bin/make install DESTDIR=$OUT\n\n# Create non-widec compatibility symlinks so cbonsai's Makefile can find -lncurses\ncd $OUT/lib\nfor f in libncursesw*; do\n  ln -sf \"$f\" \"$(echo \"$f\" | sed 's/w//')\"\ndone\nif [ -d $OUT/lib/pkgconfig ]; then\n  cd $OUT/lib/pkgconfig\n  for f in *.pc; do\n    ln -sf \"$f\" \"$(echo \"$f\" | sed 's/w//')\"\n  done\nfi"
+  ],
+  "env": [
+    {
+      "key": "PATH",
+      "value": "/deps/seed/bin:/deps/make/bin"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "make",
+      "recipe_hash": "9de412cf3f9fa0b9a253ac7f059299d070f62aceb439ee643a8ed613778d7d63"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "064eec2213bcde95d915c820fe4136eaf8c0a73ac61ea5b6aac0f3c50f116004"
+    }
+  ],
+  "unsafe_flags": 0
+}

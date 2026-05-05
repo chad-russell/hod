@@ -18,7 +18,7 @@ use crate::encoding::{EncodeError, Encoder, Decoder};
 
 /// Convenience alias for recipe decode results.
 pub type Result<T> = std::result::Result<T, EncodeError>;
-use crate::hash::{hash_bytes, hash_to_hex, hex_to_hash, Hash};
+use crate::hash::{hash_bytes, Hash};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +43,7 @@ pub enum RecipeType {
     Symlink = 0x03,
     Download = 0x04,
     Process = 0x05,
+    Unpack = 0x06,
 }
 
 impl RecipeType {
@@ -53,6 +54,7 @@ impl RecipeType {
             0x03 => Some(Self::Symlink),
             0x04 => Some(Self::Download),
             0x05 => Some(Self::Process),
+            0x06 => Some(Self::Unpack),
             _ => None,
         }
     }
@@ -128,6 +130,36 @@ impl HashAlgorithm {
     }
 }
 
+/// Archive format for Unpack recipes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ArchiveFormat {
+    #[serde(rename = "tar_gz")]
+    TarGz = 0x01,
+    #[serde(rename = "tar_xz")]
+    TarXz = 0x02,
+}
+
+impl ArchiveFormat {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0x01 => Some(Self::TarGz),
+            0x02 => Some(Self::TarXz),
+            _ => None,
+        }
+    }
+}
+
+/// An unpack recipe — extract a tar archive into a directory output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeUnpack {
+    /// BLAKE3 hash of the archive blob.
+    #[serde(with = "hash_serde")]
+    pub archive_hash: Hash,
+    /// Archive format (tar_gz or tar_xz).
+    pub format: ArchiveFormat,
+}
+
 /// A named dependency in a Process recipe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessDependency {
@@ -171,7 +203,7 @@ pub struct RecipeProcess {
     pub runtime_deps: Option<Vec<String>>,
 }
 
-/// The top-level recipe enum — one of the five recipe types.
+/// The top-level recipe enum — one of the six recipe types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Recipe {
@@ -180,6 +212,7 @@ pub enum Recipe {
     Symlink(RecipeSymlink),
     Download(RecipeDownload),
     Process(RecipeProcess),
+    Unpack(RecipeUnpack),
 }
 
 impl Recipe {
@@ -191,6 +224,7 @@ impl Recipe {
             Self::Symlink(_) => RecipeType::Symlink,
             Self::Download(_) => RecipeType::Download,
             Self::Process(_) => RecipeType::Process,
+            Self::Unpack(_) => RecipeType::Unpack,
         }
     }
 
@@ -242,6 +276,10 @@ impl Recipe {
                 enc.str_u16(&dl.url);
                 enc.u8(dl.hash_algorithm as u8);
                 enc.hash(&dl.expected_hash);
+            }
+            Recipe::Unpack(u) => {
+                enc.hash(&u.archive_hash);
+                enc.u8(u.format as u8);
             }
             Recipe::Process(p) => {
                 enc.str_u16(&p.platform);
@@ -315,6 +353,7 @@ impl Recipe {
             RecipeType::Symlink => Self::decode_symlink(&mut body_dec)?,
             RecipeType::Download => Self::decode_download(&mut body_dec)?,
             RecipeType::Process => Self::decode_process(&mut body_dec)?,
+            RecipeType::Unpack => Self::decode_unpack(&mut body_dec)?,
         };
 
         // Body must be fully consumed
@@ -380,6 +419,20 @@ impl Recipe {
             url,
             hash_algorithm,
             expected_hash,
+        }))
+    }
+
+    fn decode_unpack(dec: &mut Decoder) -> Result<Self> {
+        let archive_hash = dec.hash()?;
+        let format_tag = dec.u8()?;
+        let format =
+            ArchiveFormat::from_u8(format_tag).ok_or(EncodeError::InvalidValue {
+                field: "archive format".into(),
+                value: format!("0x{format_tag:02x}"),
+            })?;
+        Ok(Recipe::Unpack(RecipeUnpack {
+            archive_hash,
+            format,
         }))
     }
 

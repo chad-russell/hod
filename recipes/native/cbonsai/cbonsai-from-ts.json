@@ -1,0 +1,35 @@
+{
+  "type": "process",
+  "platform": "x86_64-linux",
+  "command": "/deps/seed/bin/busybox",
+  "args": [
+    "sh",
+    "-c",
+    "set -e\n\n# Ensure /bin/sh exists for scripts with #!/bin/sh shebangs\n# Also link cc → gcc for cbonsai's Makefile (CC = cc by default)\nmkdir -p /bin\nln -sf /deps/seed/bin/busybox /bin/sh\nln -sf /deps/seed/bin/gcc /bin/cc\n\ntar xf /deps/source/source -C /tmp\ncd /tmp/cbonsai-v1.4.2\n\n# Build cbonsai — single C file, needs ncursesw\n# We skip pkg-config and pass flags directly since we have a static ncurses\nCC=/deps/seed/bin/gcc \\\nCFLAGS=\"-O2 -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw\" \\\nLDFLAGS=\"-static -L/deps/ncurses/lib\" \\\n/deps/make/bin/make cbonsai LDLIBS=\"-lpanelw -lncursesw\"\n\nmkdir -p $OUT/bin\ncp cbonsai $OUT/bin/cbonsai\nchmod +x $OUT/bin/cbonsai"
+  ],
+  "env": [
+    {
+      "key": "PATH",
+      "value": "/bin:/deps/seed/bin"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "make",
+      "recipe_hash": "9de412cf3f9fa0b9a253ac7f059299d070f62aceb439ee643a8ed613778d7d63"
+    },
+    {
+      "name": "ncurses",
+      "recipe_hash": "79ff41eb11184ea2e026d8ff2d27bb5b2a10f8ba55535a571f7096b2a2f94d49"
+    },
+    {
+      "name": "seed",
+      "recipe_hash": "8f3d75b0806864abbc7ae6d0bae8d4a1ab54b37ec19f537da8717e0fd251b12a"
+    },
+    {
+      "name": "source",
+      "recipe_hash": "17ca4d6cebde3caffb22c0423dc6513b8f4857b2c684235874dad8cf87603df6"
+    }
+  ],
+  "unsafe_flags": 0
+}

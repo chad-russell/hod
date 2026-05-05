@@ -2,6 +2,23 @@
 
 **Reference:** [docs/recipe-compiler-design.md](docs/recipe-compiler-design.md)
 
+## Phase 0: Rust Recipe Types
+
+### Task 0.1: `Unpack` recipe type ✅
+
+- [x] Add `Unpack = 0x06` to `RecipeType` enum in `src/recipe.rs`
+- [x] Add `RecipeUnpack` struct with `archive_hash` (Hash) and `format` (ArchiveFormat enum: `tar_gz`, `tar_xz`)
+- [x] Add `ArchiveFormat` enum with serde rename (`tar_gz`, `tar_xz`)
+- [x] Add `Unpack` variant to `Recipe` enum with serde tag `"unpack"`
+- [x] Implement `encode_body` for `RecipeUnpack` (hash + u8 format tag)
+- [x] Implement `decode_unpack` body decoder
+- [x] Add `RecipeType::from_u8(0x06)` mapping
+- [x] Add `Unpack` to `build.rs` `format_recipe_type()` and recipe dispatch (stub)
+- [x] Update `recipe_encoding.rs` test: `from_u8(0x06)` now returns `Some(Unpack)`
+- [x] Binary round-trip tests for `tar_gz` and `tar_xz` in `recipe_json_roundtrip.rs`
+- [x] JSON format test: `"type":"unpack"` and `"format":"tar_gz"`
+- [x] `cargo test` passes (all recipe encoding/decoding tests)
+
 ## Phase 1: Rust CLI Commands
 
 These are the foundation — the TS library shells out to these.
@@ -59,8 +76,6 @@ These are the foundation — the TS library shells out to these.
 - [x] Test: `js/tests/cli.test.ts`
 
 ### Task 2.3: `fileFromPath()` constructor ✅
-
-- [x] Create `js/src/file.ts`
 - [x] `fileFromPath(path: string, options?: { executable?: boolean }): Promise<BuiltRecipe>`
 - [x] Call `hashFile(path)` to get `content_blob_hash`
 - [x] Construct JSON: `{ type: "file", content_blob_hash, executable }`
@@ -104,10 +119,21 @@ These are the foundation — the TS library shells out to these.
 - [x] `fromJson(path: string): Promise<BuiltRecipe>` — read JSON file, encode to get hash
 - [x] Test: `js/tests/recipes.test.ts`
 
-### Task 2.8: Wire up public API ✅
+### Task 2.8: `download()` constructor ✅
 
-- [x] `js/src/index.ts` re-exports everything: `process`, `fileFromPath`, `dep`, `writeHod`, `writeJson`, `fromHod`, `fromJson`, `BuiltRecipe` type
-- [ ] Verify a consumer can `import { process, dep, writeHod } from "hod-sdk"`
+- [x] Create `js/src/download.ts`
+- [x] `download(options: { url, hash }): Promise<BuiltRecipe>` — creates a Download recipe
+- [x] Validates hash is 64-char hex
+- [x] Constructs JSON: `{ type: "download", url, hash_algorithm: "blake3", expected_hash }`
+- [x] Shells out to `encodeJson()` to get recipe hash
+- [x] Re-exported from `js/src/index.ts`
+- [x] Test: `js/tests/recipes.test.ts` (3 tests: creation, round-trip, validation)
+
+### Task 2.9: Wire up public API ✅
+
+- [x] `js/src/index.ts` re-exports everything: `process`, `fileFromPath`, `dep`, `download`, `writeHod`, `writeJson`, `fromHod`, `fromJson`, all types
+- [x] Verified: consumers can `import { process, dep, download, writeHod } from "../../js/src/index.js"`
+- [x] `cbonsai.ts` uses the full API successfully
 
 ## Phase 3: Proof of Concept
 
@@ -118,10 +144,21 @@ These are the foundation — the TS library shells out to these.
 - [x] Run it with `bun`, verify it produces bit-identical `.hod` output
 - [x] Document any friction points or missing helpers
 
-### Task 3.2: Fix and iterate
+### Task 3.2: cbonsai.ts — second proof of concept ✅
+
+- [x] Create `recipes/native/cbonsai/cbonsai.ts`
+- [x] Uses `download()` for the source recipe (no more hand-written JSON needed)
+- [x] Uses `fromJson()` for ncurses and seed dependencies
+- [x] Uses `process()` + `dep()` for the cbonsai build recipe
+- [x] Writes `.hod` and `.json` output files
+- [x] Verifies hash matches the hand-written `cbonsai.json` (`2a6cc731...`)
+- [x] Produced `.hod` is **bit-identical** to the hand-written `cbonsai.hod`
+
+### Task 3.3: Fix and iterate
 
 - [x] Address any issues found during conversion
-  - Deps with unsupported recipe types (e.g., `unpack`) must use hardcoded hashes — `dep("name", hashStr)` works well
-  - Paths must use `import.meta.dir` for portability (not relative to CWD)
-- [x] Add convenience helpers if patterns emerge — no new ones needed yet
+  - Deps with unsupported recipe types (e.g., `unpack`) can now use `fromJson()` since `Unpack` is supported
+  - Paths use `import.meta.dir` for portability (not relative to CWD)
+  - `download()` constructor eliminates the need for hand-written download JSON files
+- [x] Add convenience helpers: `download()` constructor added
 - [ ] Update design doc if any decisions change based on experience

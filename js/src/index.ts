@@ -1,22 +1,25 @@
 //! Hod SDK — TypeScript library for building hod recipes.
 //!
 //! Usage:
-//!   import { process, fileFromPath, dep, writeHod, writeJson, fromHod, fromJson } from "hod-sdk";
+//!   import { process, fileFromPath, dep, importToStore, fromHod } from "hod-sdk";
 
 // Types
-export type { BuiltRecipe, FileFromPathOptions } from "./file.js";
+export type { BuiltRecipe, FileFromPathOptions, FileFromHashOptions } from "./file.js";
 export type { ProcessDependency } from "./dep.js";
 export type { ProcessDefinition, EnvEntry } from "./process.js";
 export type { DownloadOptions } from "./download.js";
+export type { UnpackOptions, ArchiveFormat } from "./unpack.js";
 
 // Recipe constructors
-export { fileFromPath } from "./file.js";
+export { fileFromPath, fileFromHash } from "./file.js";
 export { dep } from "./dep.js";
 export { process } from "./process.js";
 export { download } from "./download.js";
+export { unpack } from "./unpack.js";
 
-// Output helpers
-export { writeHod, writeJson } from "./output.js";
+// Build script helpers
+export { hermeticPreamble } from "./preamble.js";
+export type { HermeticPreambleOptions } from "./preamble.js";
 
 // Import helpers
-export { fromHod, fromJson } from "./import.js";
+export { fromHod, importToStore } from "./import.js";

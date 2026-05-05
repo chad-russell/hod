@@ -10,7 +10,7 @@ Hod is a deterministic, content-addressed build system written in Rust. This fil
 
 ```
 src/
-  main.rs          CLI entry point (`build`, `ls-output`, `encode`, `decode`, `hash-file`, `import-recipe`)
+  main.rs          CLI entry point (`build`, `build --hash`, `ls-output`, `encode`, `decode`, `hash-file`, `import-recipe`, `import-from-json`, `inspect`, `export-recipe`)
   lib.rs           crate module exports
   recipe.rs        recipe types, deterministic binary encoding/decoding, JSON serde
   encoding.rs      binary encoding helpers
@@ -32,12 +32,13 @@ js/
   tests/           Bun tests for the SDK
 ```
 
-The SDK currently provides `fileFromPath`, `download`, `process`, `dep`, `fromHod`, `fromJson`, `writeHod`, and `writeJson`.
+The SDK currently provides `fileFromPath`, `fileFromHash`, `download`, `unpack`, `process`, `dep`, `fromHod`, `importToStore`, and `importFromJson`.
 
 ### Recipes and tests
 
 ```
-recipes/           checked-in JSON/.hod recipes and some TS recipe experiments
+recipes/           TypeScript recipe scripts (.ts) — sole source of truth
+recipes/           no .json or .hod recipe files — recipes are imported to the store at evaluation time
 tests/             Rust unit/integration tests; many sandbox/bootstrap tests are #[ignore]
 examples/          small example recipes
 plans/             planning notes, not necessarily current implementation
@@ -52,10 +53,11 @@ plans/             planning notes, not necessarily current implementation
 
 ## Core Concepts and Contracts
 
-- **Recipe files** (`.hod`) are deterministic binary records. They form a build DAG through recipe hashes.
+- **Recipe files** (`.hod` binary format) are deterministic binary records. They form a build DAG through recipe hashes. Recipes live in the Hod store (SQLite + sharded blobs); `.hod` files on disk are only produced by `hod export-recipe` for debugging.
+- **TypeScript is the source of truth.** `.ts` recipe files in `recipes/` define the build DAG. Evaluating a `.ts` file with `bun run` encodes and imports each recipe into the store via `importToStore()`. No `.hod` or `.json` files remain in `recipes/`.
 - **Content addressing** uses BLAKE3. A recipe’s identity is `blake3(recipe_bytes)`; the hash is computed externally and is never stored inside the file.
 - **Binary format is the contract.** Avoid ad-hoc extensions. New recipe types or format changes should be documented first and must preserve deterministic encoding.
-- **Builder inputs are concrete recipes.** `hod build` expects dependencies to be concrete 32-byte recipe hashes. Path refs/resolution are a deferred design, not current behavior.
+- **Builder inputs are concrete recipes.** `hod build` accepts either a `.hod` file path (`hod build <recipe.hod>`) or a store hash (`hod build --hash <hex>`). Dependencies must be concrete 32-byte recipe hashes. Path refs/resolution are a deferred design, not current behavior.
 - **Store** is SQLite metadata plus sharded filesystem content under `$HOD_STORE` or `$XDG_DATA_HOME/hod`.
 - **Process builds are sandboxed on Linux.** Current code uses user and mount namespaces, and a network namespace unless `unsafe_flags & 0x01` allows networking. Do not assume PID/IPC/UTS isolation unless you verify/update `src/sandbox.rs`.
 
@@ -88,7 +90,6 @@ Encoding rules: little-endian integers; UTF-8 strings with fixed-width length pr
 - `src/relocate.rs` is an implemented prototype exported from `lib.rs` and integrated into the Process builder.
 - AT_EXECFN bootstrap APIs (`parse_interp`, `patch_runpath_to`, `inject_bootstrap`) are present in `src/packed.rs`; heavyweight validation tests remain ignored by default.
 - `Unpack` recipes can be represented and hashed, but `build_unpack` returns “not yet implemented”.
-- `TASKS.md` is older session context and may be stale; cross-check it against source before following it.
 
 ## Dependencies
 

@@ -1,44 +1,12 @@
-//! ncurses recipe — static widechar build for use by downstream packages.
-//!
-//! Builds ncurses 6.6 with wide character support (ncursesw) and static libs.
-//! Also creates non-widec compatibility symlinks so packages looking for
-//! -lncurses can find the widechar version.
-//!
-//! Run with: bun run recipes/native/ncurses/ncurses.ts
+//! ncurses native build recipe.
+import { process, dep, importToStore, hermeticPreamble } from "../../../js/src/index.js";
+import { seedRootRecipe } from "../../bootstrap/seed-root.js";
+import { makeRecipe } from "../../shims/make.js";
+import { ncursesSourceRecipe } from "./ncurses-source.js";
 
-import {
-  process,
-  dep,
-  download,
-  writeHod,
-  writeJson,
-  fromJson,
-  type BuiltRecipe,
-} from "../../../js/src/index.js";
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
 
-const dir = import.meta.dir;
-
-// ---------------------------------------------------------------------------
-// Dependencies
-// ---------------------------------------------------------------------------
-
-// ncurses source tarball
-const source: BuiltRecipe = await download({
-  url: "https://invisible-island.net/archives/ncurses/ncurses-6.6.tar.gz",
-  hash: "fbec55697a01f99b9cc3f25be55e73ae7091f4c53e5d81a1ea15734c4e5b7238",
-});
-
-// Static make from shims (built with seed toolchain only, no glibc)
-const make: BuiltRecipe = await fromJson(`${dir}/../../shims/make.json`);
-
-// Bootstrap seed toolchain
-const seed: BuiltRecipe = await fromJson(`${dir}/../../bootstrap/seed-root.json`);
-
-// ---------------------------------------------------------------------------
-// ncurses build recipe
-// ---------------------------------------------------------------------------
-
-const ncurses = await process({
+const recipe = await process({
   platform: "x86_64-linux",
   command: "/deps/seed/bin/busybox",
   args: [
@@ -46,9 +14,7 @@ const ncurses = await process({
     "-c",
     `set -e
 
-# Ensure /bin/sh exists for configure scripts with #!/bin/sh shebangs
-mkdir -p /bin
-ln -sf /deps/seed/bin/busybox /bin/sh
+${preamble}
 
 tar xf /deps/source/source -C /tmp
 cd /tmp/ncurses-6.6
@@ -70,36 +36,26 @@ sh ./configure \\
   --without-cxx-binding \\
   --disable-stripping
 
-/deps/make/bin/make -j$(nproc)
-/deps/make/bin/make install DESTDIR=$OUT
+make -j$(nproc)
+make install DESTDIR=$OUT
 
 # Create non-widec compatibility symlinks so cbonsai's Makefile can find -lncurses
 cd $OUT/lib
 for f in libncursesw*; do
   ln -sf "$f" "$(echo "$f" | sed 's/w//')"
 done
-if [ -d $OUT/lib/pkgconfig ]; then
-  cd $OUT/lib/pkgconfig
-  for f in *.pc; do
-    ln -sf "$f" "$(echo "$f" | sed 's/w//')"
-  done
-fi`,
+cd $OUT/lib/pkgconfig
+for f in *.pc; do
+  ln -sf "$f" "$(echo "$f" | sed 's/w//')"
+done`,
   ],
-  env: { PATH: "/deps/seed/bin:/deps/make/bin" },
+  env: { PATH: "/deps/seed/bin" },
   dependencies: [
-    dep("make", make),
-    dep("seed", seed),
-    dep("source", source),
+    dep("make", makeRecipe),
+    dep("seed", seedRootRecipe),
+    dep("source", ncursesSourceRecipe),
   ],
 });
 
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
-await writeHod(ncurses, `${dir}/ncurses-from-ts.hod`);
-writeJson(ncurses, `${dir}/ncurses-from-ts.json`);
-
-console.log(`ncurses hash: ${ncurses.hash}`);
-
-export const ncursesRecipe = ncurses;
+await importToStore(recipe);
+export const ncursesRecipe = recipe;

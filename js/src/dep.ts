@@ -27,7 +27,7 @@ export function dep(name: string, source: BuiltRecipe | string): ProcessDependen
     }
     throw new Error(
       `dep("${name}", ...): invalid hash "${source}". ` +
-      `Expected a 64-character hex string, a BuiltRecipe, or resolve the file first with fromHod()/fromJson().`
+      `Expected a 64-character hex string or a BuiltRecipe. Use fromHod() to import .hod files.`
     );
   }
 

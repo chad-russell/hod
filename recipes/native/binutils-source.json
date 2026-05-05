@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "e0475ee24a256c7e26324efb3e83c6f471c686e561f46115e41d4215bf74f2df"
-}

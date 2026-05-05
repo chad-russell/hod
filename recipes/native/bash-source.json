@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "78d49588b74add7bb37317fb7aee7a5979e2cab4b34b1fd40306fb464bb46bdc"
-}

@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "3f89442f3f593ad02e5a392d56d531196d43154dba716a001010b458c6f428e6"
-}

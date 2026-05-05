@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/diffutils/diffutils-3.11.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "10626ae01dc2fc76e606eb7d047dbda323fda8664295a65f697dfe7e3c5cb183"
-}

@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://invisible-island.net/archives/ncurses/ncurses-6.6.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "fbec55697a01f99b9cc3f25be55e73ae7091f4c53e5d81a1ea15734c4e5b7238"
-}

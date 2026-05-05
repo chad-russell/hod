@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.gz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "ad2e8a57e5e6216c2baf8519468e3f3834da6d92185fb2c21a1bf92d7d6171ef"
-}

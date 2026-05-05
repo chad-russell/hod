@@ -1,8 +1,8 @@
 //! Tests for recipe constructors (fileFromPath, process, dep).
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { fileFromPath, dep, process, download, writeHod, writeJson, fromHod, fromJson } from "../src/index.js";
-import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "fs";
+import { fileFromPath, fileFromHash, dep, process, download, unpack, fromHod, importToStore } from "../src/index.js";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -124,40 +124,7 @@ describe("process", () => {
   });
 });
 
-describe("writeHod / writeJson", () => {
-  test("writeJson writes a .json file", async () => {
-    const filePath = join(TMP, "test-file.txt");
-    writeFileSync(filePath, "test content");
 
-    const recipe = await fileFromPath(filePath);
-    const jsonPath = join(TMP, "output.json");
-
-    const hash = writeJson(recipe, jsonPath);
-    expect(hash).toBe(recipe.hash);
-    expect(existsSync(jsonPath)).toBe(true);
-
-    const written = JSON.parse(readFileSync(jsonPath, "utf-8"));
-    expect(written).toEqual(recipe.json);
-  });
-
-  test("writeHod writes a .hod binary file", async () => {
-    const filePath = join(TMP, "test-file2.txt");
-    writeFileSync(filePath, "test content 2");
-
-    const recipe = await fileFromPath(filePath);
-    const hodPath = join(TMP, "output.hod");
-
-    const hash = await writeHod(recipe, hodPath);
-    expect(hash).toBe(recipe.hash);
-    expect(existsSync(hodPath)).toBe(true);
-
-    // The .hod file should start with "HOD" magic bytes
-    const buf = readFileSync(hodPath);
-    expect(buf[0]).toBe(0x48); // 'H'
-    expect(buf[1]).toBe(0x4f); // 'O'
-    expect(buf[2]).toBe(0x44); // 'D'
-  });
-});
 
 describe("download", () => {
   test("creates a Download recipe", async () => {
@@ -175,18 +142,19 @@ describe("download", () => {
     });
   });
 
-  test("round-trips through encode/decode", async () => {
+  test("round-trips through import and inspect", async () => {
     const recipe = await download({
       url: "https://example.com/bar.tar.xz",
       hash: "b".repeat(64),
     });
 
-    const hodPath = join(TMP, "download-test.hod");
-    await writeHod(recipe, hodPath);
+    const hash = await importToStore(recipe);
+    expect(hash).toBe(recipe.hash);
 
-    const imported = await fromHod(hodPath);
-    expect(imported.hash).toBe(recipe.hash);
-    expect(imported.json).toEqual(recipe.json);
+    const { runHod } = await import("../src/cli.js");
+    const inspectOutput = await runHod(["inspect", hash]);
+    const inspected = JSON.parse(inspectOutput);
+    expect(inspected.url).toBe("https://example.com/bar.tar.xz");
   });
 
   test("rejects invalid hash", async () => {
@@ -194,32 +162,158 @@ describe("download", () => {
   });
 });
 
-describe("fromHod / fromJson", () => {
+describe("unpack", () => {
+  test("creates an Unpack recipe with tar_gz", async () => {
+    const recipe = await unpack({
+      archive_hash: "a".repeat(64),
+      format: "tar_gz",
+    });
+    expect(recipe.hash).toHaveLength(64);
+    expect(recipe.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(recipe.json).toEqual({
+      type: "unpack",
+      archive_hash: "a".repeat(64),
+      format: "tar_gz",
+    });
+  });
+
+  test("creates an Unpack recipe with tar_xz", async () => {
+    const recipe = await unpack({
+      archive_hash: "b".repeat(64),
+      format: "tar_xz",
+    });
+    expect((recipe.json as any).format).toBe("tar_xz");
+  });
+
+  test("round-trips through import and inspect", async () => {
+    const recipe = await unpack({
+      archive_hash: "c".repeat(64),
+      format: "tar_gz",
+    });
+
+    const hash = await importToStore(recipe);
+    expect(hash).toBe(recipe.hash);
+
+    const { runHod } = await import("../src/cli.js");
+    const inspectOutput = await runHod(["inspect", hash]);
+    const inspected = JSON.parse(inspectOutput);
+    expect(inspected.archive_hash).toBe("c".repeat(64));
+    expect(inspected.format).toBe("tar_gz");
+  });
+
+  test("rejects invalid hash", async () => {
+    await expect(unpack({ archive_hash: "short", format: "tar_gz" })).rejects.toThrow(/invalid hash/);
+  });
+
+  test("rejects invalid format", async () => {
+    await expect(unpack({ archive_hash: "a".repeat(64), format: "zip" as any })).rejects.toThrow(/invalid format/);
+  });
+});
+
+describe("fileFromHash", () => {
+  test("creates a non-executable File recipe", async () => {
+    const recipe = await fileFromHash("a".repeat(64));
+    expect(recipe.hash).toHaveLength(64);
+    expect(recipe.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(recipe.json).toEqual({
+      type: "file",
+      content_blob_hash: "a".repeat(64),
+      executable: false,
+    });
+  });
+
+  test("creates an executable File recipe", async () => {
+    const recipe = await fileFromHash("b".repeat(64), { executable: true });
+    expect((recipe.json as any).executable).toBe(true);
+  });
+
+  test("includes resources_hash when provided", async () => {
+    const recipe = await fileFromHash("c".repeat(64), {
+      executable: false,
+      resources_hash: "d".repeat(64),
+    });
+    expect((recipe.json as any).resources_hash).toBe("d".repeat(64));
+  });
+
+  test("round-trips through import and inspect", async () => {
+    const recipe = await fileFromHash("e".repeat(64));
+
+    const hash = await importToStore(recipe);
+    expect(hash).toBe(recipe.hash);
+
+    const { runHod } = await import("../src/cli.js");
+    const inspectOutput = await runHod(["inspect", hash]);
+    const inspected = JSON.parse(inspectOutput);
+    expect(inspected.type).toBe("file");
+    expect(inspected.content_blob_hash).toBe("e".repeat(64));
+  });
+
+  test("rejects invalid content hash", async () => {
+    await expect(fileFromHash("short")).rejects.toThrow(/invalid hash/);
+  });
+
+  test("rejects invalid resources_hash", async () => {
+    await expect(fileFromHash("a".repeat(64), { resources_hash: "bad" })).rejects.toThrow(/invalid resources_hash/);
+  });
+});
+
+describe("fromHod", () => {
   test("fromHod reads a .hod file and returns BuiltRecipe", async () => {
-    // First create a .hod file
+    // First create a .hod file using encodeJson from cli.ts
     const sourcePath = join(TMP, "from-hod-source.txt");
     writeFileSync(sourcePath, "source content");
     const recipe = await fileFromPath(sourcePath);
 
     const hodPath = join(TMP, "from-hod-test.hod");
-    await writeHod(recipe, hodPath);
+    const { encodeJson } = await import("../src/cli.js");
+    await encodeJson(recipe.json, hodPath);
 
     // Now import it
     const imported = await fromHod(hodPath);
     expect(imported.hash).toBe(recipe.hash);
     expect((imported.json as any).type).toBe("file");
   });
+});
 
-  test("fromJson reads a .json file and returns BuiltRecipe", async () => {
-    const sourcePath = join(TMP, "from-json-source.txt");
-    writeFileSync(sourcePath, "source content json");
-    const recipe = await fileFromPath(sourcePath);
+describe("importToStore", () => {
+  test("imports a File recipe to the store and returns the hash", async () => {
+    const recipe = await fileFromHash("f".repeat(64));
+    const hash = await importToStore(recipe);
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    // Same recipe should produce the same hash
+    expect(hash).toBe(recipe.hash);
+  });
 
-    const jsonPath = join(TMP, "from-json-test.json");
-    writeJson(recipe, jsonPath);
+  test("imports a Download recipe to the store", async () => {
+    const recipe = await download({
+      url: "https://example.com/test.tar.gz",
+      hash: "a".repeat(64),
+    });
+    const hash = await importToStore(recipe);
+    expect(hash).toBe(recipe.hash);
+  });
 
-    const imported = await fromJson(jsonPath);
-    expect(imported.hash).toBe(recipe.hash);
-    expect(imported.json).toEqual(recipe.json);
+  test("imports a Process recipe to the store", async () => {
+    const recipe = await process({
+      platform: "x86_64-linux",
+      command: "/bin/true",
+      dependencies: [],
+    });
+    const hash = await importToStore(recipe);
+    expect(hash).toBe(recipe.hash);
+  });
+
+  test("imported recipe is inspectable via hod inspect", async () => {
+    const recipe = await fileFromHash("e".repeat(64), { executable: true });
+    const hash = await importToStore(recipe);
+
+    // Use runHod to verify it's in the store
+    const { runHod } = await import("../src/cli.js");
+    const inspectOutput = await runHod(["inspect", hash]);
+    const inspected = JSON.parse(inspectOutput);
+    expect(inspected.type).toBe("file");
+    expect(inspected.executable).toBe(true);
+    expect(inspected.content_blob_hash).toBe("e".repeat(64));
   });
 });

@@ -1218,3 +1218,110 @@ The important property is:
 > Normal packages no longer directly execute or mount the bootstrap seed tools.
 
 That is the principled bootstrap boundary.
+
+---
+
+## Session Log: 2026-05-05
+
+### Problem Discovered
+
+All builds were broken because the sandbox was changed to remove host bind-mounts (`/bin`, `/usr`, `/lib`, `/lib64`, `/etc`). This meant `./configure` scripts with `#!/bin/sh` shebangs could not execute inside the hermetic sandbox — the kernel returned ENOENT for `/bin/sh`, which busybox reported as "not found".
+
+### Solution: `hermeticPreamble()` helper
+
+Added a new SDK helper function at `js/src/preamble.ts`:
+
+```ts
+const preamble = hermeticPreamble({
+  shell: "seed",          // creates /bin/sh → /deps/seed/bin/busybox
+  muslLinker: "seed",     // creates /lib/ld-musl-x86_64.so.1
+  glibcLinker: "glibc",   // creates /lib64/ld-linux-x86-64.so.2
+  sysroot: { glibc: "glibc", linuxHeaders: "linux-headers" },
+});
+```
+
+This generates a shell snippet that each recipe interpolates at the top of its build script. Every symlink points into `/deps/<name>/` — nothing leaks to the host. All options are opt-in.
+
+Exported from `js/src/index.ts` alongside the existing SDK functions.
+
+### Files Changed
+
+**New SDK code:**
+- `js/src/preamble.ts` — `hermeticPreamble()` helper
+- `js/src/index.ts` — export the helper
+
+**New stage2 recipes (all using the helper):**
+- `recipes/stage2/gmp.ts` — stage2 GMP (glibc-hosted static lib)
+- `recipes/stage2/mpfr.ts` — stage2 MPFR
+- `recipes/stage2/mpc.ts` — stage2 MPC
+- `recipes/stage2/gcc-stage2-c.ts` — C-only stage2 GCC (the key deliverable)
+- `recipes/stage2/validate-gcc-stage2-c.ts` — validation recipe
+
+**Updated existing recipes (all converted to use `hermeticPreamble`):**
+
+Shims (seed-only builds):
+- `recipes/shims/bison.ts`
+- `recipes/shims/gawk.ts`
+- `recipes/shims/m4.ts`
+- `recipes/shims/make.ts`
+- `recipes/shims/patch.ts`
+- `recipes/shims/sed.ts`
+- `recipes/shims/shims-bundle.ts`
+
+Cross (seed + glibc):
+- `recipes/cross/gmp.ts`
+- `recipes/cross/mpfr.ts`
+- `recipes/cross/mpc.ts`
+- `recipes/cross/linux-headers.ts`
+- `recipes/cross/glibc.ts`
+- `recipes/cross/glibc-runtime.ts`
+- `recipes/cross/gcc-stage1.ts`
+- `recipes/cross/validate-stage1.ts`
+- `recipes/cross/validate-complex.ts`
+- `recipes/cross/run-packed-hello.ts`
+
+Native (seed + glibc + sysroot):
+- `recipes/native/binutils.ts`
+- `recipes/native/bash.ts`
+- `recipes/native/coreutils.ts`
+- `recipes/native/tar.ts`
+- `recipes/native/grep.ts`
+- `recipes/native/diffutils.ts`
+- `recipes/native/findutils.ts`
+- `recipes/native/gawk.ts`
+- `recipes/native/make.ts`
+- `recipes/native/patch.ts`
+- `recipes/native/sed.ts`
+- `recipes/native/validate-bash.ts`
+- `recipes/native/validate-reloc.ts`
+- `recipes/native/validate-selfhost.ts`
+- `recipes/native/ncurses/ncurses.ts`
+- `recipes/native/ncurses/debug.ts`
+- `recipes/native/cbonsai/cbonsai.ts`
+
+Bootstrap:
+- `recipes/bootstrap/validate-seed.ts`
+- `recipes/bootstrap/python-install.ts`
+
+### Build Verification
+
+Successfully built:
+- **make shim** (bc75540...) — first hermetic build with the preamble, 6.9s ✓
+- **binutils** (d7ea62bd...) — full toolchain build, 145s ✓
+
+These are the foundation for the entire stage2 dependency chain.
+
+### Next Steps
+
+1. **Build glibc and linux-headers** — these are needed before stage2 GMP/MPFR/MPC
+2. **Build stage2 GMP, MPFR, MPC** — the math libraries for GCC
+3. **Build gcc-stage2-c** — the big one. This will be a long build.
+4. **Run validate-gcc-stage2-c** — confirm it's glibc-linked and can compile+run C programs
+5. If C works: gcc-stage2 with C++, native-toolchain bundle, move ncurses/cbonsai off seed
+
+### Known Risks
+
+- **gcc-stage2-c build time**: GCC is a very large build. Expect 20-60 minutes in the sandbox.
+- **Musl→glibc cross compilation**: gcc-stage1 runs on musl but targets glibc. The `--host=x86_64-linux-gnu` / `--build=x86_64-linux-musl` configure triplet requires careful handling.
+- **gcc-stage2-c runtime**: The produced compiler will be dynamically linked against glibc. At validation time, `/lib64/ld-linux-x86-64.so.2` must resolve. The preamble handles this.
+- **Source tarball extraction**: Some recipes use `tar xf /deps/source/source` which relies on the source dep name being "source". This is the existing convention.

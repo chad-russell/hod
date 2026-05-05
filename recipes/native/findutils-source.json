@@ -1,6 +1,0 @@
-{
-  "type": "download",
-  "url": "https://ftp.gnu.org/gnu/findutils/findutils-4.9.0.tar.xz",
-  "hash_algorithm": "blake3",
-  "expected_hash": "c1bd89ebea8e131e0b5271162b026667bce693ea834ff4b74b42890694ee0905"
-}

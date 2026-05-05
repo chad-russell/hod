@@ -1,24 +1,27 @@
 # Recipe Compiler Guide
 
-**Status:** Mostly implemented. The Rust CLI helpers and Bun/TypeScript SDK exist and are the current recipe-authoring path.
+**Status:** Implemented. The Rust CLI helpers and Bun/TypeScript SDK exist and are the current recipe-authoring path.
 
-This guide replaces the old recipe-compiler design/task docs. It is meant to be practical: how to generate `.hod` files today, what is implemented, and what is still deferred.
+This guide is practical: how recipes are authored, imported to the store, and built today.
 
 ## Overview
 
-Hod recipes are still deterministic binary `.hod` files. The TypeScript SDK is just a convenience layer for creating those files from Bun/TS code:
+Hod recipes are deterministic binary records. The TypeScript SDK is the authoring layer; recipes are imported directly into the Hod store (no `.hod` files on disk in `recipes/`):
 
 ```text
-TypeScript recipe code
+TypeScript recipe code (.ts)
     │  Bun evaluates imports in dependency order
     ▼
-TS SDK helpers
-    │  shell out to hod CLI
+TS SDK helpers (importToStore)
+    │  shell out to `hod import-from-json`
     ▼
-hod encode / hod decode / hod hash-file
-    │
+Hod store (SQLite + sharded blobs)
+    │  recipe bytes stored by BLAKE3 hash
     ▼
-.hod binary recipes + optional .json snapshots
+hod build --hash <hex>
+    │  reads recipe from store, builds recursively
+    ▼
+build output (also in the store)
 ```
 
 The SDK is intentionally **single-phase**:
@@ -30,47 +33,44 @@ The SDK is intentionally **single-phase**:
 
 For the deferred path-ref resolver design, see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md). It is not implemented.
 
-## Rust CLI Helpers
+## Debugging Tools
 
-The SDK delegates all encoding and hashing to the `hod` binary.
+### `hod inspect <hash>`
 
-### `hod encode`
-
-```bash
-hod encode <input.json> [--output <output.hod>]
-```
-
-- Reads JSON.
-- Deserializes into `Recipe` with `serde_json`.
-- Encodes with `Recipe::encode()`.
-- Prints the recipe hash (`blake3(.hod bytes)`) to stdout.
-- Writes binary `.hod` when `--output` is provided.
-
-### `hod decode`
+Print a recipe's JSON representation directly from the store. No `.hod` file needed.
 
 ```bash
-hod decode <input.hod> [--output <output.json>]
+hod inspect 4400c77b29493f69878e9f87661759b181aa699e346c9dea902861badf020d93
 ```
 
-- Reads binary `.hod`.
-- Decodes with `Recipe::decode()`.
-- Writes pretty JSON to `--output`, or stdout if omitted.
+### `hod export-recipe <hash> -o <path>`
 
-### `hod hash-file`
+Write the raw `.hod` binary from the store to a file for deep debugging.
 
 ```bash
-hod hash-file <file>
+hod export-recipe 4400c77b... -o /tmp/busybox.hod
 ```
 
-Computes the BLAKE3 hash of a file’s raw bytes. For File recipes, this is the `content_blob_hash`, not the recipe hash.
+### `hod decode <file.hod>`
 
-### `hod import-recipe`
+Decode a `.hod` file on disk to JSON. Useful with `export-recipe`.
 
 ```bash
-hod import-recipe <recipe.hod>
+hod export-recipe <hash> -o /tmp/test.hod
+hod decode /tmp/test.hod
 ```
 
-Imports an existing `.hod` recipe into the default store. Current limitation: no `--store` flag.
+### `hod encode <input.json> [--output <output.hod>]`
+
+Encode a JSON recipe to binary. Prints the recipe hash to stdout.
+
+### `hod hash-file <file>`
+
+Compute the BLAKE3 hash of a file's raw bytes. For File recipes, this is the `content_blob_hash`, not the recipe hash.
+
+### `hod import-recipe <recipe.hod>`
+
+Import an existing `.hod` recipe file into the store. Supports `--store` flag.
 
 ## TypeScript SDK
 
@@ -79,13 +79,13 @@ The SDK lives in `js/src/` and is exported from `js/src/index.ts`.
 ```typescript
 import {
   fileFromPath,
+  fileFromHash,
   download,
+  unpack,
   process,
   dep,
   fromHod,
-  fromJson,
-  writeHod,
-  writeJson,
+  importToStore,
 } from "hod-sdk";
 ```
 
@@ -120,6 +120,17 @@ Implementation:
 
 Note: this hashes the file, but does not by itself store the file blob in the Hod store.
 
+### `fileFromHash(hash, options?)`
+
+Creates a File recipe from a known content hash (no file on disk needed).
+
+```typescript
+const busybox = await fileFromHash(
+  "41eee14fead1f5f637e613b5bb865caab4fd3624f6bf5ebbe5280de5a8a6abac",
+  { executable: true },
+);
+```
+
 ### `download({ url, hash })`
 
 Creates a Download recipe with BLAKE3 verification.
@@ -142,6 +153,17 @@ The SDK validates that `hash` is a 64-character lowercase hex string and emits:
 }
 ```
 
+### `unpack({ archive_hash, format })`
+
+Creates an Unpack recipe.
+
+```typescript
+const toolchain = await unpack({
+  archive_hash: "a77bdfcf09a27aacf21aba8cd4282e7adefc83f91769e0742864b77d0dd46fb2",
+  format: "tar_gz",
+});
+```
+
 ### `process(definition)`
 
 Creates a Process recipe.
@@ -153,7 +175,7 @@ const pkg = await process({
   args: ["sh", "-c", "echo hello > $OUT/message.txt"],
   env: { CC: "/deps/gcc/bin/gcc" },
   dependencies: [
-    dep("seed", await fromHod("../bootstrap/seed-root.hod")),
+    dep("seed", seedRecipe),
     dep("source", source),
   ],
   unsafe_flags: 0,
@@ -190,44 +212,53 @@ dep("source", await fromHod("src.hod"));
 - a `BuiltRecipe`, or
 - a 64-character lowercase hex recipe hash.
 
-Path strings are intentionally rejected. Use `fromHod()` or `fromJson()` explicitly so it is clear when a file is being decoded/encoded.
+Path strings are intentionally rejected. Use `fromHod()` explicitly so it is clear when a file is being decoded/encoded.
 
-### `fromHod(path)` and `fromJson(path)`
+### `fromHod(path)`
 
-Import existing recipe files into TS code.
+Import an existing `.hod` recipe file into TS code.
 
 ```typescript
 const glibc = await fromHod("../cross/glibc.hod");
-const seed = await fromJson("../bootstrap/seed-root.json");
 ```
 
-- `fromHod()` runs `hod decode` to get JSON and `hod hash-file` to get the recipe hash.
-- `fromJson()` reads JSON and runs `hod encode` to get the recipe hash.
+`fromHod()` runs `hod decode` to get JSON and `hod hash-file` to get the recipe hash.
 
-### `writeHod(recipe, path)` and `writeJson(recipe, path)`
+### `importToStore(recipe)`
 
-Write generated recipes to disk.
+Import a recipe directly into the Hod store. Returns the recipe hash. This is the primary way recipes go from TS to the store — no `.hod` file is written to disk.
 
 ```typescript
-await writeHod(pkg, "./pkg.hod");
-writeJson(pkg, "./pkg.json");
+await importToStore(recipe);
 ```
 
-`writeHod()` shells out to `hod encode --output`. `writeJson()` is pure TypeScript.
+`importToStore()` shells out to `hod import-from-json`, piping the recipe JSON on stdin. The recipe is encoded to binary and stored by its BLAKE3 hash.
 
-## Example: Single Package
+## Example: Leaf Recipe (Download)
 
 ```typescript
-import { download, process, dep, fromHod, writeHod, writeJson } from "hod-sdk";
+//! hello source download.
+import { download, importToStore } from "../../js/src/index.js";
 
-const source = await download({
+const recipe = await download({
   url: "https://example.com/hello-1.0.tar.gz",
   hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 });
 
-const seed = await fromHod("../bootstrap/seed-root.hod");
+await importToStore(recipe);
+export const helloSourceRecipe = recipe;
+```
 
-const hello = await process({
+## Example: Process Recipe with TS Imports
+
+```typescript
+//! hello build recipe.
+import { process, dep, importToStore } from "../../js/src/index.js";
+import { helloSourceRecipe } from "./hello-source.js";
+import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { shimsBundleRecipe } from "../shims/shims-bundle.js";
+
+const recipe = await process({
   platform: "x86_64-linux",
   command: "/deps/seed/bin/busybox",
   args: ["sh", "-c", `
@@ -239,24 +270,27 @@ const hello = await process({
     make install DESTDIR=$OUT
   `],
   dependencies: [
-    dep("seed", seed),
-    dep("source", source),
+    dep("seed", seedRootRecipe),
+    dep("shims", shimsBundleRecipe),
+    dep("source", helloSourceRecipe),
   ],
 });
 
-await writeHod(source, "./hello-source.hod");
-writeJson(source, "./hello-source.json");
-
-await writeHod(hello, "./hello.hod");
-writeJson(hello, "./hello.json");
-
-console.log(hello.hash);
+await importToStore(recipe);
+export const helloRecipe = recipe;
 ```
 
-Run with Bun:
+Run with Bun (imports recipe to store):
 
 ```bash
 bun run recipes/native/hello/hello.ts
+```
+
+Then build by hash:
+
+```bash
+# Get the hash from the TS output or inspect
+hod build --hash <recipe-hash>
 ```
 
 ## Current Project Layout
@@ -266,33 +300,33 @@ js/
   src/
     index.ts      public exports
     cli.ts        hod subprocess wrappers
-    file.ts       fileFromPath()
+    file.ts       fileFromPath(), fileFromHash()
     download.ts   download()
+    unpack.ts     unpack()
     process.ts    process()
     dep.ts        dep()
-    import.ts     fromHod(), fromJson()
-    output.ts     writeHod(), writeJson()
+    import.ts     fromHod(), importToStore()
   tests/          Bun tests
+recipes/
+  **/*.ts         TypeScript recipe files — sole source of truth
+                 (no .hod or .json files)
 ```
 
-Recipe experiments and migrations currently live beside checked-in recipes under `recipes/`.
+## Recipe Authoring Workflow
 
-## Migration Workflow
+1. Create a `.ts` file that imports dependencies from other `.ts` recipe modules.
+2. Use SDK constructors (`download()`, `process()`, `fileFromHash()`, `unpack()`) to define the recipe.
+3. Call `importToStore(recipe)` to import the recipe into the Hod store.
+4. Export the recipe for downstream `.ts` files to import.
+5. Run with `bun run <file>.ts` to import recipes to the store.
+6. Build with `hod build --hash <hash>` or `hod build <file.hod>`.
 
-1. Pick an existing JSON recipe.
-2. Create a `.ts` file beside it.
-3. Use `fromHod()` / `fromJson()` for existing dependencies.
-4. Generate `.hod` and `.json` outputs with `writeHod()` / `writeJson()`.
-5. Compare output hashes and, when expected, binary identity with the hand-written `.hod`.
-6. Commit both the TS source and generated recipe files if they are intended to be tracked.
-
-Useful commands:
+Useful commands for verification:
 
 ```bash
-hod decode old.hod --output old.json
-hod encode generated.json --output generated.hod
-hod hash-file generated.hod
-cmp old.hod generated.hod
+hod inspect <hash>                 # inspect recipe JSON from the store
+hod export-recipe <hash> -o out.hod # export binary for deep debugging
+hod decode <file.hod>              # decode an exported .hod file
 ```
 
 ## Implemented vs Deferred
@@ -302,20 +336,25 @@ Implemented:
 - `hod encode`
 - `hod decode`
 - `hod hash-file`
-- `hod import-recipe` (default store only)
+- `hod import-recipe` (with `--store` flag)
+- `hod import-from-json` (reads JSON from stdin, imports to store)
+- `hod inspect <hash>` (reads recipe from store, prints JSON)
+- `hod export-recipe <hash> -o <path>` (writes raw recipe bytes to file)
+- `hod build --hash <hex>` (build from store by recipe hash)
 - TS `fileFromPath()`
+- TS `fileFromHash()`
 - TS `download()`
+- TS `unpack()`
 - TS `process()`
 - TS `dep()`
-- TS `fromHod()` / `fromJson()`
-- TS `writeHod()` / `writeJson()`
+- TS `fromHod()`
+- TS `importToStore()`
+- TS `importFromJson()`
 - Rust `Unpack` encode/decode support
 
 Deferred / caveats:
 
-- TS `importToStore()` helper is not implemented.
-- `hod import-recipe` does not accept `--store`.
-- Directory, Symlink, and Unpack TS constructors are not implemented.
+- Directory and Symlink TS constructors are not implemented.
 - Rust `Unpack` building is a stub (`build_unpack` returns unsupported).
 - `hod resolve` / path refs are deferred; see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md).
 - Some E2E process tests are ignored because their fixtures still assume `/bin/bash`; they need hermetic shell fixtures to run inside Hod's sandbox.

@@ -4,7 +4,7 @@
 //! They exercise the real `hod encode`, `hod decode`, `hod hash-file` commands.
 
 import { describe, test, expect } from "bun:test";
-import { encode, decode, hashFile, encodeJson, runHod } from "../src/cli.js";
+import { encode, decode, hashFile, encodeJson, importFromJson, runHod } from "../src/cli.js";
 import { writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -84,5 +84,27 @@ describe("cli", () => {
 
   test("runHod throws on invalid command", async () => {
     await expect(runHod(["nonexistent-subcommand"])).rejects.toThrow();
+  });
+
+  test("importFromJson imports a recipe and returns its hash", async () => {
+    const json = {
+      type: "file",
+      content_blob_hash: "c".repeat(64),
+      executable: false,
+    };
+
+    const hash = await importFromJson(json);
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+
+    // Hash should match what encodeJson produces (same recipe → same hash)
+    const encodeHash = await encodeJson(json);
+    expect(hash).toBe(encodeHash);
+  });
+
+  test("importFromJson rejects invalid JSON", async () => {
+    await expect(
+      importFromJson({ type: "not_a_type" } as any),
+    ).rejects.toThrow();
   });
 });

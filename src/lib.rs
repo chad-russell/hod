@@ -20,5 +20,6 @@ pub mod encoding;
 pub mod hash;
 pub mod packed;
 pub mod recipe;
+pub mod relocate;
 pub mod sandbox;
 pub mod store;

@@ -20,8 +20,8 @@ src/
   build.rs         DAG resolution, caching, artifact staging, recipe builders
   sandbox.rs       Linux sandbox setup for Process recipes
   download.rs      Download builder using external `curl`
-  packed.rs        current packed-output support for `File.resources_hash`
-  relocate.rs      store-relative ELF relocation prototype/design code; not wired into `build.rs`
+  packed.rs        packed-output support for `File.resources_hash` (RUNPATH patching + AT_EXECFN bootstrap)
+  relocate.rs      store-relative ELF relocation pass used for Process `runtime_deps`
 ```
 
 ### TypeScript SDK
@@ -47,7 +47,7 @@ plans/             planning notes, not necessarily current implementation
 
 - `docs/recipe-compiler-guide.md` — current practical guide for authoring recipes with the Bun/TypeScript SDK and `hod encode`/`decode`/`hash-file`.
 - `docs/debugging-builds.md` — current build-debugging workflow. `hod shell` and `hod import-file` are not implemented in this checkout.
-- `docs/relocatable-binaries-guide.md` — current packed executable behavior plus future store-relative/AT_EXECFN relocation design. Read the status notes carefully before implementing relocation.
+- `docs/relocatable-binaries-guide.md` — current packed executable behavior and store-relative/AT_EXECFN relocation design/status.
 - `docs/evaluator-resolver-prd.md` — deferred resolver/path-reference design. Not implemented; current recipes use concrete BLAKE3 dependency hashes.
 
 ## Core Concepts and Contracts
@@ -78,15 +78,15 @@ Current recipe type tags:
 | `Process` | `0x05` | buildable via sandbox |
 | `Unpack` | `0x06` | encodes/decodes; build is currently a stub |
 
-Encoding rules: little-endian integers; UTF-8 strings with fixed-width length prefixes; raw 32-byte hashes; presence byte for optional fields; no padding or field tags. Lists that represent maps/sets must be sorted by their key (`Directory.entries`, process env, process dependencies).
+Encoding rules: little-endian integers; UTF-8 strings with fixed-width length prefixes; raw 32-byte hashes; presence byte for optional fields; no padding or field tags. Lists that represent maps/sets must be sorted by their key (`Directory.entries`, process env, process dependencies, process `runtime_deps`). Process `runtime_deps` is a backward-compatible tail field: absent in older recipes, or encoded as an optional list when present.
 
 ## Current Caveats Agents Should Know
 
 - `PRD.md` is absent; do not add references to it unless it is restored.
 - `hod shell`, `hod import-file`, and `hod resolve` are not current CLI commands.
-- `runtime_deps` exists in Process JSON/TS SDK but is not encoded into `.hod` bytes and is not currently acted on by `build.rs`.
-- `src/relocate.rs` is prototype code and is not exported from `lib.rs` or integrated into the builder.
-- Some docs/tests mention AT_EXECFN bootstrap functions that are not present in current `src/packed.rs`; verify code before relying on that design.
+- `runtime_deps` is encoded as a backward-compatible Process tail field and is acted on by `build.rs` via `src/relocate.rs`.
+- `src/relocate.rs` is an implemented prototype exported from `lib.rs` and integrated into the Process builder.
+- AT_EXECFN bootstrap APIs (`parse_interp`, `patch_runpath_to`, `inject_bootstrap`) are present in `src/packed.rs`; heavyweight validation tests remain ignored by default.
 - `Unpack` recipes can be represented and hashed, but `build_unpack` returns “not yet implemented”.
 - `TASKS.md` is older session context and may be stale; cross-check it against source before following it.
 

@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::encoding::{EncodeError, Encoder, Decoder};
+use crate::encoding::{Decoder, EncodeError, Encoder};
 
 /// Convenience alias for recipe decode results.
 pub type Result<T> = std::result::Result<T, EncodeError>;
@@ -73,7 +73,11 @@ pub struct RecipeFile {
     /// Whether the file should be marked executable.
     pub executable: bool,
     /// Optional: hash of a Directory recipe providing packed resources.
-    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "option_hash_serde"
+    )]
     pub resources_hash: Option<Hash>,
 }
 
@@ -191,14 +195,26 @@ pub struct RecipeProcess {
     /// Named dependencies, sorted by name.
     pub dependencies: Vec<ProcessDependency>,
     /// Optional working directory contents.
-    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "option_hash_serde"
+    )]
     pub workdir_hash: Option<Hash>,
     /// Optional initial output directory contents.
-    #[serde(skip_serializing_if = "Option::is_none", default, with = "option_hash_serde")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "option_hash_serde"
+    )]
     pub output_scaffold_hash: Option<Hash>,
     /// Bitmask of unsafe flags. Bit 0 = allow networking.
     pub unsafe_flags: u8,
-    /// Runtime dependencies for ELF relocation (not encoded in binary format).
+    /// Optional list of dependencies needed at runtime for store-relative ELF relocation.
+    ///
+    /// Each name must be a subset of `dependencies`. When present, the builder
+    /// scans ELF binaries in the output, resolves DT_NEEDED against these deps,
+    /// and patches RUNPATH + bootstrap interpreter paths with store-relative paths.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub runtime_deps: Option<Vec<String>>,
 }
@@ -296,6 +312,13 @@ impl Recipe {
                 enc.optional(p.workdir_hash.as_ref(), |e, h| e.hash(h));
                 enc.optional(p.output_scaffold_hash.as_ref(), |e, h| e.hash(h));
                 enc.u8(p.unsafe_flags);
+                // Backward-compatible tail extension: omitted when absent so
+                // legacy Process recipe bytes/hashes remain unchanged. When
+                // present, write a presence byte followed by the sorted list.
+                if let Some(runtime_deps) = p.runtime_deps.as_ref() {
+                    enc.u8(0x01);
+                    enc.list_u32(runtime_deps, |e, dep| e.str_u16(dep));
+                }
             }
         }
         enc.into_bytes()
@@ -425,11 +448,10 @@ impl Recipe {
     fn decode_unpack(dec: &mut Decoder) -> Result<Self> {
         let archive_hash = dec.hash()?;
         let format_tag = dec.u8()?;
-        let format =
-            ArchiveFormat::from_u8(format_tag).ok_or(EncodeError::InvalidValue {
-                field: "archive format".into(),
-                value: format!("0x{format_tag:02x}"),
-            })?;
+        let format = ArchiveFormat::from_u8(format_tag).ok_or(EncodeError::InvalidValue {
+            field: "archive format".into(),
+            value: format!("0x{format_tag:02x}"),
+        })?;
         Ok(Recipe::Unpack(RecipeUnpack {
             archive_hash,
             format,
@@ -453,6 +475,23 @@ impl Recipe {
         let workdir_hash = dec.optional(|d| d.hash())?;
         let output_scaffold_hash = dec.optional(|d| d.hash())?;
         let unsafe_flags = dec.u8()?;
+        let runtime_deps = if dec.remaining() == 0 {
+            None
+        } else {
+            // Backward/transition compatibility: some checked-in recipes predate
+            // this tail field entirely, while others encode it as a normal
+            // optional (0x00 absent, 0x01 present + list).
+            match dec.u8()? {
+                0x00 => None,
+                0x01 => Some(dec.list_u32(|d| d.str_u16())?),
+                v => {
+                    return Err(EncodeError::InvalidValue {
+                        field: "process runtime_deps presence byte".into(),
+                        value: format!("expected 0x00 or 0x01, got 0x{v:02x}"),
+                    });
+                }
+            }
+        };
 
         // Validate env sorted by key
         for window in env.windows(2) {
@@ -476,6 +515,19 @@ impl Recipe {
             }
         }
 
+        // Validate runtime_deps sorted by name when present.
+        if let Some(ref deps) = runtime_deps {
+            for window in deps.windows(2) {
+                if window[0] >= window[1] {
+                    return Err(EncodeError::InvalidSortOrder {
+                        field: "process runtime_deps".into(),
+                        first: window[0].clone(),
+                        second: window[1].clone(),
+                    });
+                }
+            }
+        }
+
         Ok(Recipe::Process(RecipeProcess {
             platform,
             command,
@@ -485,7 +537,7 @@ impl Recipe {
             workdir_hash,
             output_scaffold_hash,
             unsafe_flags,
-            runtime_deps: None,
+            runtime_deps,
         }))
     }
 }

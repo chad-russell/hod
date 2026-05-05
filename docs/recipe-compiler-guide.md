@@ -173,7 +173,7 @@ Optional fields supported by the SDK:
 - `output_scaffold_hash`
 - `runtime_deps`
 
-Caveat: `runtime_deps` is currently JSON-only. It is not encoded into `.hod` bytes and `build.rs` does not act on it yet. See [`relocatable-binaries-guide.md`](relocatable-binaries-guide.md).
+`runtime_deps` is encoded as a backward-compatible Process tail field and is used by `build.rs` to run store-relative ELF relocation. See [`relocatable-binaries-guide.md`](relocatable-binaries-guide.md).
 
 ### `dep(name, source)`
 
@@ -317,6 +317,5 @@ Deferred / caveats:
 - `hod import-recipe` does not accept `--store`.
 - Directory, Symlink, and Unpack TS constructors are not implemented.
 - Rust `Unpack` building is a stub (`build_unpack` returns unsupported).
-- `runtime_deps` is JSON-only and not used by the builder.
 - `hod resolve` / path refs are deferred; see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md).
-- Full `cargo test -- --test-threads=1` currently does not compile until packed-bootstrap tests/source are reconciled.
+- Some E2E process tests are ignored because their fixtures still assume `/bin/bash`; they need hermetic shell fixtures to run inside Hod's sandbox.

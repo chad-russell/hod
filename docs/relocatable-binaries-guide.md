@@ -4,7 +4,7 @@
 
 Hod’s goal is to produce binaries that run regardless of where the store lives on disk. This guide explains how, why, and what the constraints are.
 
-> Current status: the implemented `File.resources_hash` packed-output path in `src/packed.rs` only patches an existing ELF RPATH/RUNPATH to `$ORIGIN/../resources/lib/` and assembles `bin/binary` plus `resources/lib/`. AT_EXECFN bootstrap injection and store-relative relocation are design/prototype work, not current builder behavior. `src/relocate.rs` is not exported from `lib.rs` or wired into `build.rs` and references future `packed` APIs that are not currently present.
+> Current status: `File.resources_hash` packed outputs use the restored AT_EXECFN bootstrap path when possible, patch RUNPATH/RPATH to `$ORIGIN/../lib`, and assemble `bin/binary` plus `lib/`. Process recipes with encoded `runtime_deps` run the store-relative relocation pass in `src/relocate.rs` after output staging.
 
 ---
 
@@ -58,42 +58,41 @@ A `File` recipe with `resources_hash` triggers the current packed-output pipelin
 <output>/
 ├── bin/
 │   └── binary        # original file, with RUNPATH patched when possible
-└── resources/
-    └── lib/
-        ├── libc.so.6
-        └── ...
+└── lib/
+    ├── libc.so.6
+    └── ...
 ```
 
 Current behavior in `src/packed.rs`:
 
 1. Read the file blob from the store.
-2. If it is an ELF file, try to patch an existing RPATH/RUNPATH in place to `$ORIGIN/../resources/lib/`.
-3. Store the patched binary blob if patching succeeded.
-4. Assemble a directory artifact containing `bin/binary` and `resources/lib`.
+2. If it is a supported dynamic ELF, inject the AT_EXECFN bootstrap using `../lib/ld-linux-x86-64.so.2`.
+3. Patch an existing RPATH/RUNPATH in place to `$ORIGIN/../lib` when possible.
+4. Store the patched binary blob and assemble `bin/binary` plus `lib/`.
 
 Important constraints:
 
 - Hod does **not** currently add a new RUNPATH when one is absent.
 - The existing RPATH/RUNPATH must be long enough for in-place replacement.
-- This path does **not** currently solve `PT_INTERP`; the dynamic linker path remains whatever is in the ELF.
-- There is no `PackedMode` enum in current `src/packed.rs`.
+- AT_EXECFN bootstrap injection is currently implemented for x86_64 ELF binaries; unsupported/static binaries fall back to RUNPATH-only behavior.
+- `PackedMode` exists in `src/packed.rs`; bootstrap mode is the default, with launcher mode retained as fallback code.
 
-## 4. AT_EXECFN Bootstrap Design (Not Implemented)
+## 4. AT_EXECFN Bootstrap Design (Implemented for x86_64)
 
-The intended bootstrap design is still useful background, but it is not current implementation. The design is:
+The implemented bootstrap design is:
 
 1. Convert `PT_INTERP` into a `PT_LOAD` containing bootstrap code.
 2. Append bootstrap metadata, including the original entry point and a relative interpreter path.
 3. Rewrite `e_entry` to point at the bootstrap.
 4. At runtime, read `AT_EXECFN` to locate the executable, map the intended dynamic linker, patch aux-vector/program-header state, and jump to the linker.
 
-The expected advantage is direct execution without a wrapper process, while avoiding a fixed absolute store path for `PT_INTERP`. This work depends on APIs such as `inject_bootstrap` that are referenced by prototype/tests but are not currently present in `src/packed.rs`.
+The advantage is direct execution without a wrapper process, while avoiding a fixed absolute store path for `PT_INTERP`. The core APIs are `parse_interp`, `patch_runpath_to`, and `inject_bootstrap` in `src/packed.rs`.
 
 ---
 
 ## 5. Store-Relative Relocation (New Design)
 
-**Status:** Design/prototype. `src/relocate.rs` sketches this pipeline, but it is not exported or called by the builder.
+**Status:** Implemented prototype. `src/relocate.rs` is exported and called by the Process builder when `runtime_deps` is present in the decoded recipe.
 
 ### 5.1 Motivation
 
@@ -148,7 +147,7 @@ The relative path from a binary to its dependencies depends on the **output hash
 1. **Build phase**: compile the binary with a long dummy RUNPATH (reserves space in the ELF for patching).
 2. **Relocation phase**: after all dependency outputs are known, patch the RUNPATH and bootstrap interp path to the correct store-relative paths.
 
-The current packed-output system already relies on reserving enough space in an existing RPATH/RUNPATH for in-place patching (dummy RUNPATH → `$ORIGIN/../resources/lib/`). Store-relative would change the target paths and make relocation part of the Process-output pipeline.
+The current packed-output system already relies on reserving enough space in an existing RPATH/RUNPATH for in-place patching (dummy RUNPATH → `$ORIGIN/../lib`). Store-relative uses the same in-place patching mechanism with paths into sibling store outputs.
 
 ### 5.5 How It Works
 
@@ -226,10 +225,10 @@ This is passed to the bootstrap as metadata (the same mechanism as today's `../l
 The transition from "copy everything" to "store-relative" is incremental:
 
 1. **Keep the existing `File` + `resources_hash` pipeline** working.
-2. **Implement/export the missing ELF bootstrap APIs** or choose another `PT_INTERP` strategy.
-3. **Wire store-relative relocation into `build.rs`** after Process output capture/staging.
-4. **Make `runtime_deps` semantically real** — it currently exists in JSON/TS but is not encoded into `.hod` bytes and is not used by the builder.
-5. **Migrate recipes incrementally** — bash, coreutils, etc. are candidate consumers once the builder path exists.
+2. **Use the restored ELF bootstrap APIs** for packed outputs and store-relative relocation.
+3. **Run store-relative relocation from `build.rs`** after Process output capture/staging.
+4. **Use encoded `runtime_deps`** to select which dependency outputs provide runtime libraries.
+5. **Migrate recipes incrementally** — bash, coreutils, etc. are candidate consumers of the Process relocation path.
 
 Longer term, the evaluator can automate this: when producing a Process recipe for a dynamically linked binary, it automatically adds `runtime_deps` and the dummy RUNPATH LDFLAGS.
 
@@ -237,7 +236,7 @@ Longer term, the evaluator can automate this: when producing a Process recipe fo
 
 ## 6. glibc Version Requirement for the Bootstrap Design
 
-The AT_EXECFN bootstrap design requires **glibc ≥ 2.41** in the bundled runtime. This is not relevant to the current RPATH-only `File.resources_hash` implementation except as context for future bootstrap work.
+The AT_EXECFN bootstrap design requires **glibc ≥ 2.41** in the bundled runtime.
 
 ### Why
 
@@ -276,10 +275,10 @@ The hermetic toolchain now builds **glibc 2.41** (upgraded from 2.38). Version 2
 Builds run in hermetic sandboxes with declared dependencies only. Already Hod's core model. ✅
 
 ### Layer 2: Store-relative RUNPATH
-Outputs use `$ORIGIN`-relative RUNPATH entries pointing at other store outputs. No copying of shared libraries. Dependencies live exactly once in the store. **Prototype/design only.**
+Outputs use `$ORIGIN`-relative RUNPATH entries pointing at other store outputs. No copying of shared libraries. Dependencies live exactly once in the store. **Implemented prototype via `runtime_deps`.**
 
 ### Layer 3: Bootstrap for PT_INTERP
-AT_EXECFN bootstrap injection is the preferred design for the kernel's absolute `PT_INTERP` requirement without a fixed store root. **Not implemented in current `src/packed.rs`.**
+AT_EXECFN bootstrap injection is the preferred design for the kernel's absolute `PT_INTERP` requirement without a fixed store root. **Implemented for x86_64 in `src/packed.rs`.**
 
 ### Layer 4: Automatic relocation in the builder
 Target behavior: when a Process recipe declares `runtime_deps`, the builder automatically:
@@ -341,7 +340,7 @@ The future AT_EXECFN bootstrap needs testing across:
 - Binaries with and without existing RUNPATH
 - Other architectures if Hod supports them
 
-Current caveat: `tests/at_execfn_validation.rs` references bootstrap APIs that are not present in current `src/packed.rs`, so the test target does not currently compile. Treat the bootstrap test matrix below as desired coverage after the implementation is restored.
+Current caveat: `tests/at_execfn_validation.rs` is intentionally ignored by default because it builds the heavyweight GCC/glibc chain, but it now compiles against the restored bootstrap APIs.
 
 Store-relative additionally needs:
 - Multi-dependency RUNPATH (binary depending on libs from multiple store outputs)

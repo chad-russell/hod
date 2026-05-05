@@ -146,8 +146,8 @@ fn patch_runpath_in_place_success() {
             let rpath_str =
                 std::str::from_utf8(&data[offset as usize..offset as usize + len - 1]).unwrap();
             assert_eq!(
-                rpath_str, "$ORIGIN/../resources/lib/",
-                "RUNPATH should be patched to $ORIGIN/../resources/lib/"
+                rpath_str, "$ORIGIN/../lib",
+                "RUNPATH should be patched to $ORIGIN/../lib"
             );
         }
         other => panic!("expected RUNPATH after patch, got {:?}", other),
@@ -170,8 +170,8 @@ fn patch_rpath_in_place_success() {
             let rpath_str =
                 std::str::from_utf8(&data[offset as usize..offset as usize + len - 1]).unwrap();
             assert_eq!(
-                rpath_str, "$ORIGIN/../resources/lib/",
-                "RPATH should be patched to $ORIGIN/../resources/lib/"
+                rpath_str, "$ORIGIN/../lib",
+                "RPATH should be patched to $ORIGIN/../lib"
             );
         }
         other => panic!("expected RPATH after patch, got {:?}", other),
@@ -211,7 +211,7 @@ fn patched_rpath_is_null_terminated() {
             );
             // The target value should be present before the null
             let str_bytes = &data[offset as usize..offset as usize + len - 1];
-            assert_eq!(str_bytes, b"$ORIGIN/../resources/lib/");
+            assert_eq!(str_bytes, b"$ORIGIN/../lib");
         }
         other => panic!("expected RUNPATH, got {:?}", other),
     }
@@ -225,7 +225,7 @@ fn patched_rpath_padding_is_zeroed() {
     let info = find_rpath(&data).unwrap();
     match info {
         RpathInfo::Runpath { offset, len } => {
-            let new_rpath = b"$ORIGIN/../resources/lib/";
+            let new_rpath = b"$ORIGIN/../lib";
             // Everything after the new rpath and before the original end should be zero
             for i in (new_rpath.len())..(len - 1) {
                 assert_eq!(
@@ -249,7 +249,7 @@ fn patch_rpath_too_short_returns_error() {
     // path indirectly by checking the error type exists and makes sense.
     //
     // Instead, we verify that the target RPATH is a reasonable length.
-    let target = b"$ORIGIN/../resources/lib/";
+    let target = b"$ORIGIN/../lib";
     assert!(
         target.len() > 0,
         "target RPATH should not be empty"
@@ -317,12 +317,8 @@ fn build_file_with_resources_produces_packed_output() {
         "packed output should have bin/"
     );
     assert!(
-        staging_path.join("resources").exists(),
-        "packed output should have resources/"
-    );
-    assert!(
-        staging_path.join("resources/lib").exists(),
-        "packed output should have resources/lib/"
+        staging_path.join("lib").exists(),
+        "packed output should have lib/"
     );
 
     // Check the binary is in bin/
@@ -338,15 +334,15 @@ fn build_file_with_resources_produces_packed_output() {
         "binary should be named 'binary'"
     );
 
-    // Check the library is in resources/lib/
-    let lib_dir = staging_path.join("resources/lib");
+    // Check the library is in lib/
+    let lib_dir = staging_path.join("lib");
     let lib_entries: Vec<_> = std::fs::read_dir(&lib_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert!(
         lib_entries.iter().any(|e| e.file_name() == "libfoo.so"),
-        "resources/lib/ should contain libfoo.so"
+        "lib/ should contain libfoo.so"
     );
 
     // Verify the binary has been patched
@@ -363,7 +359,7 @@ fn build_file_with_resources_produces_packed_output() {
             )
             .unwrap();
             assert_eq!(
-                rpath_str, "$ORIGIN/../resources/lib/",
+                rpath_str, "$ORIGIN/../lib",
                 "binary should have patched RPATH"
             );
         }
@@ -524,7 +520,7 @@ fn packed_binary_has_relative_rpath() {
     }
     copy_dir_recursive(&staging_path, &relocated).unwrap();
 
-    // The binary at relocated/bin/binary should have $ORIGIN/../resources/lib/ RPATH
+    // The binary at relocated/bin/binary should have $ORIGIN/../lib RPATH
     let binary_path = relocated.join("bin/binary");
     assert!(binary_path.exists(), "binary should exist at relocated path");
 
@@ -537,7 +533,7 @@ fn packed_binary_has_relative_rpath() {
             )
             .unwrap();
             assert_eq!(
-                rpath_str, "$ORIGIN/../resources/lib/",
+                rpath_str, "$ORIGIN/../lib",
                 "relocated binary should have relative RPATH"
             );
         }
@@ -546,10 +542,10 @@ fn packed_binary_has_relative_rpath() {
         }
     }
 
-    // The resources directory should exist
+    // The lib directory should exist
     assert!(
-        relocated.join("resources/lib").exists(),
-        "resources/lib/ should exist in relocated output"
+        relocated.join("lib").exists(),
+        "lib/ should exist in relocated output"
     );
 
     drop(tmp);

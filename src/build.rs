@@ -275,12 +275,60 @@ fn do_build(
         Recipe::Process(p) => build_process(store, p, &dep_outputs, options)?,
     };
 
-    // 6. Compute output hash and record it
-    let output_hash = artifact_to_hash(&artifact);
+    // 6. Compute output hash and stage it
+    let mut output_hash = artifact_to_hash(&artifact);
     let elapsed = start.elapsed();
 
     // Stage the artifact to disk (for materialization by downstream recipes)
     stage_artifact(store, &artifact, &output_hash)?;
+
+    // Apply store-relative relocation if this is a Process recipe with runtime_deps.
+    // Relocation mutates the staged output in place, so re-capture/re-hash the
+    // modified output afterward.
+    if let Recipe::Process(p) = &recipe {
+        if let Some(runtime_dep_names) = p.runtime_deps.as_ref() {
+            let mut runtime_dep_outputs = std::collections::BTreeMap::new();
+            for dep_name in runtime_dep_names {
+                if let Some(output_hash) = dep_outputs
+                    .named
+                    .iter()
+                    .find_map(|(name, hash)| (name == dep_name).then_some(*hash))
+                {
+                    runtime_dep_outputs.insert(dep_name.clone(), output_hash);
+                } else {
+                    eprintln!(
+                        "[hod] warning: runtime_dep '{}' not found in dependencies",
+                        dep_name,
+                    );
+                }
+            }
+
+            let output_staging_dir = artifact_staging_path(store, &output_hash);
+            match crate::relocate::relocate_staged_output(
+                store,
+                &output_staging_dir,
+                &runtime_dep_outputs,
+            ) {
+                Ok(count) if count > 0 => {
+                    eprintln!(
+                        "[hod] relocated {} ELF binary(ies) with store-relative paths",
+                        count,
+                    );
+
+                    let relocated_artifact = capture_output(&output_staging_dir, store)?;
+                    let relocated_hash = artifact_to_hash(&relocated_artifact);
+                    stage_artifact(store, &relocated_artifact, &relocated_hash)?;
+
+                    let _ = std::fs::remove_dir_all(&output_staging_dir);
+                    output_hash = relocated_hash;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[hod] warning: store-relative relocation failed: {e}");
+                }
+            }
+        }
+    }
 
     store.store_output(&recipe_hash, &output_hash, elapsed.as_millis() as u64)?;
 

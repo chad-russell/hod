@@ -45,8 +45,7 @@ plans/             planning notes, not necessarily current implementation
 
 ## Docs Table of Contents
 
-- `docs/recipe-compiler-design.md` — current near-term recipe-authoring design: a Bun/TypeScript SDK emits JSON and binary `.hod` files by shelling out to `hod encode`/`decode`/`hash-file`.
-- `docs/recipe-compiler-tasks.md` — task checklist and implementation progress for the TS SDK and CLI encode/decode work.
+- `docs/recipe-compiler-guide.md` — current practical guide for authoring recipes with the Bun/TypeScript SDK and `hod encode`/`decode`/`hash-file`.
 - `docs/debugging-builds.md` — current build-debugging workflow. `hod shell` and `hod import-file` are not implemented in this checkout.
 - `docs/relocatable-binaries-guide.md` — current packed executable behavior plus future store-relative/AT_EXECFN relocation design. Read the status notes carefully before implementing relocation.
 - `docs/evaluator-resolver-prd.md` — deferred resolver/path-reference design. Not implemented; current recipes use concrete BLAKE3 dependency hashes.

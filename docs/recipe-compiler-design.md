@@ -191,10 +191,7 @@ The primary pattern. Module execution order handles the DAG automatically.
 
 ```typescript
 // recipes/native/glibc/glibc.ts
-import { process, fileFromPath, dep, writeHod, writeJson } from "hod-sdk";
-
-const source = await fileFromPath("../../sources/glibc-source.json"); // or fromHod, etc.
-// ... but actually, sources are Download recipes. Let's use a realistic example:
+import { process, dep, fromHod, writeHod, writeJson } from "hod-sdk";
 
 const glibc = await process({
   platform: "x86_64-linux",
@@ -216,7 +213,7 @@ export const glibcRecipe = glibc;
 
 ```typescript
 // recipes/native/bash/bash.ts
-import { process, dep, writeHod, writeJson } from "hod-sdk";
+import { process, dep, fromHod, writeHod, writeJson } from "hod-sdk";
 import { glibcRecipe } from "../glibc/glibc.ts";
 
 const bash = await process({
@@ -244,7 +241,7 @@ One TS file can produce multiple recipes:
 
 ```typescript
 // recipes/native/gcc/gcc.ts
-import { process, fileFromPath, dep, writeHod, writeJson } from "hod-sdk";
+import { process, fileFromPath, dep, fromHod, writeHod, writeJson } from "hod-sdk";
 
 const buildScript = await fileFromPath("./build-gcc.sh", { executable: true });
 const wrappers = await fileFromPath("./setup-gcc-wrappers.sh", { executable: true });
@@ -273,7 +270,7 @@ export const buildScriptRecipe = buildScript;
 
 ### 5.3 Top-level orchestrator
 
-A single entry point that imports everything and builds all recipes:
+A single entry point can import everything and write all generated recipes:
 
 ```typescript
 // recipes/build.ts
@@ -336,8 +333,8 @@ hod/
 
 ## 8. Implementation Order
 
-1. **Add `hod encode`, `hod decode`, `hod hash-file` to the Rust CLI** — these are the foundation. Without them, nothing else works.
-2. **Create `js/` directory with minimal SDK** — `process()`, `fileFromPath()`, `dep()`, `writeHod()`, `writeJson()`, `fromHod()`, `fromJson()`.
-3. **Convert one existing recipe to TS** — e.g., `bash.ts` — as a proof of concept. Verify the produced `.hod` is identical to the hand-written one.
-4. **Convert remaining recipes incrementally** — migrate one package at a time, verifying bit-identical output each time.
-5. **Iterate on the API** — use the experience of converting recipes to refine the helpers. Add convenience wrappers as patterns emerge (e.g., `processWithSysroot()` for cross-compilation boilerplate).
+1. **Done:** add `hod encode`, `hod decode`, `hod hash-file` to the Rust CLI.
+2. **Done:** create `js/` directory with minimal SDK — `process()`, `fileFromPath()`, `download()`, `dep()`, `writeHod()`, `writeJson()`, `fromHod()`, `fromJson()`.
+3. **Done:** convert proof-of-concept recipes and verify bit-identical output in the cases documented by `recipe-compiler-tasks.md`.
+4. **Next:** convert remaining recipes incrementally, verifying bit-identical output each time.
+5. **Ongoing:** iterate on the API as conversion friction appears.

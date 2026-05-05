@@ -1,6 +1,8 @@
 # Recipe Compiler — Task List
 
-**Reference:** [docs/recipe-compiler-design.md](docs/recipe-compiler-design.md)
+**Reference:** [recipe-compiler-design.md](recipe-compiler-design.md)
+
+> Current caveat: `cargo test -- --test-threads=1` currently reaches the Rust toolchain via the flake, but the full test suite does not compile because `tests/at_execfn_validation.rs` references bootstrap APIs missing from current `src/packed.rs`. The checked-off items below reflect feature/task implementation, not current full-suite health.
 
 ## Phase 0: Rust Recipe Types
 
@@ -17,7 +19,7 @@
 - [x] Update `recipe_encoding.rs` test: `from_u8(0x06)` now returns `Some(Unpack)`
 - [x] Binary round-trip tests for `tar_gz` and `tar_xz` in `recipe_json_roundtrip.rs`
 - [x] JSON format test: `"type":"unpack"` and `"format":"tar_gz"`
-- [x] `cargo test` passes (all recipe encoding/decoding tests)
+- [x] Recipe encoding/decoding tests were updated for `Unpack`
 
 ## Phase 1: Rust CLI Commands
 

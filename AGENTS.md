@@ -107,8 +107,9 @@ Encoding rules: little-endian integers; UTF-8 strings with fixed-width length pr
 ## Working Conventions
 
 - Rust edition: 2021.
+- Use the dev shell if tools are missing: `nix develop --accept-flake-config` (also used by `.envrc`).
 - Prefer `rg`, `find`, and targeted file reads before editing.
-- Run `cargo test -- --test-threads=1` before considering Rust changes done when a Rust toolchain is available.
+- Usual Rust validation is `cargo test -- --test-threads=1`; current known caveat is that the suite does not compile until the missing packed-bootstrap APIs referenced by `tests/at_execfn_validation.rs` are restored or the tests are updated.
 - Do not run ignored bootstrap/sandbox integration tests unless requested; they can require network access and long builds.
 - Preserve deterministic encoding: one value must have one valid byte representation.
 - When editing docs, separate “implemented now” from “planned/design”.

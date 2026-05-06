@@ -1,6 +1,6 @@
 //! validate-stage1 recipe — verifies gcc-stage1/glibc can compile and run a hello-world.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { gccStage1Recipe } from "./gcc-stage1.js";
 import { glibcRecipe } from "./glibc.js";
 import { linuxHeadersRecipe } from "./linux-headers.js";
@@ -69,7 +69,7 @@ echo "gcc-stage1 validation complete"`,
     dep("gcc-stage1", gccStage1Recipe),
     dep("glibc", glibcRecipe),
     dep("linux-headers", linuxHeadersRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

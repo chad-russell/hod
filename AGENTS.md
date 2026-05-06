@@ -46,6 +46,7 @@ plans/             planning notes, not necessarily current implementation
 
 ## Docs Table of Contents
 
+- `docs/bootstrap-pipeline.md` — full build pipeline from seed to self-hosting: stages, executor/compiler evolution, folder map, and path to full self-hosting.
 - `docs/recipe-compiler-guide.md` — current practical guide for authoring recipes with the Bun/TypeScript SDK and `hod encode`/`decode`/`hash-file`.
 - `docs/debugging-builds.md` — current build-debugging workflow. `hod shell` and `hod import-file` are not implemented in this checkout.
 - `docs/relocatable-binaries-guide.md` — current packed executable behavior and store-relative/AT_EXECFN relocation design/status.

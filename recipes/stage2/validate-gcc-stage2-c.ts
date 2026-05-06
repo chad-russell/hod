@@ -6,7 +6,7 @@
 //! 3. Can compile and run a C hello-world
 //! 4. Compiled binary links against glibc
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { gccStage2CRecipe } from "./gcc-stage2-c.js";
 import { binutilsRecipe } from "../native/binutils.js";
 import { glibcRecipe } from "../cross/glibc.js";
@@ -98,12 +98,18 @@ mkdir -p $OUT
 cp /tmp/build/hello $OUT/hello
 echo 'gcc-stage2-c validation passed' > $OUT/result.txt`,
   ],
+  env: [
+    // Override auto-env C_INCLUDE_PATH to prevent musl headers from
+    // contaminating glibc compilations. gcc-stage2 finds its own headers
+    // via --sysroot; it doesn't need C_INCLUDE_PATH at all.
+    { key: "C_INCLUDE_PATH", value: "" },
+  ],
   dependencies: [
     dep("binutils", binutilsRecipe),
     dep("gcc-stage2", gccStage2CRecipe),
     dep("glibc", glibcRecipe),
     dep("linux-headers", linuxHeadersRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

@@ -47,12 +47,12 @@ export async function process(definition: ProcessDefinition): Promise<BuiltRecip
     envEntries = Object.entries(definition.env).map(([key, value]) => ({ key, value }));
   }
 
-  // Sort env by key
-  envEntries.sort((a, b) => a.key.localeCompare(b.key));
+  // Sort env by key (byte-level comparison, matching Rust's sort)
+  envEntries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
-  // Sort dependencies by name
+  // Sort dependencies by name (byte-level comparison, matching Rust's sort)
   const deps = [...definition.dependencies].sort((a, b) =>
-    a.name.localeCompare(b.name),
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
   );
 
   // Build the JSON object

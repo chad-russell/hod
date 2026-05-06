@@ -1,6 +1,6 @@
 //! binutils native build recipe.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { binutilsSourceRecipe } from "./binutils-source.js";
 
@@ -65,6 +65,7 @@ CXXFLAGS="-O2" \\
   --disable-gold \\
   --disable-gprofng \\
   --disable-lto \\
+  --disable-shared \\
   --enable-deterministic-archives
 
 make -j$(nproc)
@@ -86,7 +87,7 @@ done
 rm -rf $OUT/share $OUT/include $OUT/etc $OUT/sbin 2>/dev/null || true`,
   ],
   dependencies: [
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
     dep("shims", shimsBundleRecipe),
     dep("source", binutilsSourceRecipe),
   ],

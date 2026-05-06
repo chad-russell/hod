@@ -1,7 +1,7 @@
 //! Tests for recipe constructors (fileFromPath, process, dep).
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { fileFromPath, fileFromHash, dep, process, download, unpack, fromHod, importToStore } from "../src/index.js";
+import { fileFromPath, fileFromHash, dep, process, download, unpack, fromHod, importToStore, shellBuild } from "../src/index.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -125,6 +125,48 @@ describe("process", () => {
 });
 
 
+
+describe("shellBuild", () => {
+  test("creates a shell build recipe using the toolchain busybox", async () => {
+    const recipe = await shellBuild({
+      toolchain: "toolchain",
+      script: "echo hello > $OUT/hello.txt",
+      deps: [
+        dep("source", "a".repeat(64)),
+        dep("toolchain", "b".repeat(64)),
+      ],
+    });
+
+    const json = recipe.json as any;
+    expect(json.command).toBe("/deps/toolchain/bin/busybox");
+    expect(json.dependencies.map((d: any) => d.name)).toEqual(["source", "toolchain"]);
+    expect(json.env).toContainEqual({ key: "C_INCLUDE_PATH", value: "" });
+    expect(json.args[2]).toContain("ln -sf /deps/toolchain/bin/busybox /bin/sh");
+    expect(json.args[2]).toContain("ln -sf /deps/toolchain/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2");
+    expect(json.args[2]).toContain("echo hello > $OUT/hello.txt");
+  });
+
+  test("requires the matching toolchain dependency", async () => {
+    await expect(shellBuild({
+      toolchain: "toolchain",
+      script: "true",
+      deps: [dep("source", "a".repeat(64))],
+    })).rejects.toThrow(/deps must include dep\("toolchain"/);
+  });
+
+  test("allows callers to override C_INCLUDE_PATH", async () => {
+    const recipe = await shellBuild({
+      toolchain: "toolchain",
+      script: "true",
+      env: { C_INCLUDE_PATH: "/custom/include", FOO: "bar" },
+      deps: [dep("toolchain", "b".repeat(64))],
+    });
+
+    const env = Object.fromEntries((recipe.json as any).env.map((entry: any) => [entry.key, entry.value]));
+    expect(env.C_INCLUDE_PATH).toBe("/custom/include");
+    expect(env.FOO).toBe("bar");
+  });
+});
 
 describe("download", () => {
   test("creates a Download recipe", async () => {

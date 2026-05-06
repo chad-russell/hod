@@ -1,6 +1,6 @@
 //! debug recipe — inspects deps layout for ncurses source.
 import { process, dep, importToStore, hermeticPreamble } from "../../../js/src/index.js";
-import { seedRootRecipe } from "../../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../../bootstrap/hod-seed-root.js";
 import { ncursesSourceRecipe } from "./ncurses-source.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
@@ -34,7 +34,7 @@ echo done > $OUT/test.txt`,
   ],
   env: { PATH: "/deps/seed/bin" },
   dependencies: [
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
     dep("source", ncursesSourceRecipe),
   ],
 });

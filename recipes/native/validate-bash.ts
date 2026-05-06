@@ -1,6 +1,6 @@
 //! validate-bash recipe — verifies the hermetic bash binary works correctly.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { glibcRecipe } from "../cross/glibc.js";
 import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { bashRecipe } from "./bash.js";
@@ -55,7 +55,7 @@ echo "All checks passed" >> $OUT/checks.txt`,
     dep("bash", bashRecipe),
     dep("glibc", glibcRecipe),
     dep("linux-headers", linuxHeadersRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

@@ -1,6 +1,6 @@
 //! gcc-stage1 cross-compilation recipe.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { glibcRecipe } from "./glibc.js";
 import { gmpRecipe } from "./gmp.js";
@@ -109,7 +109,7 @@ rm -rf $OUT/x86_64-linux-gnu`,
     dep("linux-headers", linuxHeadersRecipe),
     dep("mpc", mpcRecipe),
     dep("mpfr", mpfrRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
     dep("shims", shimsBundleRecipe),
     dep("source", gccStage1SourceRecipe),
   ],

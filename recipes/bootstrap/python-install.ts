@@ -1,7 +1,7 @@
 //! python-install bootstrap recipe — installs python from the standalone archive.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
 import { pythonRecipe } from "./python.js";
-import { seedRootRecipe } from "./seed-root.js";
+import { hodSeedRootRecipe } from "./hod-seed-root.js";
 
 const preamble = hermeticPreamble({ shell: "seed" });
 
@@ -26,7 +26,7 @@ chmod +x $OUT/bin/python3 $OUT/bin/python3.12 $OUT/bin/python`,
   ],
   dependencies: [
     dep("python-archive", pythonRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

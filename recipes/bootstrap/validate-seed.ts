@@ -1,6 +1,6 @@
 //! validate-seed bootstrap recipe — verifies the seed toolchain can compile a C program.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "./seed-root.js";
+import { hodSeedRootRecipe } from "./hod-seed-root.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
 
@@ -20,7 +20,7 @@ cp /tmp/test $OUT/hello
 echo 'seed-gcc compiled successfully' > $OUT/result.txt`,
   ],
   dependencies: [
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

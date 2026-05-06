@@ -6,7 +6,7 @@
 //! declared dependency set.
 
 export interface HermeticPreambleOptions {
-  /** Dep name providing `bin/busybox` (or `bin/sh`). Creates `/bin/sh`. */
+  /** Dep name providing `bin/busybox`. Creates `/bin/sh` and supplies setup applets. */
   shell?: string;
 
   /** Dep name providing the musl dynamic linker at `lib/ld-musl-x86_64.so.1`. */
@@ -44,35 +44,60 @@ export interface HermeticPreambleOptions {
  */
 export function hermeticPreamble(opts: HermeticPreambleOptions = {}): string {
   const lines: string[] = [];
+  const lnCmd = opts.shell ? '"$HOD_SHELL_BUSYBOX" ln' : "ln";
+  const mkdirCmd = opts.shell ? '"$HOD_SHELL_BUSYBOX" mkdir' : "mkdir";
+  const cpCmd = opts.shell ? '"$HOD_SHELL_BUSYBOX" cp' : "cp";
 
-  // `/bin/sh` — needed for configure script shebangs (`#!/bin/sh`)
+  // Ensure shell dep tools take precedence over glibc-linked tools from other
+  // deps, and use busybox applets explicitly for the preamble itself. This
+  // avoids depending on dynamically-linked ln/mkdir/cp before the runtime
+  // linker is set up.
   if (opts.shell) {
-    lines.push(`ln -sf /deps/${opts.shell}/bin/busybox /bin/sh || true`);
+    lines.push(`export PATH="/deps/${opts.shell}/bin:$PATH"`);
+    lines.push(`export HOD_SHELL_BUSYBOX="/deps/${opts.shell}/bin/busybox"`);
+    lines.push(`${lnCmd} -sf /deps/${opts.shell}/bin/busybox /bin/sh || true`);
   }
 
-  // musl dynamic linker — needed to run musl-linked binaries (seed tools, gcc-stage1)
-  if (opts.muslLinker) {
-    lines.push(`ln -sf /deps/${opts.muslLinker}/lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1 || true`);
-  }
-
-  // glibc dynamic linker — needed to run/link glibc binaries
+  // --- Dynamic linker + runtime library setup ---
+  //
+  // ORDER MATTERS. We set up glibc FIRST, then musl. Both C libraries
+  // have a file named "libc.so" but with different contents:
+  //   glibc: libc.so  → linker script (text, references /lib/libc.so.6)
+  //   musl:  libc.so  → ELF binary (the actual musl libc)
+  //
+  // The musl dynamic linker chain requires /lib/libc.so to be the ELF
+  // binary, so musl must "win" the /lib/libc.so symlink. By doing glibc
+  // first, the glibc libc.so (linker script) lands in /lib/, then musl's
+  // ln -sf overwrites it with the correct ELF binary.
   if (opts.glibcLinker) {
-    lines.push(`ln -sf /deps/${opts.glibcLinker}/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2 || true`);
-    lines.push(`ln -sf /deps/${opts.glibcLinker}/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 || true`);
+    lines.push(`${lnCmd} -sf /deps/${opts.glibcLinker}/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2 || true`);
+    lines.push(`${lnCmd} -sf /deps/${opts.glibcLinker}/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 || true`);
+    lines.push(`# Glibc runtime: shared objects, crt*.o, and static libs`);
+    lines.push(`for lib in /deps/${opts.glibcLinker}/lib/*; do`);
+    lines.push(`  name="\${lib##*/}"`);
+    lines.push(`  ${lnCmd} -sf "$lib" "/lib/$name" 2>/dev/null || true`);
+    lines.push(`done`);
+  }
+
+  // musl dynamic linker — must come AFTER glibc so /lib/libc.so is the
+  // musl ELF binary (not the glibc linker script).
+  if (opts.muslLinker) {
+    lines.push(`${lnCmd} -sf /deps/${opts.muslLinker}/lib/libc.so /lib/libc.so || true`);
+    lines.push(`${lnCmd} -sf /deps/${opts.muslLinker}/lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1 || true`);
   }
 
   // Sysroot — merged glibc + linux-headers at /tmp/sysroot
   if (opts.sysroot) {
     const { glibc, linuxHeaders } = opts.sysroot;
     lines.push(...[
-      `mkdir -p /tmp/sysroot/include /tmp/sysroot/lib /tmp/sysroot/lib64 /tmp/sysroot/usr`,
-      `cp -a /deps/${glibc}/include/. /tmp/sysroot/include/`,
-      `cp -a /deps/${linuxHeaders}/include/. /tmp/sysroot/include/`,
-      `cp -a /deps/${glibc}/lib/. /tmp/sysroot/lib/`,
-      `ln -sf ../include /tmp/sysroot/usr/include`,
-      `ln -sf ../lib /tmp/sysroot/usr/lib`,
-      `ln -sf ../lib64 /tmp/sysroot/usr/lib64`,
-      `ln -sf ../lib/ld-linux-x86-64.so.2 /tmp/sysroot/lib64/ld-linux-x86-64.so.2 || true`,
+      `${mkdirCmd} -p /tmp/sysroot/include /tmp/sysroot/lib /tmp/sysroot/lib64 /tmp/sysroot/usr`,
+      `${cpCmd} -a /deps/${glibc}/include/. /tmp/sysroot/include/`,
+      `${cpCmd} -a /deps/${linuxHeaders}/include/. /tmp/sysroot/include/`,
+      `${cpCmd} -a /deps/${glibc}/lib/. /tmp/sysroot/lib/`,
+      `${lnCmd} -sf ../include /tmp/sysroot/usr/include`,
+      `${lnCmd} -sf ../lib /tmp/sysroot/usr/lib`,
+      `${lnCmd} -sf ../lib64 /tmp/sysroot/usr/lib64`,
+      `${lnCmd} -sf ../lib/ld-linux-x86-64.so.2 /tmp/sysroot/lib64/ld-linux-x86-64.so.2 || true`,
     ]);
   }
 

@@ -34,7 +34,11 @@ CFLAGS="-O2" \\
   --disable-cxx
 
 make -j$(nproc)
-make install DESTDIR=$OUT`,
+make install DESTDIR=$OUT
+
+# Remove libtool archives — they embed the DESTDIR install path and break
+# downstream libtool consumers.  Static .a archives are all we need.
+find $OUT -name '*.la' -delete`,
   ],
   dependencies: [
     dep("seed", seedRootRecipe),

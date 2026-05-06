@@ -1,6 +1,6 @@
 //! run-packed-hello recipe — validates the packed executable binary.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { helloPackedRecipe } from "./hello-packed.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
@@ -24,7 +24,7 @@ echo "Packed binary executed successfully" >> $OUT/output.txt`,
   ],
   dependencies: [
     dep("packed", helloPackedRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

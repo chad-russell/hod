@@ -134,6 +134,17 @@ enum Commands {
         store: Option<PathBuf>,
     },
 
+    /// Import a file as a content blob into the store. Prints the BLAKE3 hash.
+    #[command(name = "import-blob")]
+    ImportBlob {
+        /// Path to the file to import as a blob.
+        file: PathBuf,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
     /// Export a recipe binary from the store to a file.
     #[command(name = "export-recipe")]
     ExportRecipe {
@@ -179,6 +190,7 @@ fn main() {
         Commands::ImportRecipe { recipe_file, store } => cmd_import_recipe(recipe_file, store),
         Commands::ImportFromJson { store } => cmd_import_from_json(store),
         Commands::Inspect { hash, store } => cmd_inspect(hash, store),
+        Commands::ImportBlob { file, store } => cmd_import_blob(file, store),
         Commands::ExportRecipe { hash, output, store } => cmd_export_recipe(hash, output, store),
     }
 }
@@ -606,6 +618,40 @@ fn cmd_export_recipe(hash_str: String, output: PathBuf, store_path: Option<PathB
     }
 
     eprintln!("Exported recipe {hash_str} to {}", output.display());
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod import-blob`
+// ---------------------------------------------------------------------------
+
+fn cmd_import_blob(file: PathBuf, store_path: Option<PathBuf>) -> ! {
+    let data = match std::fs::read(&file) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("hod: error reading {}: {e}", file.display());
+            process::exit(1);
+        }
+    };
+
+    let config = StoreConfig { path: store_path };
+    let store = match Store::open(&config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let hash = match store.write_blob(&data) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("hod: error writing blob: {e}");
+            process::exit(10);
+        }
+    };
+
+    println!("{}", hash_to_hex(&hash));
     process::exit(0);
 }
 

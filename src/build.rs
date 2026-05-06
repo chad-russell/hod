@@ -17,7 +17,7 @@ use std::time::Instant;
 use crate::encoding::EncodeError;
 use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
 use crate::recipe::{
-    Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink,
+    ArchiveFormat, Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink,
     RecipeType, RecipeUnpack,
 };
 use crate::store::Store;
@@ -572,11 +572,63 @@ fn build_symlink(s: &RecipeSymlink) -> Artifact {
 /// recipe type exists in the binary format and encode/decode path so that
 /// recipes can be constructed and hashed, but building them requires the
 /// full extraction pipeline.
-fn build_unpack(_store: &Store, _u: &RecipeUnpack) -> Result<Artifact> {
-    Err(BuildError::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "unpack recipe building is not yet implemented",
-    )))
+fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
+    use std::io::Write;
+
+    // Read the archive blob from the store
+    let archive_data = store.read_blob(&u.archive_hash)?;
+
+    // Write the archive to a temp file
+    let tmp_dir = store.tmp_dir();
+    std::fs::create_dir_all(&tmp_dir)?;
+    let archive_path = tmp_dir.join(format!("unpack-{}.tar", hash_to_hex(&u.archive_hash)));
+    {
+        let mut f = std::fs::File::create(&archive_path)?;
+        f.write_all(&archive_data)?;
+    }
+
+    // Create extraction directory
+    let extract_dir = tmp_dir.join(format!("unpack-extract-{}", hash_to_hex(&u.archive_hash)));
+    if extract_dir.exists() {
+        std::fs::remove_dir_all(&extract_dir)?;
+    }
+    std::fs::create_dir_all(&extract_dir)?;
+
+    // Extract using tar
+    let format_arg = match u.format {
+        ArchiveFormat::TarGz => "-xzf",
+        ArchiveFormat::TarXz => "-xJf",
+    };
+    let tar_output = std::process::Command::new("tar")
+        .args([format_arg, archive_path.to_str().unwrap(), "-C", extract_dir.to_str().unwrap()])
+        .output()?;
+
+    if !tar_output.status.success() {
+        let stderr = String::from_utf8_lossy(&tar_output.stderr);
+        return Err(BuildError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("tar extraction failed: {}", stderr.trim()),
+        )));
+    }
+
+    // Capture the output as an Artifact (extraction root, no auto-unwrap)
+    let artifact = path_to_artifact(&extract_dir, store)?;
+
+    // Stage the output
+    let output_hash = artifact_to_hash(&artifact);
+    let staging_path = artifact_staging_path(store, &output_hash);
+    if !staging_path.exists() {
+        if let Some(parent) = staging_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        copy_dir_recursive(&extract_dir, &staging_path)?;
+    }
+
+    // Clean up temp files
+    let _ = std::fs::remove_file(&archive_path);
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    Ok(artifact)
 }
 
 // ---------------------------------------------------------------------------

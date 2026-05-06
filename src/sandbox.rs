@@ -393,19 +393,12 @@ mod linux_sandbox {
         }
 
         // -- /tmp (writable) --
+        // Use a plain directory on disk (inside the sandbox root, which lives
+        // under the store's tmp/ on the host filesystem).  Avoid tmpfs here so
+        // that large builds (kernel headers, GCC, …) don't exhaust RAM or hit
+        // the tmpfs size limit.
         let tmp_path = root.join("tmp");
-        // Try tmpfs first, fall back to just a directory
-        if mount(
-            Some("tmpfs"),
-            &tmp_path,
-            Some("tmpfs"),
-            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-            Some("size=512m"),
-        )
-        .is_err()
-        {
-            let _ = std::fs::create_dir_all(&tmp_path);
-        }
+        std::fs::create_dir_all(&tmp_path)?;
 
         // -- /homeless-shelter (writable, for $HOME) --
         let home_path = root.join("homeless-shelter");

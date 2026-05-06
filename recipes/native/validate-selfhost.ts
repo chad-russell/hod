@@ -1,6 +1,6 @@
 //! validate-selfhost recipe — comprehensive self-hosting toolchain validation.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { gccStage1Recipe } from "../cross/gcc-stage1.js";
 import { glibcRecipe } from "../cross/glibc.js";
@@ -168,7 +168,7 @@ echo "=== All self-hosting validation tests passed ==="`,
     dep("gcc-stage1", gccStage1Recipe),
     dep("glibc", glibcRecipe),
     dep("linux-headers", linuxHeadersRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
     dep("shims", shimsBundleRecipe),
   ],
   runtime_deps: ["glibc"],

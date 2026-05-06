@@ -41,7 +41,10 @@ CFLAGS="-O2" \\
   --with-gmp=/deps/gmp
 
 make -j$(nproc)
-make install DESTDIR=$OUT`,
+make install DESTDIR=$OUT
+
+# Remove libtool archives
+find $OUT -name '*.la' -delete`,
   ],
   dependencies: [
     dep("gmp", gmpRecipe),

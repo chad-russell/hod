@@ -1,6 +1,6 @@
 //! glibc-runtime cross-compilation recipe — extracts runtime shared libraries from glibc.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { glibcRecipe } from "./glibc.js";
 
 const preamble = hermeticPreamble({ shell: "seed" });
@@ -28,7 +28,7 @@ cp -a /deps/glibc/lib/librt.so.1 $OUT/ 2>/dev/null || true`,
   ],
   dependencies: [
     dep("glibc", glibcRecipe),
-    dep("seed", seedRootRecipe),
+    dep("seed", hodSeedRootRecipe),
   ],
 });
 

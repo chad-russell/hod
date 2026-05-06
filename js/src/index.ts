@@ -20,6 +20,8 @@ export { unpack } from "./unpack.js";
 // Build script helpers
 export { hermeticPreamble } from "./preamble.js";
 export type { HermeticPreambleOptions } from "./preamble.js";
+export { shellBuild } from "./shell.js";
+export type { ShellBuildOptions } from "./shell.js";
 
 // Import helpers
 export { fromHod, importToStore } from "./import.js";

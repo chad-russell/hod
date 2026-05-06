@@ -1,10 +1,8 @@
 //! linux-headers cross-compilation recipe.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
-import { seedRootRecipe } from "../bootstrap/seed-root.js";
+import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { linuxHeadersSourceRecipe } from "./linux-headers-source.js";
-// Phantom shims dependency — no corresponding .hod file on disk.
-// This was an earlier version of the shims bundle that has been replaced.
-const PHANTOM_SHIMS_HASH = "20c565286533f188744496503328b9d04dda2958e27573ef3ffa3900a6e53717";
+import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
 
@@ -51,7 +49,8 @@ cd /tmp/linux-6.6.85
 make headers_install \\
   ARCH=x86 \\
   INSTALL_HDR_PATH=$OUT \\
-  HOSTCC=/deps/seed/bin/gcc
+  HOSTCC=/deps/seed/bin/gcc \\
+  HOSTCFLAGS="-O2 -static"
 
 # The kernel installs directly to $OUT/ (e.g., $OUT/linux/, $OUT/asm/).
 # Wrap in include/ so auto-PATH detects it as a header dep.
@@ -68,8 +67,8 @@ find $OUT -name '.install' -delete
 find $OUT -name '*.c' -delete`,
   ],
   dependencies: [
-    dep("seed", seedRootRecipe),
-    dep("shims", PHANTOM_SHIMS_HASH),
+    dep("seed", hodSeedRootRecipe),
+    dep("shims", shimsBundleRecipe),
     dep("source", linuxHeadersSourceRecipe),
   ],
 });

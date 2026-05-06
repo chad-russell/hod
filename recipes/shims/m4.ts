@@ -2,9 +2,7 @@
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
 import { seedRootRecipe } from "../bootstrap/seed-root.js";
 import { m4SourceRecipe } from "./m4-source.js";
-// Phantom shims dependency — no corresponding .hod file on disk.
-// This was an earlier version of the shims bundle that has been replaced.
-const PHANTOM_SHIMS_HASH = "20c565286533f188744496503328b9d04dda2958e27573ef3ffa3900a6e53717";
+import { makeRecipe } from "./make.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
 
@@ -17,6 +15,8 @@ const recipe = await process({
     `set -e
 
 ${preamble}
+
+export PATH=/deps/make/bin:/deps/seed/bin:$PATH
 
 tar xf /deps/source/source -C /tmp
 cd /tmp/m4-*
@@ -35,8 +35,8 @@ cp src/m4 $OUT/bin/m4
 chmod +x $OUT/bin/m4`,
   ],
   dependencies: [
+    dep("make", makeRecipe),
     dep("seed", seedRootRecipe),
-    dep("shims", PHANTOM_SHIMS_HASH),
     dep("source", m4SourceRecipe),
   ],
 });

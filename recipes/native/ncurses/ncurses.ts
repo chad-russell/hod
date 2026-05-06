@@ -1,30 +1,25 @@
-//! ncurses native build recipe.
-import { process, dep, importToStore, hermeticPreamble } from "../../../js/src/index.js";
-import { seedRootRecipe } from "../../bootstrap/seed-root.js";
-import { makeRecipe } from "../../shims/make.js";
+//! ncurses native build recipe — built with the native toolchain.
+import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
+import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesSourceRecipe } from "./ncurses-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
-
-const recipe = await process({
-  platform: "x86_64-linux",
-  command: "/deps/seed/bin/busybox",
-  args: [
-    "sh",
-    "-c",
-    `set -e
-
-${preamble}
+const recipe = await shellBuild({
+  toolchain: "toolchain",
+  script: `
 
 tar xf /deps/source/source -C /tmp
 cd /tmp/ncurses-6.6
 
-CC=/deps/seed/bin/gcc \\
-AR=/deps/seed/bin/ar \\
-RANLIB=/deps/seed/bin/ranlib \\
-CFLAGS="-O2" \\
-LDFLAGS="-static" \\
-sh ./configure \\
+export PATH=/deps/toolchain/bin
+export CC="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
+export AR=/deps/toolchain/bin/ar
+export RANLIB=/deps/toolchain/bin/ranlib
+export STRIP=/deps/toolchain/bin/strip
+export CFLAGS="-O2"
+export LDFLAGS="-static"
+
+./configure \\
+  --srcdir=. \\
   --prefix=/ \\
   --disable-shared \\
   --enable-static \\
@@ -41,19 +36,21 @@ make install DESTDIR=$OUT
 
 # Create non-widec compatibility symlinks so cbonsai's Makefile can find -lncurses
 cd $OUT/lib
-for f in libncursesw*; do
+# Create non-widec compatibility symlinks (e.g., libncurses.a → libncursesw.a)
+# The glob covers libncursesw*, libtinfow*, libpanelw*, libmenuw*, libformw*
+for f in lib*w.a lib*w.so; do
+  [ -e "$f" ] || continue
   ln -sf "$f" "$(echo "$f" | sed 's/w//')"
 done
-cd $OUT/lib/pkgconfig
-for f in *.pc; do
-  ln -sf "$f" "$(echo "$f" | sed 's/w//')"
-done`,
-  ],
-  env: { PATH: "/deps/seed/bin" },
-  dependencies: [
-    dep("make", makeRecipe),
-    dep("seed", seedRootRecipe),
+if [ -d $OUT/lib/pkgconfig ]; then
+  cd $OUT/lib/pkgconfig
+  for f in *.pc; do
+    ln -sf "$f" "$(echo "$f" | sed 's/w//')"
+  done
+fi`,
+  deps: [
     dep("source", ncursesSourceRecipe),
+    dep("toolchain", nativeToolchainRecipe),
   ],
 });
 

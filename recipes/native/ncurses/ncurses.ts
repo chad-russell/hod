@@ -30,7 +30,10 @@ cd /tmp/ncurses-6.6
   --without-manpages \\
   --without-tests \\
   --without-cxx-binding \\
-  --disable-stripping
+  --disable-stripping \
+  --enable-pc-files \
+  --with-pkg-config=/deps/toolchain/bin/pkg-config \
+  --with-pkg-config-libdir=/lib/pkgconfig
 
 make -j$(nproc)
 make install DESTDIR=$OUT

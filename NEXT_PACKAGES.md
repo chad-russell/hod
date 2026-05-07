@@ -33,6 +33,6 @@ Before pushing too far up the stack, migrate foundational static-only libraries 
 - [x] 17. **rsync** — rsync 3.3.0 built with shared openssl, zlib, zstd. File sync/backup workhorse. Required autoconf cache workaround for hermetic sandbox (configure.sh can't run test programs to determine type sizes).
 - [x] 18. **oniguruma + jq** — jq 1.8.1 built with its bundled oniguruma 6.9.x. Produces jq CLI, libjq.so, libonig.so, plus headers and pkg-config files for both libraries. Required autoconf cache workaround for hermetic sandbox. Standalone oniguruma source tarball lacks pre-generated configure (needs autoreconf); jq's bundled copy works fine.
 - [x] 19. **tree** — tree 2.3.2. Simple Makefile build, zero deps beyond toolchain. Produces a single `bin/tree` binary dynamically linked to glibc via store-relative RPATH.
-- [ ] 20. **python** — All deps are built (openssl, zlib, libffi, ncurses, readline, bzip2, xz). The capstone validation prize. Complex build but enormous payoff — pip ecosystem awaits.
+- [x] 20. **python** — Python 3.13.13 with shared libpython, 58 extension modules including _ssl, _hashlib, zlib, _ctypes, _curses, _curses_panel, readline, _bz2, _lzma, pyexpat, _elementtree, _decimal (bundled mpdecimal). Fixed ncurses pkg-config (added --enable-pc-files) and bypassed pkg-config sandbox path issues by pre-setting _CFLAGS/_LIBS variables. Store-relative RPATH working for all binaries and extension modules.
 
 

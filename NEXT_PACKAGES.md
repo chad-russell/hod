@@ -24,15 +24,15 @@ Before pushing too far up the stack, migrate foundational static-only libraries 
 - [x] 8. **zstd** — Modern compression standard. Can build with just zlib + xz (lz4 optional). Increasingly required by package managers and kernel tools.
 - [x] 9. **libiconv** — Character encoding conversion. Needed by git, bash builds sometimes, and many GNU packages. Small library, straightforward build.
 - [x] 10. **git** — Built git 2.54.0 with HTTP/HTTPS support via shared curl, openssl, zlib, expat, and libiconv. Makefile-based build using config.mak for build configuration. All runtime deps correctly relocated via store-relative RPATH.
-- [ ] 11. **openssh** — openssl + zlib done. Essential for remote access and file transfer (scp/sftp). Moderate complexity (needs libcrypto, maybe a few tweaks).
-- [ ] 12. **vim** — Needs ncurses (done). Could also link against perl once that's in the build graph. The most important editor for most devs.
-- [ ] 13. **procps-ng** — Provides `ps`, `top`, `free`, `kill`, `pgrep`, `uptime`, `w`, `watch`, etc. Needs ncurses (done). These are fundamental system management tools.
-- [ ] 14. **htop** — Needs ncurses (done). Much nicer than top for interactive monitoring.
-- [ ] 15. **strace** — Almost standalone (no special deps). Incredibly useful for debugging builds, sandbox issues, and runtime problems. Should be straightforward.
-- [ ] 16. **nano** — Needs ncurses (done). Simple, approachable editor. Good to have alongside vim.
-- [ ] 17. **rsync** — Needs openssl + zlib (done). File sync/backup workhorse.
-- [ ] 18. **oniguruma + jq** — Oniguruma is a small regex library; jq depends on it. JSON processing is essential for any modern workflow. Two small packages.
-- [ ] 19. **tree** — Not in `/run/current-system/sw/bin` but trivially easy to build (single C file) and genuinely useful every day. Great "warm-up" package.
+- [x] 11. **openssh** — OpenSSH 10.3p1. Built with shared openssl + zlib. Standard autotools build. All binaries (ssh, scp, sftp, sshd, ssh-agent, ssh-add, ssh-keygen, ssh-keyscan + libexec helpers) working with store-relative RPATH.
+- [x] 12. **vim** — Vim 9.2 with huge features, built with shared ncurses. Dynamically links libncursesw + glibc via store-relative RPATH. Produces vim, vi, xxd, vimtutor symlinks. Had to force cross-compilation mode (sed-patch) to skip AC_TRY_RUN tests that can't execute in the hermetic sandbox.
+- [x] 13. **procps-ng** — procps-ng 4.0.6 with shared libproc2 + ncurses. Provides ps, top, free, kill, pgrep, pkill, pidof, pidwait, pmap, pwdx, slabtop, hugetop, sysctl, tload, uptime, vmstat, w, watch. Store-relative RPATH relocation working.
+- [x] 14. **htop** — htop 3.5.1 with shared ncursesw (unicode). Interactive process viewer. Store-relative RPATH to ncurses and toolchain.
+- [x] 15. **strace** — Almost standalone (no special deps). Incredibly useful for debugging builds, sandbox issues, and runtime problems. Should be straightforward.
+- [x] 16. **nano** — Needs ncurses (done). Simple, approachable editor. Good to have alongside vim.
+- [x] 17. **rsync** — rsync 3.3.0 built with shared openssl, zlib, zstd. File sync/backup workhorse. Required autoconf cache workaround for hermetic sandbox (configure.sh can't run test programs to determine type sizes).
+- [x] 18. **oniguruma + jq** — jq 1.8.1 built with its bundled oniguruma 6.9.x. Produces jq CLI, libjq.so, libonig.so, plus headers and pkg-config files for both libraries. Required autoconf cache workaround for hermetic sandbox. Standalone oniguruma source tarball lacks pre-generated configure (needs autoreconf); jq's bundled copy works fine.
+- [x] 19. **tree** — tree 2.3.2. Simple Makefile build, zero deps beyond toolchain. Produces a single `bin/tree` binary dynamically linked to glibc via store-relative RPATH.
 - [ ] 20. **python** — All deps are built (openssl, zlib, libffi, ncurses, readline, bzip2, xz). The capstone validation prize. Complex build but enormous payoff — pip ecosystem awaits.
 
 

@@ -1,4 +1,13 @@
-//! ncurses native build recipe — built with the native toolchain.
+//! ncurses native build recipe — terminal handling library with shared outputs.
+//!
+//! Builds ncurses 6.6 with wide-character support and shared library outputs.
+//! Provides libncursesw, libtinfow, libpanelw, libmenuw, libformw shared libs
+//! plus non-widec compatibility symlinks. Downstream packages (less, readline,
+//! cbonsai, bash, vim, etc.) link against these.
+//!
+//! No dependencies beyond the toolchain. Dynamically links glibc from the
+//! toolchain (relocated via runtime_deps).
+
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesSourceRecipe } from "./ncurses-source.js";
@@ -10,19 +19,11 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/ncurses-6.6
 
-export PATH=/deps/toolchain/bin
-export CC="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export AR=/deps/toolchain/bin/ar
-export RANLIB=/deps/toolchain/bin/ranlib
-export STRIP=/deps/toolchain/bin/strip
-export CFLAGS="-O2"
-export LDFLAGS="-static"
-
 ./configure \\
   --srcdir=. \\
   --prefix=/ \\
-  --disable-shared \\
-  --enable-static \\
+  --with-shared \\
+  --without-normal \\
   --enable-widec \\
   --without-debug \\
   --without-ada \\
@@ -34,11 +35,14 @@ export LDFLAGS="-static"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Create non-widec compatibility symlinks so cbonsai's Makefile can find -lncurses
+# Strip shared libraries
+for f in $OUT/lib/lib*.so.*.*.*; do
+  /deps/toolchain/bin/strip "$f" 2>/dev/null || true
+done
+
+# Create non-widec compatibility symlinks
 cd $OUT/lib
-# Create non-widec compatibility symlinks (e.g., libncurses.a → libncursesw.a)
-# The glob covers libncursesw*, libtinfow*, libpanelw*, libmenuw*, libformw*
-for f in lib*w.a lib*w.so; do
+for f in lib*w.so lib*w.so.* lib*w.so.*.* lib*w.so.*.*.*; do
   [ -e "$f" ] || continue
   ln -sf "$f" "$(echo "$f" | sed 's/w//')"
 done
@@ -47,11 +51,16 @@ if [ -d $OUT/lib/pkgconfig ]; then
   for f in *.pc; do
     ln -sf "$f" "$(echo "$f" | sed 's/w//')"
   done
-fi`,
+fi
+
+# Clean up — keep lib/pkgconfig for downstream deps
+rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
+rmdir $OUT/share 2>/dev/null || true`,
   deps: [
     dep("source", ncursesSourceRecipe),
     dep("toolchain", nativeToolchainRecipe),
   ],
+  runtime_deps: ["toolchain"],
 });
 
 await importToStore(recipe);

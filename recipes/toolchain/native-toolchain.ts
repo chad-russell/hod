@@ -5,6 +5,7 @@
 //!   - binutils (as, ld, ar, ranlib, strip, etc.)
 //!   - glibc + linux-headers as a sysroot
 //!   - bash, coreutils, make, tar, sed, grep, gawk, patch
+//!   - pkgconf (pkg-config replacement for dependency discovery)
 //!   - busybox (statically linked, musl-built, replaces seed's busybox)
 //!
 //! Downstream packages depend on this instead of individual tools.
@@ -24,6 +25,7 @@ import { gawkRecipe } from "../native/gawk.js";
 import { patchRecipe } from "../native/patch.js";
 import { makeRecipe } from "../native/make.js";
 import { busyboxNativeRecipe } from "./busybox-native.js";
+import { pkgconfRecipe } from "../native/pkgconf/pkgconf.js";
 
 const preamble = hermeticPreamble({
   shell: "seed",
@@ -63,6 +65,11 @@ cp -a /deps/grep/bin/* $OUT/bin/ 2>/dev/null || true
 cp -a /deps/gawk/bin/gawk $OUT/bin/gawk 2>/dev/null || true
 ln -sf gawk $OUT/bin/awk 2>/dev/null || true
 cp -a /deps/patch/bin/* $OUT/bin/ 2>/dev/null || true
+
+# Overlay pkgconf (pkg-config replacement)
+cp -a /deps/pkgconf/bin/pkgconf $OUT/bin/pkgconf
+ln -sf pkgconf $OUT/bin/pkg-config
+ln -sf pkgconf $OUT/bin/bomtool 2>/dev/null || true
 
 # Overlay native busybox (statically linked, replaces seed's busybox)
 # This provides a shell executor with no dynamic linker dependency.
@@ -110,6 +117,17 @@ ln -sf ../sysroot/lib/audit $OUT/lib/audit 2>/dev/null || true
 # Ensure everything is executable
 chmod +x $OUT/bin/* 2>/dev/null || true
 
+# === pkgconf integration into sysroot ===
+# Install pkgconf's own .pc file and pkg.m4 into the sysroot so that
+# autotools-based builds can discover pkg-config automatically.
+mkdir -p $OUT/sysroot/lib/pkgconfig
+cp -a /deps/pkgconf/lib/pkgconfig/libpkgconf.pc $OUT/sysroot/lib/pkgconfig/ 2>/dev/null || true
+mkdir -p $OUT/sysroot/share/aclocal
+cp -a /deps/pkgconf/share/aclocal/pkg.m4 $OUT/sysroot/share/aclocal/ 2>/dev/null || true
+mkdir -p $OUT/sysroot/include/pkgconf/libpkgconf
+cp -a /deps/pkgconf/include/pkgconf/libpkgconf/* $OUT/sysroot/include/pkgconf/libpkgconf/ 2>/dev/null || true
+cp -a /deps/pkgconf/lib/libpkgconf.a $OUT/sysroot/lib/ 2>/dev/null || true
+
 # === Verification ===
 echo "=== Toolchain contents ==="
 ls $OUT/bin/ | head -30
@@ -135,6 +153,7 @@ echo "=== Toolchain bundle complete ==="`,
     dep("linux-headers", linuxHeadersRecipe),
     dep("make", makeRecipe),
     dep("patch", patchRecipe),
+    dep("pkgconf", pkgconfRecipe),
     dep("sed", sedRecipe),
     dep("seed", hodSeedRootRecipe),
     dep("tar", tarRecipe),

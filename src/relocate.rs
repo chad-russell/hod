@@ -168,14 +168,27 @@ fn relocate_single_elf(
     let up_steps = depth + 2; // +2 for shard + hash directory levels
     let prefix = "$ORIGIN/".to_string() + &"../".repeat(up_steps);
 
-    let runpath_parts: Vec<String> = dep_lib_dirs
-        .iter()
-        .map(|(_name, hash)| {
-            let shard = hash_shard(hash);
-            let hex = hash_to_hex(hash);
-            format!("{prefix}{shard}/{hex}/lib")
-        })
-        .collect();
+    // Self-referencing path: allows binaries to find shared libraries in
+    // their own output's lib/ directory. This is needed for packages that
+    // produce both executables and shared libraries (e.g., curl→libcurl.so,
+    // file→libmagic.so). The path is relative to the ELF's location.
+    let up_components: Vec<&str> = (0..depth).map(|_| "..").collect();
+    let self_lib_path = if up_components.is_empty() {
+        "$ORIGIN/lib".to_string()
+    } else {
+        format!("$ORIGIN/{}/lib", up_components.join("/"))
+    };
+
+    let mut runpath_parts: Vec<String> = vec![self_lib_path];
+    runpath_parts.extend(
+        dep_lib_dirs
+            .iter()
+            .map(|(_name, hash)| {
+                let shard = hash_shard(hash);
+                let hex = hash_to_hex(hash);
+                format!("{prefix}{shard}/{hex}/lib")
+            }),
+    );
     let runpath = runpath_parts.join(":");
 
     // Step 6: Patch RUNPATH

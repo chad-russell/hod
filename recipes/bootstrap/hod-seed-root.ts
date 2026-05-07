@@ -11,7 +11,7 @@
 //! The output layout is identical to seed-root.ts, so anything that depends
 //! on seed-root can use this instead.
 import { process, dep, importToStore } from "../../js/src/index.js";
-import { busyboxRecipe } from "./busybox.js";
+import { busyboxFromSourceRecipe } from "./busybox-from-source.js";
 import { hodMuslToolchainRecipe } from "./hod-musl-toolchain.js";
 const recipe = await process({
   platform: "x86_64-linux",
@@ -54,7 +54,7 @@ done
 echo done > $OUT/seed-ready`,
   ],
   dependencies: [
-    dep("busybox", busyboxRecipe),
+    dep("busybox", busyboxFromSourceRecipe),
     dep("musl", hodMuslToolchainRecipe),
   ],
 });

@@ -1,8 +1,17 @@
 # Hod Bootstrap Pipeline
 
-This document describes the full build pipeline from seed to self-hosting.
-The goal is to make it easy to understand what each stage produces, why it
-exists, and what executes it.
+This document describes the full build pipeline from seed to self-hosting,
+including the round-trip verification that proves the native compiler is
+correct.
+
+## Pipeline Status
+
+| Phase | What | Status |
+|-------|------|--------|
+| **A** | Hod-built musl toolchain (musl + binutils + gcc from source) | ✅ Complete |
+| **B** | Migrate all downstream recipes to Hod-built toolchain | ✅ Complete |
+| **C** | Busybox from source + round-trip verification | ✅ Complete |
+| **D** | Seed minimization (single GCC binary, seed manifest) | 🔲 Next |
 
 ## Pipeline Overview
 
@@ -15,7 +24,7 @@ exists, and what executes it.
 │                                                                      │
 │  busybox binary (unknown provenance)  ──┐                            │
 │  musl toolchain (downloaded from musl.cc)──►  seed-root.ts           │
-│                                             (busybox sh +             │
+│   (GCC 11.2.1, binutils 2.37, musl)        (busybox sh +             │
 │                                              musl gcc/binutils/libs) │
 └──────────────────────────────────────────┬───────────────────────────┘
                                            │
@@ -32,7 +41,8 @@ exists, and what executes it.
 │  shims/make  ─────────────────────┐                                  │
 │  cross/gmp, mpfr, mpc ───────────┤                                  │
 │  bootstrap/musl-build ───────────┼──►  bootstrap/gcc-musl           │
-│  bootstrap/binutils-musl ────────┘     (C + C++, self-contained)    │
+│  bootstrap/binutils-musl ────────┘     (GCC 14.2.0, C + C++,        │
+│                                         self-contained with musl)    │
 │                                              │                      │
 │                                              ▼                      │
 │                                    bootstrap/hod-musl-toolchain     │
@@ -40,8 +50,14 @@ exists, and what executes it.
 │                                     x86_64-linux-musl-native/)      │
 │                                              │                      │
 │                                              ▼                      │
+│                          bootstrap/busybox-from-source              │
+│                          (busybox 1.37.0, built from source)        │
+│                          + hod-musl-toolchain                       │
+│                                              │                      │
+│                                              ▼                      │
 │                                    bootstrap/hod-seed-root          │
-│                                    (busybox + Hod-built toolchain)  │
+│                                    (source-built busybox +           │
+│                                     Hod-built toolchain)            │
 │                                     FULLY AUDITABLE FROM SOURCE     │
 └──────────────────────────────────────────────┬──────────────────────┘
                                                │
@@ -62,20 +78,24 @@ exists, and what executes it.
 │  a glibc dynamic linker.                                            │
 └─────────────────────────────────────────────────────────────────────┘
                           │
-                          │  stage 1 + shims
+                          │  hod-seed-root + shims
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  STAGE 1: CROSS (musl → glibc cross-compilation)                    │
-│  Executor: seed busybox  |  Compiler: seed musl gcc                 │
+│  Executor: seed busybox  |  Compiler: Hod-built musl gcc (14.2.0)   │
 │                                                                     │
 │  linux-headers                                                       │
 │  gmp, mpfr, mpc  ──►  gcc-stage1 (cross-compiler: musl→glibc)       │
-│  glibc            ──►  glibc (target C library)                      │
+│  glibc            ──►  glibc 2.41 (target C library)                │
 │  glibc-runtime   ──►  stripped glibc runtime (for packed binaries)   │
 │                                                                     │
 │  Produces a glibc cross-compiler and target glibc.                  │
 │  Everything here is "cross" because the host is musl and the        │
 │  target is glibc.                                                   │
+│                                                                     │
+│  NOTE: gmp/mpfr/mpc use seed-root (not hod-seed-root) because      │
+│  they're in the bootstrap ladder — gcc-musl imports them directly.  │
+│  The rest of cross/ uses hod-seed-root.                             │
 └─────────────────────────────────────────────────────────────────────┘
                           │
                           │  gcc-stage1 + shims
@@ -106,8 +126,8 @@ exists, and what executes it.
 │  STAGE 2.5: gcc-stage2 (native compiler, built with gcc-stage1)     │
 │  Executor: seed busybox  |  Compiler: gcc-stage1                    │
 │                                                                     │
-│  gcc-stage2      Full native GCC (C + C++), compiled to run on      │
-│  gcc-stage2-c    glibc. Uses native binutils from stage 2.          │
+│  gcc-stage2      Full native GCC 13.2.0 (C + C++), compiled to     │
+│  gcc-stage2-c    run on glibc. Uses native binutils from stage 2.   │
 │                  Links against stage2-built gmp/mpfr/mpc.           │
 │                                                                     │
 │  This is the compiler that goes into the native toolchain.          │
@@ -126,9 +146,9 @@ exists, and what executes it.
 │                    coreutils + make + all GNU tools + busybox-native │
 │                    + glibc sysroot into one dep.                    │
 │                                                                     │
-│  busybox-native is built with seed's musl gcc (not gcc-stage2)      │
-│  to avoid a circular dep with native-toolchain. It uses the         │
-│  standalone shim make.                                              │
+│  busybox-native is built with hod-seed-root's musl gcc (not         │
+│  gcc-stage2) to avoid a circular dep with native-toolchain. It      │
+│  uses the standalone shim make.                                     │
 │                                                                     │
 │  native-toolchain is the last recipe that depends on seed.          │
 │  Everything downstream uses shellBuild() and the toolchain's        │
@@ -146,6 +166,23 @@ exists, and what executes it.
 │                                                                     │
 │  These use shellBuild() and depend only on native-toolchain.        │
 │  No reference to seed. No preamble boilerplate.                     │
+└─────────────────────────────────────────────────────────────────────┘
+                          │
+                          │  (verification, not part of the main pipeline)
+                          ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  ROUND-TRIP VERIFICATION (Phase C.2)                                │
+│  Executor: toolchain busybox  |  Compiler: gcc-stage2 (glibc)       │
+│                                                                     │
+│  musl-build-stage2         musl 1.2.5 rebuilt by native toolchain   │
+│  binutils-musl-stage2      binutils 2.37 targeting musl, rebuilt    │
+│  gcc-musl-stage2           GCC 14.2.0 targeting musl, rebuilt       │
+│  validate-roundtrip        Proves the round-trip GCC produces       │
+│                            correct binaries (C, math, strings)      │
+│                                                                     │
+│  This is a cross-compilation: host=glibc, target=musl. Proves the   │
+│  native toolchain is a correct compiler — it can rebuild its own    │
+│  bootstrap toolchain from source. Equivalent to GCC's stage 3.      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -169,16 +206,13 @@ musl toolchain depends on. There is a hard circular dependency: if
 
 | Recipe | Why it's in the ladder |
 |--------|----------------------|
-| `shims/make` | Build tool for musl-build, binutils-musl, gcc-musl |
-| `shims/*` (all others) | Aggregated by shims-bundle, used by cross/ recipes |
-| `cross/gmp` | Math library linked into gcc-musl |
-| `cross/mpfr` | Math library linked into gcc-musl |
-| `cross/mpc` | Math library linked into gcc-musl |
+| `shims/*` (all) | Musl-compiled build tools, aggregated by shims-bundle |
+| `cross/gmp`, `cross/mpfr`, `cross/mpc` | Math libraries linked into gcc-musl |
 | `bootstrap/musl-build` | Target C library for gcc-musl |
 | `bootstrap/binutils-musl` | Target assembler/linker for gcc-musl |
 | `bootstrap/gcc-musl` | The compiler being built |
 | `bootstrap/hod-musl-toolchain` | Assembly of gcc-musl + binutils-musl |
-| `bootstrap/hod-seed-root` | Assembly of busybox + Hod-built toolchain |
+| `bootstrap/busybox-from-source` | Source-built busybox (needs seed shell to build) |
 
 Note: the cross/ gmp/mpfr/mpc are in the ladder because gcc-musl imports
 them directly. They use shims-bundle, which depends on seed-root.
@@ -186,14 +220,14 @@ them directly. They use shims-bundle, which depends on seed-root.
 ### Tier 2: Hod-Built Seed (`hod-seed-root.ts`)
 
 ```
-busybox (opaque) + Hod-built musl toolchain (from source) → hod-seed-root
+busybox (source-built 1.37.0) + Hod-built musl toolchain (from source) → hod-seed-root
 ```
 
 This is used by **all downstream recipes** — everything that doesn't
 participate in building the Hod-built musl toolchain itself. These recipes
-get a fully source-auditable compiler and C library.
+get a fully source-auditable compiler, C library, *and* shell executor.
 
-**Recipes that should use `hod-seed-root.ts`:**
+**Recipes that use `hod-seed-root.ts`:**
 
 | Group | Recipes |
 |-------|---------|
@@ -202,7 +236,7 @@ get a fully source-auditable compiler and C library.
 | Stage 2.5 | `stage2/gcc-stage2`, `stage2/gcc-stage2-c` |
 | Toolchain assembly | `toolchain/busybox-native`, `toolchain/native-toolchain` |
 | Validation | All `validate-*` recipes not in the bootstrap ladder |
-| Downstream | `native/ncurses/*`, etc. |
+| Downstream | `native/ncurses/*`, `native/cbonsai/*` |
 
 ### Why This Is Sound
 
@@ -212,21 +246,27 @@ of opaque artifacts is reduced from "the entire pipeline uses them" to
 "only the bootstrap ladder uses them."
 
 Every downstream package traces through `hod-seed-root` →
-`hod-musl-toolchain` → source code (musl 1.2.5, binutils 2.37, gcc 11.2.0).
+`hod-musl-toolchain` → source code (musl 1.2.5, binutils 2.37, gcc 14.2.0).
 The only opaque artifacts are the ones needed to build the first compiler —
 the theoretical minimum for any bootstrapping build system.
 
-### Round-Trip Verification (Future)
+### Round-Trip Verification (Completed)
 
-Once downstream recipes use `hod-seed-root`, we can prove correctness:
+The round-trip proves correctness through a different technique than
+bit-for-bit comparison:
 
-1. Use `hod-seed-root` (Hod-built gcc 11.2.0) to rebuild `gcc-musl`
-2. That produces a second-generation gcc
-3. Compare its output hash with the first-generation gcc
+1. The native glibc toolchain (gcc-stage2, built by musl.cc seed) builds
+   musl, binutils, and a complete GCC 14.2.0 targeting musl.
+2. The round-trip GCC then compiles C programs that run correctly.
+3. This proves the native compiler is a correct compiler — it can
+   reproduce its own bootstrap toolchain from source.
 
-If they match (or differences are explained by nondeterminism like build
-timestamps), we've proven the Hod-built toolchain is a correct compiler.
-This is the same technique GCC uses (stage 1 → stage 2 → stage 3 comparison).
+Bit-for-bit comparison is not expected because the original `hod-musl-toolchain`
+was built by musl.cc GCC 11.2.1 (musl compiler) while the round-trip was
+built by GCC 13.2.0 (glibc compiler) — different compilers produce different
+object code. The value is *functional* correctness.
+
+See `recipes/roundtrip/` for the implementation.
 
 ## Executor Evolution
 
@@ -241,17 +281,19 @@ changes across the pipeline:
 | Stage 2.5 | `/deps/seed/bin/busybox` | Same. |
 | Toolchain assembly | `/deps/seed/bin/busybox` | Assembling the toolchain; can't use what we're building. |
 | Downstream packages | `/deps/toolchain/bin/busybox` | The toolchain bundles a static busybox. Seed is not in the deps. |
+| Round-trip | `/deps/toolchain/bin/busybox` | Same as downstream — uses native-toolchain's busybox. |
 
 ## Compiler Evolution
 
-| Stage | Compiler | Target C lib |
-|-------|----------|-------------|
-| Bootstrap ladder | seed musl gcc 11.2.1 | musl |
-| Shims | seed musl gcc 11.2.1 | musl (static) |
-| Stage 1 (cross) | seed musl gcc 11.2.1 | glibc (cross) |
-| Stage 2 (native) | gcc-stage1 (cross) | glibc (native) |
-| Stage 2.5 | gcc-stage1 (cross) | glibc (native) |
-| Downstream | gcc-stage2 (native) | glibc (native) |
+| Stage | Compiler | Version | Target C lib |
+|-------|----------|---------|-------------|
+| Bootstrap ladder | seed musl gcc | 11.2.1 | musl |
+| Shims | seed musl gcc | 11.2.1 | musl (static) |
+| Stage 1 (cross) | Hod-built musl gcc | 14.2.0 | glibc (cross) |
+| Stage 2 (native) | gcc-stage1 (cross) | 13.2.0 | glibc (native) |
+| Stage 2.5 | gcc-stage1 (cross) | 13.2.0 | glibc (native) |
+| Downstream | gcc-stage2 (native) | 13.2.0 | glibc (native) |
+| Round-trip | gcc-stage2 (native) | 13.2.0 | musl (cross) |
 
 ## Why Do Shims Exist?
 
@@ -270,15 +312,16 @@ Once native-toolchain exists, downstream recipes don't need shims anymore.
 recipes/
   bootstrap/    Seed assembly + Hod-built musl toolchain from source
                   busybox.ts              → fileFromHash (opaque binary)
+                  busybox-from-source.ts  → busybox 1.37.0 built from source
                   musl-toolchain.ts       → unpack pre-built musl (from musl.cc)
-                  seed-root.ts            → combines both into the bootstrap seed
-                  hod-seed-root.ts        → busybox + Hod-built toolchain
+                  seed-root.ts            → combines opaque busybox + musl.cc
+                  hod-seed-root.ts        → source-built busybox + Hod-built toolchain
                   musl-source.ts          → download musl 1.2.5 source
                   musl-build.ts           → build musl from source
                   binutils-source.ts      → download binutils 2.37 source
                   binutils-musl.ts        → build binutils targeting musl
-                  gcc-source.ts           → download gcc 11.2.0 source
-                  gcc-musl.ts             → build gcc targeting musl (C + C++)
+                  gcc-source.ts           → download gcc 14.2.0 source
+                  gcc-musl.ts             → build gcc 14.2.0 targeting musl (C + C++)
                   hod-musl-toolchain.ts   → assemble gcc + binutils + musl
                   validate-*.ts           → smoke tests for each component
                   python.ts/install       → python for glibc configure script
@@ -289,13 +332,14 @@ recipes/
                   NOTE: part of the bootstrap ladder — must use seed-root.
 
   cross/        Stage 1: cross-compilation (musl host → glibc target)
-                  linux-headers, gmp, mpfr, mpc → gcc-stage1
-                  glibc, glibc-runtime
+                  linux-headers, glibc, glibc-runtime
+                  gcc-stage1 (cross-compiler, GCC 13.2.0)
                   validate-stage1, validate-complex
                   hello-packed, run-packed-hello (packed binary tests)
-                  NOTE: gmp/mpfr/mpc are in the bootstrap ladder.
+                  NOTE: gmp/mpfr/mpc are in the bootstrap ladder (seed-root).
+                  Everything else uses hod-seed-root.
 
-  stage2/       Stage 2.5: gcc-stage2 (native glibc compiler)
+  stage2/       Stage 2.5: gcc-stage2 (native glibc compiler, GCC 13.2.0)
                   gmp, mpfr, mpc (native-built, for gcc-stage2 to link)
                   gcc-stage2, gcc-stage2-c
                   validate-gcc-stage2, validate-gcc-stage2-c
@@ -304,65 +348,71 @@ recipes/
                   bash, coreutils, make, sed, grep, gawk, patch, tar
                   binutils, diffutils, findutils
                   validate-bash, validate-reloc, validate-selfhost
-                  ncurses/ → cbonsai/ (downstream packages, already migrated)
-                NOTE: most still use seed as executor + gcc-stage1 as compiler.
-                They haven't been migrated to the native toolchain yet.
+                  ncurses/ → cbonsai/ (downstream packages)
 
   toolchain/    Toolchain assembly
-                  busybox-source.ts  → download busybox source
-                  busybox-native.ts  → static busybox (seed musl gcc)
+                  busybox-source.ts  → download busybox 1.37.0 source
+                  busybox-native.ts  → static busybox (Hod-built musl gcc)
                   native-toolchain.ts → bundles everything together
+
+  roundtrip/    Round-trip verification (Phase C.2)
+                  musl-build-stage2.ts       → musl rebuilt by native toolchain
+                  binutils-musl-stage2.ts    → binutils-musl rebuilt
+                  gcc-musl-stage2.ts         → gcc-musl rebuilt (cross-compilation)
+                  validate-roundtrip.ts      → proves round-trip GCC works
 
   sources/      (gitignored) Pre-seeded source tarballs and binaries
                   Used for offline development / avoiding re-downloads.
 ```
 
-## Known Issues and Gaps
+## Known Issues and Future Work
 
-### 1. Downstream recipes still use seed-root, not hod-seed-root
+### 1. hermeticPreamble glibc libc.so bug
 
-Most `recipes/cross/`, `recipes/native/`, `recipes/stage2/`, and
-`recipes/toolchain/` files import `seedRootRecipe`. They should be migrated
-to `hodSeedRootRecipe` so the downstream pipeline uses the fully auditable,
-Hod-built musl toolchain instead of the pre-built musl.cc download.
+`hermeticPreamble()` symlinks ALL `$toolchain/lib/*.so*` files into `/lib/`,
+including glibc's `libc.so` linker script (a text file, not ELF). The
+dynamic linker fails with "invalid ELF header" when it encounters this.
+Currently worked around in the roundtrip recipes with a custom preamble.
+A proper fix should exclude linker scripts from symlinking.
 
-The bootstrap ladder recipes (shims, cross/gmp|mpfr|mpc, bootstrap/gcc-musl
-and its dependencies) must continue using `seedRootRecipe` to avoid the
-circular dependency.
+### 2. Round-trip not bit-for-bit
 
-### 2. Native recipes still use gcc-stage1, not gcc-stage2
+The round-trip proves *functional* correctness, not bit-identical
+reproducibility. The two compilers (musl.cc GCC 11.2.1 vs. native GCC
+13.2.0) produce different object code. Achieving bit-for-bit reproducibility
+would require solving `__DATE__` macros, `ar` archive ordering, build
+timestamps, and using the same compiler version for both stages.
 
-Most `recipes/native/` files (bash, coreutils, make, etc.) import
-`gcc-stage1` as their compiler. Only `native-toolchain` uses `gcc-stage2`.
-This works because gcc-stage1 is a functioning cross-compiler, but it
-means the native tools aren't truly self-hosted yet — they were cross-compiled.
+### 3. Opaque busybox still in bootstrap ladder
 
-This doesn't affect correctness (the output is the same glibc-linked
-binary either way), but it means the "native" tools aren't truly
-self-hosted yet — they were cross-compiled.
+`seed-root.ts` still bundles the opaque busybox. It's used as the shell
+executor for bootstrap ladder builds. `busybox-from-source.ts` depends on
+`seed-root.ts` (to avoid circular deps), so the opaque busybox is
+technically on the dependency path of the source-built one. See
+`plans/bootstrap-roadmap.md` "Future Considerations" for discussion.
 
-### 3. Seed busybox is opaque
+### 4. Seed minimization (Phase D)
 
-`recipes/bootstrap/busybox.ts` uses `fileFromHash` with no source URL.
-We don't know what version of busybox it is or how it was built.
-`busybox-native` (built from source) replaces it for downstream use,
-but the seed blob is still the initial executor for everything.
+The musl.cc tarball (~50MB) includes a full GCC installation. Most of
+this is redundant since we build musl, binutils, and gcc from source.
+Phase D will reduce the seed to a single static GCC binary (~20MB).
 
 ## Path to Even More Minimal Bootstrapping
 
 The current irreducible seed is two artifacts: busybox + musl.cc toolchain.
 Future work could reduce this further:
 
-1. **Build busybox from source** (Phase 6 in the build-musl-from-source plan)
-   using the Hod-built toolchain. This would leave only the musl.cc download
-   as the irreducible seed — but it would be used *only* to bootstrap
-   gcc-musl, not by the rest of the pipeline.
+1. **Seed minimization** (Phase D). Extract just a single static musl-compiled
+   GCC binary from the musl.cc tarball and use it as the sole seed artifact.
+   Then build musl, binutils, and the full toolchain from source using just
+   that binary. Reduces the seed's attack surface from a full toolchain to
+   a single compiler.
 
-2. **Write a minimal C compiler in assembly** (a la bootstrappable.org's
+2. **Eliminate the opaque busybox from the bootstrap ladder.** If `process`
+   recipes could invoke a command directly without a shell (e.g., `make` as
+   the command with args), the bootstrap ladder could avoid needing any
+   busybox at all — just the musl gcc binary + a shim `make`.
+
+3. **Write a minimal C compiler in assembly** (a la bootstrappable.org's
    mesCC/m2-planet). This is the most minimal possible bootstrap but is a
    much larger project.
-
-3. **Separate the bootstrap ladder into more stages**. Currently gcc-musl
-   is built in one stage. A multi-stage approach (minimal C-only gcc first,
-   then a full C++ gcc using the minimal one) could allow parts of the
-   bootstrap ladder to switch to hod-seed-root sooner.

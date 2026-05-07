@@ -87,7 +87,7 @@ Encoding rules: little-endian integers; UTF-8 strings with fixed-width length pr
 
 - `PRD.md` is absent; do not add references to it unless it is restored.
 - `hod shell`, `hod import-file`, and `hod resolve` are not current CLI commands.
-- `runtime_deps` is encoded as a backward-compatible Process tail field and is acted on by `build.rs` via `src/relocate.rs`.
+- `runtime_deps` is encoded as a backward-compatible Process tail field and is acted on by `build.rs` via `src/relocate.rs`. When using `shellBuild`, declare `runtime_deps` for any recipe that produces dynamically-linked binaries. `shellBuild` injects a long dummy RPATH (`$HOD_DUMMY_RPATH`) automatically; recipes that set their own `LDFLAGS` must include it. The relocation pass also adds a self-referencing `$ORIGIN/../lib` path so binaries can find shared libs in their own output.
 - `src/relocate.rs` is an implemented prototype exported from `lib.rs` and integrated into the Process builder.
 - AT_EXECFN bootstrap APIs (`parse_interp`, `patch_runpath_to`, `inject_bootstrap`) are present in `src/packed.rs`; heavyweight validation tests remain ignored by default.
 - `Unpack` recipes can be represented and hashed, but `build_unpack` returns “not yet implemented”.

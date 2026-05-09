@@ -22,9 +22,9 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/readline-8.3
 
-# Point to ncurses headers and libraries
-export CFLAGS="$CFLAGS -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
-export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
+# pkg-config provides ncurses -I/-L/-l flags from the relocatable .pc files.
+export LDFLAGS="$HOD_DUMMY_RPATH"
+export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 
 ./configure \\
   --prefix=/ \\
@@ -34,6 +34,16 @@ export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
 
 make -j$(nproc) SHLIB_LIBS="-L/deps/ncurses/lib -lncursesw"
 make install DESTDIR=$OUT
+
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
 
 # Strip shared libraries
 for f in $OUT/lib/lib*.so.*.*.*; do

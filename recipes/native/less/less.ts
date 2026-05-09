@@ -19,8 +19,9 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/less-692
 
-export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
-export CPPFLAGS="-I/deps/ncurses/include/ncursesw"
+# pkg-config provides -I/-L/-l flags from the relocatable ncurses .pc files.
+export LDFLAGS="$HOD_DUMMY_RPATH"
+export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 
 # less uses a custom configure (not autotools)
 ./configure \\

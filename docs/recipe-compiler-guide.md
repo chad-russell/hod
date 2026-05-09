@@ -355,6 +355,5 @@ Implemented:
 Deferred / caveats:
 
 - Directory and Symlink TS constructors are not implemented.
-- Rust `Unpack` building is a stub (`build_unpack` returns unsupported).
 - `hod resolve` / path refs are deferred; see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md).
 - Some E2E process tests are ignored because their fixtures still assume `/bin/bash`; they need hermetic shell fixtures to run inside Hod's sandbox.

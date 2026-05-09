@@ -33,6 +33,16 @@ make -C lib install DESTDIR=$OUT PREFIX=/ LIB_TYPE=dynamic
 # Install CLI programs
 make -C programs install DESTDIR=$OUT PREFIX=/
 
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
+
 # Strip the binary and shared library
 $STRIP $OUT/bin/zstd 2>/dev/null || true
 $STRIP $OUT/lib/libzstd.so.*.*.* 2>/dev/null || true

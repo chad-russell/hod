@@ -34,6 +34,16 @@ export CXXCPP="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps
 make -j$(nproc)
 make install DESTDIR=$OUT
 
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
+
 # Ensure the static library archive is properly indexed
 /deps/toolchain/bin/ranlib $OUT/lib/libffi.a 2>/dev/null || true
 

@@ -23,10 +23,9 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/openssh-10.3p1
 
-# Point at shared openssl and zlib in deps
-export CPPFLAGS="-I/deps/openssl/include -I/deps/zlib/include"
-export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/openssl/lib -L/deps/zlib/lib"
-export LIBS="-lcrypto -lssl -lz -ldl"
+# pkg-config provides -I/-L/-l flags from the relocatable .pc files.
+export LDFLAGS="$HOD_DUMMY_RPATH"
+export PKG_CONFIG_PATH="/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig"
 
 # Allow configure's test programs to find shared libs
 export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib

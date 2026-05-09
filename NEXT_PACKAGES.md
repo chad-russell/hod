@@ -1,20 +1,32 @@
 # Next Packages
 
-Already built: bash, binutils, coreutils, diffutils, findutils, gawk, grep, make, patch, sed, tar, cbonsai, ncurses, zlib, openssl, bzip2, xz, readline, libffi, pkgconf, perl, curl, ca-certificates, gzip, less, m4, expat, file, zstd, libiconv, git, openssh, vim, procps-ng, htop, strace, nano, rsync, jq, oniguruma, tree, python.
+Goal: **Build the most-wanted developer tools** — the kind of thing people reach for on a new machine via `brew install` or `pacman -S`.
 
-Prioritized by (feasibility with current deps) × (usefulness to you).
+Already built: ripgrep, jq, curl, git, vim, tmux, htop, tree, strace, less, file, findutils, grep, gzip, xz, zstd, bzip2, python, sqlite, openssh, rsync, procps-ng, nano, openssl, ncurses, readline, zlib, ca-certificates, fd, bat, just, tokei, hyperfine, zoxide, tealdeer, dust, ncdu, nnn, cbonsai, bc, m4, autoconf, automake, bison, flex, libxml2, pcre2, libevent, lz4, perl, and the full native toolchain + Rust toolchain.
 
-## Batch 3: Build infrastructure + enabler libraries + high-value tool
+---
 
-This batch focuses on (a) completing the autotools stack so we can self-host builds that need `autoreconf`, (b) adding small widely-needed libraries that unblock many downstream packages, and (c) a high-value everyday tool to round it out.
+## Next 10 — popular developer tools
 
-- [ ] 1. **autoconf** — GNU Autoconf 2.72. Generates `configure` scripts. Needs m4 + perl (both built). It's a Perl/shell script package (no compilation). Essential infrastructure: many source tarballs ship without a pre-generated `configure` and need `autoreconf` to build. Trivial build; unlocks a huge class of packages.
-- [ ] 2. **automake** — GNU Automake 1.18.1. Generates `Makefile.in` from `Makefile.am`. Needs autoconf + perl. Paired with autoconf to complete the autotools generation toolchain. Also a Perl script package; trivial once autoconf is done.
-- [ ] 3. **bison** — GNU Bison 3.8.2. Parser generator (LALR/YACC replacement). Needs m4 (built). Standard autotools build. Unblocks many packages whose build requires bison (e.g., flex's own build, many language runtimes, databases).
-- [ ] 4. **flex** — Flex 2.6.4. Fast lexical analyzer generator (LEX replacement). Needs m4 (built); bison optional but we'll have it. Standard autotools build with `--disable-bootstrap` for cross-build friendliness. Paired with bison as the standard parser/lexer toolchain.
-- [ ] 5. **sqlite** — SQLite 3.53.1. Self-contained SQL database engine (amalgamation build with autoconf tarball). Zero external deps beyond toolchain. Produces `libsqlite3.so`, `sqlite3` CLI, headers, and pkg-config. Enables Python `_sqlite3` extension module and is used by countless other packages.
-- [ ] 6. **lz4** — LZ4 1.10.0. Extremely fast compression library. Standalone, zero deps beyond toolchain. Simple Makefile build (`make install`). Produces `liblz4.so`, `lz4` CLI. Needed by libarchive, cURL (HTTP content-encoding), and many modern packages.
-- [ ] 7. **pcre2** — PCRE2 10.47. Perl-compatible regular expression library. Standalone autotools build, zero deps beyond toolchain (optionally uses zlib, bzip2 for JIT). Produces `libpcre2-8.so` and `pcre2grep` CLI. Required by git (can replace bundled copy), grep, less, and many other tools that use regex.
-- [ ] 8. **libevent** — libevent 2.1.12-stable. Event notification library. Needs openssl (optional, for bufferevent OpenSSL support — already built). Autotools build. Produces `libevent.so`, `libevent_openssl.so`. Enables tmux, tor, memcached, and many network services.
-- [ ] 9. **libxml2** — libxml2 2.13.8. XML C parser and toolkit. Needs zlib, xz, libiconv (all built); optionally readline, ncurses. CMake or autotools build. Produces `libxml2.so`, headers, pkg-config. Ubiquitous dependency (curl HTTP/2 via nghttp2 needs it, desktop stack, Python lxml, etc.).
-- [ ] 10. **tmux** — tmux 3.6a. Terminal multiplexer. Needs libevent + ncurses (both will be built). Standard autotools build. High everyday value for development workflow. Produces a single `bin/tmux` binary dynamically linked to libevent, ncurses, and glibc via store-relative RPATH.
+Six Rust packages (using `cargoBuild`) and four C packages (using `shellBuild`). All dependencies are already built. Ordered by popularity × feasibility.
+
+
+- [ ] 1. **eza** — `eza` 0.23.4 (github.com/eza-community/eza). Modern, maintained replacement for `ls` — colors, Git status, icons, tree view. Extremely popular on homebrew/arch/nixpkgs. Pure Rust with bundled `git2` (compiles libgit2 from source via cc). cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 2. **delta** — `delta` 0.19.2 (github.com/dandavison/delta). Syntax-highlighting pager for git, diff, and grep output. Very popular among developers as a diff viewer. Pure Rust with bundled `git2`. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 3. **bottom** — `bottom` 0.12.3 (github.com/ClementTsang/bottom). Cross-platform system and process monitor (`btm`) — a modern `htop` alternative with customizable TUI. Very popular. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 4. **procs** — `procs` 0.14.11 (github.com/dalance/procs). Modern replacement for `ps` — colored output, tree view, Docker/container awareness. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 5. **wget** — `wget` 1.25.0 (ftp.gnu.org/gnu/wget). GNU file downloader — the classic `wget` for HTTP/HTTPS/FTP. Essential CLI tool, complementary to curl. C/autotools build. Deps: toolchain + openssl + zlib (all built). `shellBuild` with autotools. `runtime_deps: ["openssl", "zlib", "toolchain"]`.
+
+- [ ] 6. **tig** — `tig` 2.6.0 (github.com/jonas/tig). ncurses-based text-mode interface for git — repository browser, blame viewer, staging helper. Very popular Git companion. C/autotools build. Deps: toolchain + ncurses + readline (all built). Bundles its own utf8proc. `shellBuild` with autotools. `runtime_deps: ["ncurses", "readline", "toolchain"]`.
+
+- [x] 7. **pv** — `pv` 1.10.5 (ivarch.com/programs/pv). Pipe Viewer — monitor data progress through pipes with ETA, speed, and progress bars. Incredibly useful for large file operations and backups. C/autotools build. Deps: toolchain only. `shellBuild` with autotools. `runtime_deps: ["toolchain"]`.
+
+- [ ] 8. **hexyl** — `hexyl` 0.17.0 (github.com/sharkdp/hexyl). Command-line hex viewer with colored output. From the sharkdp family (fd, bat, hyperfine). Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 9. **sd** — `sd` 1.1.0 (github.com/chmln/sd). Intuitive find & replace CLI — a modern `sed` alternative with regex support and streaming mode. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+
+- [ ] 10. **xxhash** — `xxhash` 0.8.3 (github.com/Cyan4973/xxHash). Extremely fast non-cryptographic hash algorithm (XXH3, XXH64, XXH32). Provides `xxhsum` CLI and `libxxhash.so`. Widely used as a library dependency and standalone checksum tool. C/Makefile build. Deps: toolchain only. `shellBuild` with make (`LIB_TYPE=dynamic`). `runtime_deps: ["toolchain"]`.

@@ -11,8 +11,11 @@
 //! The sandbox filesystem layout per PRD §6.2:
 //! ```text
 //! /                   (root = sandbox_root on host)
+//! ├── <shard>/<hash>/ → bind-mounted dependency outputs at canonical store paths
+//! ├── store/
+//! │   └── <shard>/<hash>/ -> ../../<shard>/<hash>/
 //! ├── deps/
-//! │   ├── <name>/    → bind-mounted (read-only) or copied dependency outputs
+//! │   ├── <name>/    -> ../<shard>/<hash>/
 //! │   └── ...
 //! ├── tmp/            → writable (bind-mounted host tmp or tmpfs)
 //! ├── dev/            → bind-mounted from host /dev
@@ -34,11 +37,16 @@ use crate::build::BuildError;
 
 /// A dependency to be mounted in the sandbox.
 ///
-/// Each dep's output is bind-mounted at `/store/<shard>/<hex>/` and
-/// symlinked from `/deps/<name>/` for human-readable access. This layout
-/// mirrors the host store's staging directory structure, enabling
-/// store-relocated binaries (with AT_EXECFN bootstrap) to resolve their
-/// runtime dependencies inside the sandbox.
+/// Each dep's output is bind-mounted at the canonical store-shaped path
+/// `/<shard>/<hex>/`. For convenience, the sandbox also creates:
+/// - `/store/<shard>/<hex>/ -> ../../<shard>/<hex>/`
+/// - `/deps/<name>/ -> ../<shard>/<hex>/`
+///
+/// The canonical `/<shard>/<hex>/` path is important: store-relative
+/// `PT_INTERP` paths in relocated executables are interpreted relative to the
+/// *invocation path*, so named aliases like `/deps/<name>/bin/tool` only work
+/// if walking `../../../<shard>/<hash>/...` from that alias lands on a real
+/// top-level shard directory.
 #[derive(Debug, Clone)]
 pub struct DepMount {
     /// Human-readable dependency name (e.g., "gcc", "glibc").
@@ -64,10 +72,9 @@ pub struct SandboxConfig {
     pub sandbox_root: PathBuf,
     /// Named dependencies to mount in the sandbox.
     ///
-    /// Each dep is bind-mounted at `/store/<shard>/<hex>/` with a symlink
-    /// from `/deps/<name>/` for human-readable access. This mirrors the
-    /// host store's staging layout, enabling store-relocated binaries to
-    /// work inside the sandbox.
+    /// Each dep is bind-mounted at `/<shard>/<hex>/` (the canonical store-like
+    /// path inside the sandbox), with compatibility aliases at
+    /// `/store/<shard>/<hex>/` and `/deps/<name>/`.
     pub deps: Vec<DepMount>,
     /// Guest path where the process writes output (e.g. `/out`).
     pub out_path: PathBuf,
@@ -128,10 +135,13 @@ pub fn setup_sandbox_filesystem(config: &SandboxConfig) -> Result<(), BuildError
         std::fs::create_dir_all(root.join(dir)).map_err(io_error)?;
     }
 
-    // Create store mount points for each dependency
+    // Create canonical and compatibility mount points for each dependency.
     for dep in &config.deps {
-        let store_path = root.join("store").join(&dep.store_shard).join(&dep.store_hex);
-        std::fs::create_dir_all(&store_path).map_err(io_error)?;
+        let canonical_path = root.join(&dep.store_shard).join(&dep.store_hex);
+        std::fs::create_dir_all(&canonical_path).map_err(io_error)?;
+
+        let store_shard_dir = root.join("store").join(&dep.store_shard);
+        std::fs::create_dir_all(&store_shard_dir).map_err(io_error)?;
     }
 
     Ok(())
@@ -334,36 +344,66 @@ mod linux_sandbox {
             )
         })?;
 
+        // -- /etc/resolv.conf: set up DNS when networking is allowed --
+        // Cargo and other tools need DNS resolution to download dependencies.
+        // The host's /etc/resolv.conf may point to a local stub (e.g., 127.0.0.53
+        // for systemd-resolved) that isn't reachable from inside the sandbox.
+        // We read the host's resolv.conf and, if it uses a loopback nameserver,
+        // try the systemd-resolved non-stub version, then fall back to public DNS.
+        if allow_networking {
+            let etc_path = root.join("etc");
+            std::fs::create_dir_all(&etc_path)?;
+            let resolv_path = etc_path.join("resolv.conf");
+
+            // Read host resolv.conf, following symlinks
+            let host_resolv = std::fs::read_to_string("/etc/resolv.conf")
+                .or_else(|_| std::fs::read_to_string("/run/systemd/resolve/stub-resolv.conf"))
+                .unwrap_or_default();
+
+            // Check if it uses a loopback nameserver
+            let uses_loopback = host_resolv
+                .lines()
+                .any(|line| line.starts_with("nameserver") && line.contains("127."));
+
+            let effective_resolv = if uses_loopback {
+                // Try the non-stub systemd-resolved resolv.conf
+                std::fs::read_to_string("/run/systemd/resolve/resolv.conf")
+                    .unwrap_or_else(|_| {
+                        // Fallback: use common public DNS
+                        "nameserver 8.8.8.8\nnameserver 1.1.1.1\n".to_string()
+                    })
+            } else {
+                host_resolv
+            };
+
+            std::fs::write(&resolv_path, &effective_resolv)?;
+        }
+
 
 
         // -- Dependencies --
-        // Each dep is bind-mounted at /store/<shard>/<hex>/ (mirroring the host
-        // store's staging layout) with a symlink from /deps/<name>/ for
-        // human-readable access. This allows store-relocated binaries (AT_EXECFN
-        // bootstrap) to resolve their runtime dependencies inside the sandbox.
+        // Bind each dep at the canonical store-like path /<shard>/<hex>/.
+        // Then create two alias layers:
+        //   - /store/<shard>/<hex>/ -> ../../<shard>/<hex>/
+        //   - /deps/<name>/         -> ../<shard>/<hex>/
+        //
+        // The canonical top-level shard directories are what make raw
+        // store-relative PT_INTERP paths work even when a tool is invoked via
+        // the human-friendly /deps/<name>/ alias: walking ../../../<shard>/<hash>
+        // from /deps/<name>/bin/tool lands on /<shard>/<hash>/.
         let store_dir = root.join("store");
         let deps_dir = root.join("deps");
         std::fs::create_dir_all(&store_dir)?;
         std::fs::create_dir_all(&deps_dir)?;
 
         for dep in deps {
-            let store_path = store_dir.join(&dep.store_shard).join(&dep.store_hex);
-            std::fs::create_dir_all(&store_path)?;
+            let canonical_path = root.join(&dep.store_shard).join(&dep.store_hex);
+            std::fs::create_dir_all(&canonical_path)?;
 
-            // Clean up any previous entry at /deps/<name> (e.g., from shell reuse)
-            let symlink_path = deps_dir.join(&dep.name);
-            if symlink_path.is_symlink() {
-                let _ = std::fs::remove_file(&symlink_path);
-            } else if symlink_path.is_dir() {
-                let _ = std::fs::remove_dir_all(&symlink_path);
-            } else if symlink_path.is_file() {
-                let _ = std::fs::remove_file(&symlink_path);
-            }
-
-            // Bind-mount the dep's staging directory at /store/<shard>/<hex>/
+            // Bind-mount the dep's staging directory at /<shard>/<hex>/
             match mount(
                 Some(&dep.host_staging_path),
-                &store_path,
+                &canonical_path,
                 None::<&str>,
                 MsFlags::MS_BIND | MsFlags::MS_REC,
                 None::<&str>,
@@ -372,7 +412,7 @@ mod linux_sandbox {
                     // Remount read-only
                     let _ = mount(
                         Some(&dep.host_staging_path),
-                        &store_path,
+                        &canonical_path,
                         None::<&str>,
                         MsFlags::MS_BIND
                             | MsFlags::MS_REC
@@ -383,12 +423,34 @@ mod linux_sandbox {
                 }
                 Err(_) => {
                     // Fall back to recursive copy
-                    copy_dir_recursive(&dep.host_staging_path, &store_path)?;
+                    copy_dir_recursive(&dep.host_staging_path, &canonical_path)?;
                 }
             }
 
-            // Create named symlink: /deps/<name> → ../store/<shard>/<hex>/
-            let symlink_target = format!("../store/{}/{}", dep.store_shard, dep.store_hex);
+            // Create /store/<shard>/<hex> -> ../../<shard>/<hex>
+            let store_shard_dir = store_dir.join(&dep.store_shard);
+            std::fs::create_dir_all(&store_shard_dir)?;
+            let store_alias = store_shard_dir.join(&dep.store_hex);
+            if store_alias.is_symlink() {
+                let _ = std::fs::remove_file(&store_alias);
+            } else if store_alias.is_dir() {
+                let _ = std::fs::remove_dir_all(&store_alias);
+            } else if store_alias.is_file() {
+                let _ = std::fs::remove_file(&store_alias);
+            }
+            let store_target = format!("../../{}/{}", dep.store_shard, dep.store_hex);
+            std::os::unix::fs::symlink(&store_target, &store_alias)?;
+
+            // Create /deps/<name> -> ../<shard>/<hex>
+            let symlink_path = deps_dir.join(&dep.name);
+            if symlink_path.is_symlink() {
+                let _ = std::fs::remove_file(&symlink_path);
+            } else if symlink_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&symlink_path);
+            } else if symlink_path.is_file() {
+                let _ = std::fs::remove_file(&symlink_path);
+            }
+            let symlink_target = format!("../{}/{}", dep.store_shard, dep.store_hex);
             std::os::unix::fs::symlink(&symlink_target, &symlink_path)?;
         }
 

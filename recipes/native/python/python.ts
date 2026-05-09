@@ -10,10 +10,11 @@
 //! Modules not built (missing deps): _sqlite3, _uuid, _tkinter, _gdbm, _dbm.
 //!
 //! Key build note: Python's configure uses PKG_CHECK_MODULES (pkg-config) for
-//! many dependencies, but pkg-config returns paths relative to the install
-//! prefix (/) which don't exist in the hermetic sandbox. We bypass this by
-//! pre-setting the _CFLAGS and _LIBS variables on the configure command line,
-//! which PKG_CHECK_MODULES respects as pre-set answers.
+//! many dependencies. The library .pc files use pcfiledir to resolve to correct
+//! sandbox paths. We pre-set the _CFLAGS and _LIBS variables on the configure
+//! command line for modules where explicit control is needed (e.g., _curses
+//! uses AC_CHECK_HEADERS which needs CPPFLAGS). PKG_CHECK_MODULES respects
+//! pre-set values as cached answers.
 //!
 //! Dependencies:
 //!   - openssl (TLS/SSL) — _ssl, _hashlib
@@ -44,6 +45,9 @@ const recipe = await shellBuild({
 # Extract source
 tar xf /deps/source/source -C /tmp
 cd /tmp/Python-3.13.13
+
+# Set PKG_CONFIG_PATH so configure's PKG_CHECK_MODULES can find all deps.
+export PKG_CONFIG_PATH="/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig:/deps/libffi/lib/pkgconfig:/deps/ncurses/lib/pkgconfig:/deps/bzip2/lib/pkgconfig:/deps/xz/lib/pkgconfig:/deps/expat/lib/pkgconfig"
 
 # Point at all dependency headers and libraries.
 # ncursesw headers are in include/ncursesw/ (curses.h, ncurses.h).

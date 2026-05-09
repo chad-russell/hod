@@ -38,6 +38,22 @@ cd /tmp/ncurses-6.6
 make -j$(nproc)
 make install DESTDIR=$OUT
 
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
+
+# Add parent include path so <ncursesw/...> cross-includes resolve.
+for pc in $OUT/lib/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  sed -i '/^Cflags:/ s|$| -I\${prefix}/include|' "$pc"
+done
+
 # Strip shared libraries
 for f in $OUT/lib/lib*.so.*.*.*; do
   /deps/toolchain/bin/strip "$f" 2>/dev/null || true

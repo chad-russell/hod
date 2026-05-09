@@ -28,7 +28,8 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/vim-9.2.0000/src
 
-# Point at shared ncursesw
+# Point at shared ncursesw via relocatable .pc files.
+export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 export CPPFLAGS="-I/deps/ncurses/include/ncursesw"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
 

@@ -274,12 +274,19 @@ fn null_terminated_len(data: &[u8], offset: usize) -> std::result::Result<usize,
 /// Patch the RPATH/RUNPATH in an ELF binary's raw bytes with a specific path.
 ///
 /// If an existing RPATH or RUNPATH is found, it is overwritten in-place with
-/// `new_rpath`. The existing string must be long enough to hold the new
-/// value (padded with null bytes).
+/// `new_rpath`. If the existing string is too short for in-place replacement,
+/// the function attempts to **extend** `.dynstr` by writing the new RUNPATH
+/// into zero-padded space after the current string table content (within the
+/// same `PT_LOAD` segment). If that also fails (no padding space), the
+/// function falls back to appending the entire `.dynstr` + new RUNPATH to the
+/// end of the file and extending the last `PT_LOAD` segment to cover it.
+///
+/// Takes `&mut Vec<u8>` (not `&mut [u8]`) because the append fallback may
+/// need to grow the buffer.
 ///
 /// Returns `Ok(true)` if patched, `Ok(false)` if no RPATH/RUNPATH found.
 pub fn patch_runpath_to(
-    data: &mut [u8],
+    data: &mut Vec<u8>,
     new_rpath: &[u8],
 ) -> std::result::Result<bool, PackedError> {
     let info = find_rpath(data)?;
@@ -289,22 +296,667 @@ pub fn patch_runpath_to(
         RpathInfo::Rpath { offset, len } | RpathInfo::Runpath { offset, len } => {
             let new_len = new_rpath.len();
 
-            if len < new_len {
-                return Err(PackedError::RunpathTooShort {
-                    existing_len: len,
-                    needed_len: new_len,
-                });
+            if len >= new_len {
+                // Fast path: in-place replacement (existing behavior)
+                let off = offset as usize;
+                data[off..off + new_len].copy_from_slice(new_rpath);
+                data[off + new_len..off + len].fill(0);
+                Ok(true)
+            } else {
+                // Extension path: try to append new string to .dynstr
+                patch_runpath_by_extension(data, new_rpath, offset as usize, len)
             }
-
-            let off = offset as usize;
-            // Write the new runpath
-            data[off..off + new_len].copy_from_slice(new_rpath);
-            // Zero-fill the remainder
-            data[off + new_len..off + len].fill(0);
-
-            Ok(true)
         }
     }
+}
+
+/// Try to patch the RUNPATH by extending `.dynstr`.
+///
+/// When the new RUNPATH is too long for in-place replacement, this function
+/// tries two strategies:
+///
+/// 1. **Padding extension:** If there's zero-padded space after `.dynstr`
+///    content within the same `PT_LOAD` segment, write the new RUNPATH there,
+///    null out the old string, and update the dynamic section entries.
+///
+/// 2. **Append extension:** If no padding is available (common for prebuilt
+///    binaries where other sections follow `.dynstr`), copy the entire
+///    `.dynstr` to the end of the file, append the new RUNPATH, extend the
+///    last `PT_LOAD` segment to cover it, and update `DT_STRTAB`/`DT_STRSZ`
+///    to point to the new location.
+fn patch_runpath_by_extension(
+    data: &mut Vec<u8>,
+    new_rpath: &[u8],
+    old_rpath_offset: usize,
+    old_rpath_len: usize,
+) -> std::result::Result<bool, PackedError> {
+    match patch_runpath_padding_extension(data, new_rpath, old_rpath_offset, old_rpath_len) {
+        Ok(result) => Ok(result),
+        Err(PackedError::RunpathTooShort { .. }) => {
+            // Padding extension failed — create new PT_LOAD segment
+            patch_elf_with_new_segment(data, new_rpath, None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Strategy 1: Extend `.dynstr` into zero-padded space after its content.
+///
+/// Works when `.dynstr` has alignment padding or unused space at the end of
+/// its `PT_LOAD` segment.
+fn patch_runpath_padding_extension(
+    data: &mut [u8],
+    new_rpath: &[u8],
+    old_rpath_offset: usize,
+    old_rpath_len: usize,
+) -> std::result::Result<bool, PackedError> {
+    // Phase 1: Parse the ELF and extract all needed info into owned values,
+    // so we can drop the borrow before mutating `data`.
+    struct DynstrInfo {
+        content_end: usize,
+        dyn_base: usize,
+        strsz_idx: usize,
+        runpath_idx: usize,
+        new_strsz: usize,
+        new_offset_in_dynstr: u64,
+    }
+
+    let info = {
+        let elf = Elf::parse(data).map_err(|e| PackedError::NotElf(e.to_string()))?;
+        let dynamic = match elf.dynamic {
+            Some(ref d) => d,
+            None => return Ok(false),
+        };
+
+        // Find DT_STRTAB (vaddr of .dynstr) and DT_STRSZ (its size)
+        let mut strtab_vaddr: u64 = 0;
+        let mut strsz: u64 = 0;
+        for entry in &dynamic.dyns {
+            match entry.d_tag {
+                goblin::elf::dynamic::DT_STRTAB => strtab_vaddr = entry.d_val,
+                goblin::elf::dynamic::DT_STRSZ => strsz = entry.d_val,
+                _ => {}
+            }
+        }
+        if strtab_vaddr == 0 || strsz == 0 {
+            return Ok(false);
+        }
+
+        // Convert strtab vaddr to file offset
+        let dynstr_file_off = vaddr_to_file_offset(&elf, strtab_vaddr)? as usize;
+
+        // Find the actual end of referenced strings in .dynstr.
+        // DT_STRSZ may not accurately reflect the end of all string content
+        // (e.g., after stripping, the declared size may exclude a trailing NUL
+        // that terminates the last string). We scan all dynamic entries that
+        // reference the string table to find the true maximum string end.
+        let mut actual_str_end: usize = 0;
+        for entry in &dynamic.dyns {
+            if entry.d_tag == goblin::elf::dynamic::DT_NULL {
+                break;
+            }
+            // Tags whose d_val is a string table offset.
+            // DT_NEEDED (1), DT_SONAME (14), DT_RPATH (15), DT_RUNPATH (29),
+            // DT_AUXILIARY (0x7ffffffd), DT_USED (0x7ffffffe), DT_FILTER (0x7fffffff).
+            let is_strtab_ref = matches!(
+                entry.d_tag,
+                goblin::elf::dynamic::DT_NEEDED
+                    | goblin::elf::dynamic::DT_SONAME
+                    | goblin::elf::dynamic::DT_RPATH
+                    | goblin::elf::dynamic::DT_RUNPATH
+            ) || entry.d_tag == 0x7ffffffd  // DT_AUXILIARY
+                || entry.d_tag == 0x7ffffffe  // DT_USED
+                || entry.d_tag == 0x7fffffff; // DT_FILTER
+
+            if is_strtab_ref {
+                let str_off = entry.d_val as usize;
+                    // Find the length of this string in the data
+                    let file_off = dynstr_file_off + str_off;
+                    if file_off < data.len() {
+                        let remaining = &data[file_off..];
+                        let nul_pos = remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
+                        let str_end = str_off + nul_pos + 1; // +1 for NUL
+                        if str_end > actual_str_end {
+                            actual_str_end = str_end;
+                        }
+                    }
+            }
+        }
+
+        // Use the actual string end (not DT_STRSZ) to determine where padding starts.
+        // This prevents overwriting NUL terminators of referenced strings.
+        let content_end = dynstr_file_off + actual_str_end;
+        let new_offset_in_dynstr = actual_str_end as u64;
+        let new_strsz = actual_str_end + new_rpath.len() + 1; // existing content + new string + NUL
+
+        let needed = new_rpath.len() + 1; // new string + NUL terminator
+
+        // Find the PT_LOAD segment that covers .dynstr
+        let load = elf.program_headers.iter().find(|ph| {
+            ph.p_type == program_header::PT_LOAD
+                && strtab_vaddr >= ph.p_vaddr
+                && strtab_vaddr < ph.p_vaddr + ph.p_memsz
+        });
+        let load = match load {
+            Some(ph) => ph,
+            None => return Ok(false),
+        };
+
+        // Check how much zero-padded space exists after the actual string content
+        // within the PT_LOAD's mapped file data.
+        let load_file_end = (load.p_offset + load.p_filesz) as usize;
+        let available = load_file_end.saturating_sub(content_end);
+
+        if available < needed {
+            return Err(PackedError::RunpathTooShort {
+                existing_len: available,
+                needed_len: needed,
+            });
+        }
+
+        // Verify the space is zero-filled (padding, not other data)
+        for i in 0..needed {
+            if data[content_end + i] != 0 {
+                return Err(PackedError::RunpathTooShort {
+                    existing_len: 0,
+                    needed_len: needed,
+                });
+            }
+        }
+
+        // Locate the PT_DYNAMIC program header
+        let dyn_phdr = elf
+            .program_headers
+            .iter()
+            .find(|ph| ph.p_type == program_header::PT_DYNAMIC);
+        let dyn_phdr = match dyn_phdr {
+            Some(ph) => ph,
+            None => return Ok(false),
+        };
+        let dyn_base = dyn_phdr.p_offset as usize;
+
+        // Find the indices of DT_STRSZ and DT_RUNPATH/DT_RPATH in the dyns array
+        let mut strsz_idx: usize = 0;
+        let mut runpath_idx: usize = 0;
+        for (i, entry) in dynamic.dyns.iter().enumerate() {
+            if entry.d_tag == goblin::elf::dynamic::DT_STRSZ {
+                strsz_idx = i;
+            }
+            if entry.d_tag == goblin::elf::dynamic::DT_RUNPATH
+                || entry.d_tag == goblin::elf::dynamic::DT_RPATH
+            {
+                runpath_idx = i;
+            }
+        }
+
+        DynstrInfo {
+            content_end,
+            dyn_base,
+            strsz_idx,
+            runpath_idx,
+            new_strsz,
+            new_offset_in_dynstr,
+        }
+    }; // `elf` borrow dropped here
+
+    // Phase 2: Mutate the data using the extracted info.
+
+    // Write the new RUNPATH string at the end of .dynstr content
+    data[info.content_end..info.content_end + new_rpath.len()].copy_from_slice(new_rpath);
+    data[info.content_end + new_rpath.len()] = 0; // NUL terminator
+
+    // Null out the old RUNPATH string
+    data[old_rpath_offset..old_rpath_offset + old_rpath_len].fill(0);
+
+    // Update DT_STRSZ to reflect the new .dynstr size
+    let dyn_entsize: usize = 16; // sizeof(Elf64_Dyn) = 8 (tag) + 8 (value)
+    let strsz_val_off = info.dyn_base + info.strsz_idx * dyn_entsize + 8;
+    data[strsz_val_off..strsz_val_off + 8]
+        .copy_from_slice(&(info.new_strsz as u64).to_le_bytes());
+
+    // Update the DT_RUNPATH (or DT_RPATH) entry's d_val to point to the
+    // new string offset within .dynstr.
+    let runpath_val_off = info.dyn_base + info.runpath_idx * dyn_entsize + 8;
+    data[runpath_val_off..runpath_val_off + 8]
+        .copy_from_slice(&info.new_offset_in_dynstr.to_le_bytes());
+
+    Ok(true)
+}
+
+/// Result of finding a program header slot for a new PT_LOAD entry.
+#[derive(Debug)]
+enum PhdrSlot {
+    /// Repurposed an existing PT_GNU_STACK entry.
+    RepurposedGnuStack {
+        /// Byte offset in the file where the phdr entry starts.
+        phdr_offset: usize,
+    },
+    /// Filled a gap after the existing phdr table.
+    FillGap {
+        /// Byte offset in the file where the new phdr entry starts.
+        phdr_offset: usize,
+    },
+}
+
+/// Find a program header slot for a new PT_LOAD entry.
+///
+/// Tries strategies in order:
+/// 1. **Repurpose PT_GNU_STACK** — overwrite a PT_GNU_STACK entry that has
+///    `p_filesz=0, p_memsz=0` (purely advisory, no actual content).
+/// 2. **Fill gap after phdr table** — if ≥56 bytes of zero-filled space exist
+///    between the end of the phdr table and the next section, write a new
+///    entry there and increment `e_phnum`.
+///
+/// Returns `Err` if neither strategy works (shift-file deferred to Phase 2).
+fn find_phdr_slot(data: &mut [u8]) -> std::result::Result<PhdrSlot, PackedError> {
+    let elf = Elf::parse(data).map_err(|e| PackedError::NotElf(e.to_string()))?;
+    let e_phoff = elf.header.e_phoff as usize;
+    let e_phentsize = elf.header.e_phentsize as usize;
+    let e_phnum = elf.header.e_phnum as usize;
+
+    // Strategy 1: Repurpose PT_GNU_STACK
+    for (i, ph) in elf.program_headers.iter().enumerate() {
+        if ph.p_type == program_header::PT_GNU_STACK
+            && ph.p_filesz == 0
+            && ph.p_memsz == 0
+        {
+            let phdr_offset = e_phoff + i * e_phentsize;
+            return Ok(PhdrSlot::RepurposedGnuStack { phdr_offset });
+        }
+    }
+
+    // Strategy 2: Fill gap after phdr table
+    let phdr_table_end = e_phoff + e_phnum * e_phentsize;
+
+    // Find the next section/segment offset after the phdr table
+    let mut next_offset = data.len();
+    for ph in &elf.program_headers {
+        let off = ph.p_offset as usize;
+        if off > phdr_table_end && off < next_offset {
+            next_offset = off;
+        }
+    }
+    // Also consider section header table
+    if elf.header.e_shoff > 0 {
+        let shoff = elf.header.e_shoff as usize;
+        if shoff > phdr_table_end && shoff < next_offset {
+            next_offset = shoff;
+        }
+    }
+
+    let gap = next_offset.saturating_sub(phdr_table_end);
+
+    if gap >= e_phentsize {
+        // Verify the gap bytes are zero-filled (not actual data)
+        let all_zero = data[phdr_table_end..phdr_table_end + e_phentsize]
+            .iter()
+            .all(|&b| b == 0);
+        if all_zero {
+            // Increment e_phnum
+            let new_phnum = (e_phnum + 1) as u16;
+            data[56..58].copy_from_slice(&new_phnum.to_le_bytes());
+            return Ok(PhdrSlot::FillGap {
+                phdr_offset: phdr_table_end,
+            });
+        }
+    }
+
+    Err(PackedError::NotElf(
+        "no available program header slot for new PT_LOAD segment \
+         (PT_GNU_STACK repurpose and gap-fill both failed; shift-file not yet implemented)"
+            .into(),
+    ))
+}
+
+/// Create a new PT_LOAD segment to hold updated `.dynstr` and/or interp string.
+///
+/// This replaces the broken append-extension strategy that corrupted BSS.
+/// The new segment is placed at a virtual address safely beyond all existing
+/// segments (including BSS), so no existing segment is modified.
+///
+/// If the ELF has an existing RUNPATH, the `.dynstr` is relocated into the new
+/// segment with the new RUNPATH appended. If no RUNPATH exists, dynstr
+/// relocation is skipped. If `new_interp` is provided and the ELF has
+/// PT_INTERP, the PT_INTERP phdr is updated to point at the new string.
+///
+/// A program header slot is acquired via `find_phdr_slot()` (PT_GNU_STACK
+/// repurpose or gap-fill).
+fn patch_elf_with_new_segment(
+    data: &mut Vec<u8>,
+    new_rpath: &[u8],
+    new_interp: Option<&[u8]>,
+) -> std::result::Result<bool, PackedError> {
+    // === Phase 1: Parse ELF and extract all info into owned values ===
+    struct PatchInfo {
+        dyn_base: usize,
+        strtab_idx: Option<usize>,
+        strsz_idx: Option<usize>,
+        runpath_idx: Option<usize>,
+        strtab_vaddr: u64,
+        dynstr_file_off: usize,
+        actual_str_end: usize,
+        old_rpath_file_off: usize,
+        old_rpath_len: usize,
+        interp_phdr_offset: Option<usize>,
+        highest_vend: u64,
+    }
+
+    let info = {
+        let elf = Elf::parse(data).map_err(|e| PackedError::NotElf(e.to_string()))?;
+
+        // Highest virtual address from all PT_LOAD segments
+        let highest_vend: u64 = elf
+            .program_headers
+            .iter()
+            .filter(|p| p.p_type == program_header::PT_LOAD)
+            .map(|p| p.p_vaddr + p.p_memsz)
+            .max()
+            .unwrap_or(0);
+
+        // Find PT_INTERP phdr byte offset
+        let e_phoff = elf.header.e_phoff as usize;
+        let e_phentsize = elf.header.e_phentsize as usize;
+        let interp_phdr_offset = elf
+            .program_headers
+            .iter()
+            .enumerate()
+            .find(|(_, ph)| ph.p_type == program_header::PT_INTERP)
+            .map(|(i, _)| e_phoff + i * e_phentsize);
+
+        // Check if we have anything to do
+        let dynamic = elf.dynamic.as_ref();
+        let has_runpath = dynamic
+            .map(|d| {
+                d.dyns.iter().any(|e| {
+                    e.d_tag == goblin::elf::dynamic::DT_RUNPATH
+                        || e.d_tag == goblin::elf::dynamic::DT_RPATH
+                })
+            })
+            .unwrap_or(false);
+        let has_interp = interp_phdr_offset.is_some() && new_interp.is_some();
+
+        if !has_runpath && !has_interp {
+            return Ok(false);
+        }
+
+        // Extract dynamic section info
+        let (
+            dyn_base,
+            strtab_idx,
+            strsz_idx,
+            runpath_idx,
+            strtab_vaddr,
+            dynstr_file_off,
+            actual_str_end,
+        ) = if let Some(dynamic) = dynamic {
+            let dyn_phdr = elf
+                .program_headers
+                .iter()
+                .find(|ph| ph.p_type == program_header::PT_DYNAMIC);
+            let dyn_base = match dyn_phdr {
+                Some(ph) => ph.p_offset as usize,
+                None => return Ok(false),
+            };
+
+            let mut st_vaddr: u64 = 0;
+            let mut st_sz: u64 = 0;
+            let mut st_idx: Option<usize> = None;
+            let mut sz_idx: Option<usize> = None;
+            let mut rp_idx: Option<usize> = None;
+
+            for (i, entry) in dynamic.dyns.iter().enumerate() {
+                match entry.d_tag {
+                    goblin::elf::dynamic::DT_STRTAB => {
+                        st_vaddr = entry.d_val;
+                        st_idx = Some(i);
+                    }
+                    goblin::elf::dynamic::DT_STRSZ => {
+                        st_sz = entry.d_val;
+                        sz_idx = Some(i);
+                    }
+                    goblin::elf::dynamic::DT_RUNPATH
+                    | goblin::elf::dynamic::DT_RPATH => {
+                        rp_idx = Some(i);
+                    }
+                    _ => {}
+                }
+            }
+
+            let (file_off, str_end) = if st_vaddr != 0 && rp_idx.is_some() {
+                let off = vaddr_to_file_offset(&elf, st_vaddr)? as usize;
+                let mut end: usize = st_sz as usize;
+                for entry in &dynamic.dyns {
+                    if entry.d_tag == goblin::elf::dynamic::DT_NULL {
+                        break;
+                    }
+                    let is_strtab_ref = matches!(
+                        entry.d_tag,
+                        goblin::elf::dynamic::DT_NEEDED
+                            | goblin::elf::dynamic::DT_SONAME
+                            | goblin::elf::dynamic::DT_RPATH
+                            | goblin::elf::dynamic::DT_RUNPATH
+                    ) || entry.d_tag == 0x7ffffffd
+                        || entry.d_tag == 0x7ffffffe
+                        || entry.d_tag == 0x7fffffff;
+                    if is_strtab_ref {
+                        let str_off = entry.d_val as usize;
+                        let f_off = off + str_off;
+                        if f_off < data.len() {
+                            let remaining = &data[f_off..];
+                            let nul_pos =
+                                remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
+                            let s_end = str_off + nul_pos + 1;
+                            if s_end > end {
+                                end = s_end;
+                            }
+                        }
+                    }
+                }
+                (off, end)
+            } else {
+                (0, 0)
+            };
+
+            (
+                dyn_base,
+                st_idx,
+                sz_idx,
+                rp_idx,
+                st_vaddr,
+                file_off,
+                str_end,
+            )
+        } else {
+            (0, None, None, None, 0, 0, 0)
+        };
+
+        // Find old RUNPATH string location
+        let (old_rpath_file_off, old_rpath_len) = match find_rpath(data)? {
+            RpathInfo::Rpath { offset, len } | RpathInfo::Runpath { offset, len } => {
+                (offset as usize, len)
+            }
+            RpathInfo::Absent => (0, 0),
+        };
+
+        PatchInfo {
+            dyn_base,
+            strtab_idx,
+            strsz_idx,
+            runpath_idx,
+            strtab_vaddr,
+            dynstr_file_off,
+            actual_str_end,
+            old_rpath_file_off,
+            old_rpath_len,
+            interp_phdr_offset,
+            highest_vend,
+        }
+    }; // elf borrow dropped
+
+    // === Phase 2: Build new segment content ===
+    let mut segment_content = Vec::new();
+    let mut new_dynstr_size: usize = 0;
+    let mut new_rpath_offset_in_dynstr: usize = 0;
+
+    // If we have a RUNPATH entry, build new dynstr
+    if info.runpath_idx.is_some() && info.strtab_vaddr != 0 {
+        let old_dynstr = data[info.dynstr_file_off..info.dynstr_file_off + info.actual_str_end]
+            .to_vec();
+        segment_content.extend_from_slice(&old_dynstr);
+        new_rpath_offset_in_dynstr = segment_content.len();
+        segment_content.extend_from_slice(new_rpath);
+        segment_content.push(0); // NUL terminator
+        new_dynstr_size = segment_content.len();
+
+        // Pad to 8-byte alignment before interp
+        while segment_content.len() % 8 != 0 {
+            segment_content.push(0);
+        }
+    }
+
+    // Add interp string if needed and PT_INTERP exists
+    let interp_offset_in_segment = if let Some(interp) = new_interp {
+        if info.interp_phdr_offset.is_some() {
+            let offset = segment_content.len();
+            segment_content.extend_from_slice(interp);
+            segment_content.push(0); // NUL terminator
+            Some(offset)
+        } else {
+            None // No PT_INTERP in ELF — skip
+        }
+    } else {
+        None
+    };
+
+    // Pad segment to alignment
+    while segment_content.len() % 8 != 0 {
+        segment_content.push(0);
+    }
+
+    let segment_content_len = segment_content.len();
+    if segment_content_len == 0 {
+        return Ok(false); // Nothing to do
+    }
+
+    // === Phase 3: Find phdr slot (may modify e_phnum for gap-fill) ===
+    let slot = find_phdr_slot(data)?;
+    let phdr_write_offset = match &slot {
+        PhdrSlot::RepurposedGnuStack { phdr_offset } => *phdr_offset,
+        PhdrSlot::FillGap { phdr_offset } => *phdr_offset,
+    };
+
+    // === Phase 4: Compute new segment location ===
+    let page_size: u64 = 0x1000;
+    let new_vaddr = (info.highest_vend + page_size - 1) & !(page_size - 1);
+
+    // Pad file to page alignment
+    while data.len() % page_size as usize != 0 {
+        data.push(0);
+    }
+    let new_segment_file_offset = data.len() as u64;
+
+    // Append segment content
+    data.extend_from_slice(&segment_content);
+
+    // === Phase 5: Write PT_LOAD phdr ===
+    // Elf64_Phdr: p_type(4) p_flags(4) p_offset(8) p_vaddr(8) p_paddr(8) p_filesz(8) p_memsz(8) p_align(8)
+    data[phdr_write_offset..phdr_write_offset + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    data[phdr_write_offset + 4..phdr_write_offset + 8].copy_from_slice(&4u32.to_le_bytes()); // PF_R
+    data[phdr_write_offset + 8..phdr_write_offset + 16]
+        .copy_from_slice(&new_segment_file_offset.to_le_bytes());
+    data[phdr_write_offset + 16..phdr_write_offset + 24].copy_from_slice(&new_vaddr.to_le_bytes());
+    data[phdr_write_offset + 24..phdr_write_offset + 32]
+        .copy_from_slice(&new_vaddr.to_le_bytes()); // p_paddr
+    data[phdr_write_offset + 32..phdr_write_offset + 40]
+        .copy_from_slice(&(segment_content_len as u64).to_le_bytes());
+    data[phdr_write_offset + 40..phdr_write_offset + 48]
+        .copy_from_slice(&(segment_content_len as u64).to_le_bytes()); // p_memsz = p_filesz
+    data[phdr_write_offset + 48..phdr_write_offset + 56].copy_from_slice(&page_size.to_le_bytes());
+
+    // === Phase 6: Update dynamic section (if RUNPATH was patched) ===
+    if let (Some(rp_idx), Some(st_idx), Some(sz_idx)) =
+        (info.runpath_idx, info.strtab_idx, info.strsz_idx)
+    {
+        let dyn_entsize: usize = 16;
+
+        // Update DT_STRTAB → new dynstr vaddr (at start of new segment)
+        let new_dynstr_vaddr = new_vaddr;
+        let strtab_val_off = info.dyn_base + st_idx * dyn_entsize + 8;
+        data[strtab_val_off..strtab_val_off + 8].copy_from_slice(&new_dynstr_vaddr.to_le_bytes());
+
+        // Update DT_STRSZ → new size
+        let strsz_val_off = info.dyn_base + sz_idx * dyn_entsize + 8;
+        data[strsz_val_off..strsz_val_off + 8]
+            .copy_from_slice(&(new_dynstr_size as u64).to_le_bytes());
+
+        // Update DT_RUNPATH d_val → offset of new string in new dynstr
+        let runpath_val_off = info.dyn_base + rp_idx * dyn_entsize + 8;
+        data[runpath_val_off..runpath_val_off + 8]
+            .copy_from_slice(&(new_rpath_offset_in_dynstr as u64).to_le_bytes());
+
+        // Null out old RUNPATH string in original .dynstr
+        if info.old_rpath_len > 0 {
+            data[info.old_rpath_file_off..info.old_rpath_file_off + info.old_rpath_len].fill(0);
+        }
+    }
+
+    // === Phase 7: Update PT_INTERP (if needed) ===
+    if let (Some(seg_off), Some(interp_phdr_off)) =
+        (interp_offset_in_segment, info.interp_phdr_offset)
+    {
+        let interp_file_offset = new_segment_file_offset + seg_off as u64;
+        let interp_vaddr = new_vaddr + seg_off as u64;
+        let interp_len = new_interp.unwrap().len() as u64 + 1; // +1 for NUL
+
+        // PT_INTERP phdr: update p_offset, p_vaddr, p_paddr, p_filesz
+        data[interp_phdr_off + 8..interp_phdr_off + 16]
+            .copy_from_slice(&interp_file_offset.to_le_bytes());
+        data[interp_phdr_off + 16..interp_phdr_off + 24]
+            .copy_from_slice(&interp_vaddr.to_le_bytes());
+        data[interp_phdr_off + 24..interp_phdr_off + 32]
+            .copy_from_slice(&interp_vaddr.to_le_bytes()); // p_paddr
+        data[interp_phdr_off + 32..interp_phdr_off + 40]
+            .copy_from_slice(&interp_len.to_le_bytes());
+    }
+
+    Ok(true)
+}
+
+/// Patch RUNPATH and optionally PT_INTERP for store-relative relocation.
+///
+/// When `new_interp` is provided and the ELF has PT_INTERP, creates a single
+/// new PT_LOAD segment containing both the updated `.dynstr` (with new RUNPATH)
+/// and the new interpreter path string. When `new_interp` is `None`, uses the
+/// standard strategy chain (in-place → padding → new segment for RUNPATH only).
+///
+/// Returns `Ok(true)` if any patching was performed, `Ok(false)` if nothing
+/// could be patched (e.g., no existing RUNPATH and no PT_INTERP).
+pub fn patch_elf_for_relocation(
+    data: &mut Vec<u8>,
+    new_rpath: &[u8],
+    new_interp: Option<&[u8]>,
+) -> std::result::Result<bool, PackedError> {
+    // Check if interp patching is needed and possible
+    let needs_interp_segment = if new_interp.is_some() {
+        let elf = Elf::parse(data).map_err(|e| PackedError::NotElf(e.to_string()))?;
+        let has_interp = elf
+            .program_headers
+            .iter()
+            .any(|p| p.p_type == program_header::PT_INTERP);
+        drop(elf); // drop before calling patch_runpath_to
+        has_interp
+    } else {
+        false
+    };
+
+    if needs_interp_segment {
+        // Need new segment for PT_INTERP — handle both RUNPATH and interp together
+        // in a single new PT_LOAD segment (one phdr slot).
+        return patch_elf_with_new_segment(data, new_rpath, new_interp);
+    }
+
+    // No interp needed (or ELF has no PT_INTERP) — standard RUNPATH strategy chain
+    patch_runpath_to(data, new_rpath)
 }
 
 /// Patch the RPATH/RUNPATH in an ELF binary's raw bytes with `TARGET_RUNPATH`.
@@ -314,12 +966,12 @@ pub fn patch_runpath_to(
 /// value (padded with null bytes).
 ///
 /// Returns `Ok(true)` if patched, `Ok(false)` if no RPATH/RUNPATH found.
-pub fn patch_runpath_in_place(data: &mut [u8]) -> std::result::Result<bool, PackedError> {
+pub fn patch_runpath_in_place(data: &mut Vec<u8>) -> std::result::Result<bool, PackedError> {
     patch_runpath_to(data, TARGET_RUNPATH)
 }
 
 /// Backwards-compatible name for patching RPATH/RUNPATH in place.
-pub fn patch_rpath_in_place(data: &mut [u8]) -> std::result::Result<bool, PackedError> {
+pub fn patch_rpath_in_place(data: &mut Vec<u8>) -> std::result::Result<bool, PackedError> {
     patch_runpath_in_place(data)
 }
 
@@ -854,7 +1506,8 @@ mod tests {
         let phentsize: u16 = 56;
 
         // Number of program headers depends on whether we have dynamic section
-        let e_phnum: u16 = if runpath.is_some() { 4 } else { 3 };
+        // PT_PHDR, PT_INTERP, PT_LOAD, (PT_DYNAMIC if runpath), PT_GNU_STACK
+        let e_phnum: u16 = if runpath.is_some() { 5 } else { 4 };
 
         let phdr_total = (e_phnum as usize) * (phentsize as usize);
         let interp_offset = (e_phoff as usize) + phdr_total;
@@ -978,6 +1631,21 @@ mod tests {
                 8,
             );
         }
+
+        // PT_GNU_STACK — empty, advisory only (repurposed by new PT_LOAD strategy)
+        let gnu_stack_idx = if has_dynamic { 4 } else { 3 };
+        phdr_write(
+            &mut elf,
+            gnu_stack_idx,
+            0x6474e551, // PT_GNU_STACK
+            6,           // PF_R|PF_W
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x10,
+        );
 
         // .interp string
         elf[interp_offset..interp_offset + interp_len].copy_from_slice(interp_str);
@@ -1329,13 +1997,14 @@ mod tests {
     }
 
     #[test]
-    fn test_patch_runpath_too_short() {
+    fn test_patch_runpath_too_short_falls_back_to_new_segment() {
+        // Short RUNPATH — padding extension will fail, but new PT_LOAD segment
+        // should succeed by creating a separate segment at a safe address.
         let mut elf = build_minimal_elf_with_interp(Some("/short"));
         let result = patch_runpath_in_place(&mut elf);
-        assert!(
-            matches!(result, Err(PackedError::RunpathTooShort { .. })),
-            "should fail when runpath is too short"
-        );
+        // The append fallback should succeed
+        assert!(result.is_ok(), "should succeed via append fallback: {:?}", result);
+        assert!(result.unwrap(), "should have patched");
     }
 
     #[test]
@@ -1355,6 +2024,286 @@ mod tests {
             matches!(result, Err(PackedError::NoDynamicSection)),
             "should fail with NoDynamicSection when no dynamic section exists"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RUNPATH extension tests
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal ELF with a short RUNPATH but with padding space
+    /// after .dynstr within the PT_LOAD segment.
+    ///
+    /// The ELF has:
+    /// - PT_PHDR, PT_INTERP, PT_LOAD (covering entire file), PT_DYNAMIC
+    /// - .interp, .dynamic, .dynstr sections
+    /// - .dynstr has a short RUNPATH ("/short") followed by zero padding
+    fn build_elf_with_short_runpath_and_padding(padding_len: usize) -> Vec<u8> {
+        let interp_str = b"/lib64/ld-linux-x86-64.so.2\0";
+        let interp_len = interp_str.len();
+
+        let runpath_str = b"/short\0";
+        let runpath_len = runpath_str.len();
+
+        // .dynstr = [runpath_str] [zero_padding]
+        let dynstr_total = runpath_len + padding_len;
+
+        let e_phoff: u64 = 64;
+        let phentsize: u16 = 56;
+        let e_phnum: u16 = 5; // PT_PHDR, PT_INTERP, PT_LOAD, PT_DYNAMIC, PT_GNU_STACK
+
+        let phdr_total = (e_phnum as usize) * (phentsize as usize);
+        let interp_offset = (e_phoff as usize) + phdr_total;
+
+        // Dynamic section: DT_STRTAB, DT_STRSZ, DT_RUNPATH, DT_NULL = 4 entries
+        let dyn_offset = interp_offset + interp_len;
+        let dyn_size = 4 * 16;
+
+        // .dynstr comes after dynamic section
+        let dynstr_offset = dyn_offset + dyn_size;
+
+        // Code after .dynstr (aligned)
+        let code_start = (dynstr_offset + dynstr_total + 7) & !7;
+        let code: &[u8] = &[
+            0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+            0x90, 0x90,
+        ];
+        let total_size = code_start + code.len();
+
+        let mut elf = vec![0u8; total_size];
+
+        // Helper: write a program header
+        let phdr_write = |elf: &mut [u8],
+                          idx: usize,
+                          p_type: u32,
+                          p_flags: u32,
+                          p_offset: u64,
+                          p_vaddr: u64,
+                          p_paddr: u64,
+                          p_filesz: u64,
+                          p_memsz: u64,
+                          p_align: u64| {
+            let off = e_phoff as usize + idx * (phentsize as usize);
+            elf[off..off + 4].copy_from_slice(&p_type.to_le_bytes());
+            elf[off + 4..off + 8].copy_from_slice(&p_flags.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&p_offset.to_le_bytes());
+            elf[off + 16..off + 24].copy_from_slice(&p_vaddr.to_le_bytes());
+            elf[off + 24..off + 32].copy_from_slice(&p_paddr.to_le_bytes());
+            elf[off + 32..off + 40].copy_from_slice(&p_filesz.to_le_bytes());
+            elf[off + 40..off + 48].copy_from_slice(&p_memsz.to_le_bytes());
+            elf[off + 48..off + 56].copy_from_slice(&p_align.to_le_bytes());
+        };
+
+        // ELF header
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELFCLASS64
+        elf[5] = 1; // ELFDATA2LSB
+        elf[6] = 1; // EV_CURRENT
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        elf[24..32].copy_from_slice(&(code_start as u64).to_le_bytes()); // e_entry
+        elf[32..40].copy_from_slice(&e_phoff.to_le_bytes()); // e_phoff
+        elf[40..48].copy_from_slice(&0u64.to_le_bytes()); // e_shoff
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf[54..56].copy_from_slice(&phentsize.to_le_bytes());
+        elf[56..58].copy_from_slice(&e_phnum.to_le_bytes());
+
+        // Program headers
+        let phdr_filesz = (e_phnum as u64) * (phentsize as u64);
+        phdr_write(
+            &mut elf,
+            0,
+            6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8,
+        ); // PT_PHDR
+        phdr_write(
+            &mut elf,
+            1,
+            3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1,
+        ); // PT_INTERP
+        phdr_write(
+            &mut elf,
+            2,
+            1, 5, 0, 0, 0, total_size as u64, total_size as u64, 0x1000,
+        ); // PT_LOAD
+        phdr_write(
+            &mut elf,
+            3,
+            2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8,
+        ); // PT_DYNAMIC
+
+        // PT_GNU_STACK — empty, advisory only (repurposed by new PT_LOAD strategy)
+        phdr_write(
+            &mut elf,
+            4,
+            0x6474e551, // PT_GNU_STACK
+            6,           // PF_R|PF_W
+            0, 0, 0, 0, 0,
+            0x10,
+        );
+
+        // .interp string
+        elf[interp_offset..interp_offset + interp_len].copy_from_slice(interp_str);
+
+        // Dynamic section entries
+        let dyn_write = |elf: &mut [u8], base: usize, idx: usize, tag: u64, val: u64| {
+            let off = base + idx * 16;
+            elf[off..off + 8].copy_from_slice(&tag.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&val.to_le_bytes());
+        };
+        dyn_write(&mut elf, dyn_offset, 0, 5, dynstr_offset as u64); // DT_STRTAB
+        dyn_write(&mut elf, dyn_offset, 1, 10, runpath_len as u64); // DT_STRSZ
+        dyn_write(&mut elf, dyn_offset, 2, 29, 0); // DT_RUNPATH = offset 0 in .dynstr
+        dyn_write(&mut elf, dyn_offset, 3, 0, 0); // DT_NULL
+
+        // .dynstr = runpath string followed by zero padding
+        elf[dynstr_offset..dynstr_offset + runpath_len].copy_from_slice(runpath_str);
+        // padding bytes are already zero from vec initialization
+
+        // Code
+        elf[code_start..code_start + code.len()].copy_from_slice(code);
+
+        elf
+    }
+
+    #[test]
+    fn test_patch_runpath_extension_basic() {
+        // Build ELF with short RUNPATH "/short" (7 bytes) and 256 bytes of
+        // padding after .dynstr. Try to patch with a longer RUNPATH.
+        let new_runpath = b"$ORIGIN/../lib:$ORIGIN/../../c4/deadbeef/lib";
+        assert!(
+            new_runpath.len() > 7,
+            "new runpath should be longer than old one"
+        );
+
+        let mut elf = build_elf_with_short_runpath_and_padding(256);
+        let result = patch_runpath_to(&mut elf, new_runpath).expect("should patch");
+        assert!(result, "should successfully patch via extension");
+
+        // Verify: find the RUNPATH again and check it matches
+        let info = find_rpath(&elf).expect("should find runpath");
+        match info {
+            RpathInfo::Runpath { offset, len } => {
+                // The new string should be at the offset within .dynstr
+                // where it was appended (after the old .dynstr content)
+                let found =
+                    std::str::from_utf8(&elf[offset as usize..offset as usize + new_runpath.len()])
+                        .expect("valid utf8");
+                assert_eq!(found, std::str::from_utf8(new_runpath).unwrap());
+                // The string should be NUL-terminated
+                assert_eq!(elf[offset as usize + new_runpath.len()], 0);
+                let _ = len; // suppress warning
+            }
+            other => panic!("expected Runpath, got {:?}", other),
+        }
+
+        // Also verify the ELF is still parseable
+        let parsed = Elf::parse(&elf).expect("should parse modified ELF");
+        assert!(parsed.dynamic.is_some(), "should still have dynamic section");
+    }
+
+    #[test]
+    fn test_patch_runpath_extension_updates_strsz() {
+        // Verify that DT_STRSZ is updated correctly after extension
+        let mut elf = build_elf_with_short_runpath_and_padding(256);
+        // The test ELF has dynstr = "/short\0" (7 bytes, DT_STRSZ may differ from actual)
+        let new_runpath = b"/a/much/longer/runpath/that/exceeds/old/size";
+        patch_runpath_to(&mut elf, new_runpath).expect("should patch");
+
+        // Parse and check DT_STRSZ
+        let parsed = Elf::parse(&elf).expect("should parse");
+        let dynamic = parsed.dynamic.as_ref().expect("should have dynamic");
+        let new_strsz = dynamic
+            .dyns
+            .iter()
+            .find(|e| e.d_tag == goblin::elf::dynamic::DT_STRSZ)
+            .map(|e| e.d_val)
+            .expect("should have DT_STRSZ");
+
+        // The new STRSZ accounts for all existing content (including NUL terminators)
+        // plus the new string plus its NUL terminator.
+        let expected = 7 + new_runpath.len() + 1; // "/short\0" + new string + NUL
+        assert_eq!(new_strsz as usize, expected, "DT_STRSZ should be updated");
+    }
+
+    #[test]
+    fn test_patch_runpath_extension_not_enough_padding_falls_back_to_new_segment() {
+        // Build ELF with short RUNPATH and minimal padding (not enough for padding
+        // extension). The new PT_LOAD segment fallback should succeed.
+        let mut elf = build_elf_with_short_runpath_and_padding(5);
+        let new_runpath = b"/this/is/a/very/long/runpath/that/will/not/fit/in/padding";
+        let result = patch_runpath_to(&mut elf, new_runpath);
+        assert!(
+            result.is_ok(),
+            "should succeed via append fallback: {:?}",
+            result
+        );
+        assert!(result.unwrap(), "should have patched");
+    }
+
+    #[test]
+    fn test_patch_runpath_new_segment_produces_valid_runpath() {
+        // Build ELF with short RUNPATH and minimal padding. Verify the new
+        // PT_LOAD segment fallback produces a valid RUNPATH that readelf would accept.
+        let mut elf = build_elf_with_short_runpath_and_padding(5);
+        let new_runpath = b"$ORIGIN/../lib:$ORIGIN/../../ab/deadbeef/lib";
+        let result = patch_runpath_to(&mut elf, new_runpath).expect("should patch");
+        assert!(result);
+
+        // The ELF should still be parseable
+        let parsed = Elf::parse(&elf).expect("should parse modified ELF");
+        let dynamic = parsed.dynamic.as_ref().expect("should have dynamic");
+
+        // Find the RUNPATH value
+        let strtab_vaddr = dynamic.info.strtab as u64;
+        let strsz = dynamic
+            .dyns
+            .iter()
+            .find(|e| e.d_tag == goblin::elf::dynamic::DT_STRSZ)
+            .map(|e| e.d_val)
+            .expect("should have DT_STRSZ");
+
+        let runpath_idx = dynamic
+            .dyns
+            .iter()
+            .find(|e| e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
+            .map(|e| e.d_val)
+            .expect("should have DT_RUNPATH");
+
+        // Resolve the string
+        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let runpath_off = strtab_off + runpath_idx as usize;
+        let runpath_str = std::str::from_utf8(&elf[runpath_off..runpath_off + new_runpath.len()])
+            .expect("valid utf8");
+        assert_eq!(runpath_str, std::str::from_utf8(new_runpath).unwrap());
+
+        // DT_STRSZ should be larger than the original
+        assert!(strsz > 7, "DT_STRSZ should have grown, got {}", strsz);
+    }
+
+    #[test]
+    fn test_patch_runpath_fast_path_unchanged() {
+        // Verify that the fast path (in-place replacement) still works
+        // when the existing RUNPATH is long enough.
+        let mut elf = build_minimal_elf_with_interp(Some(
+            "/this/is/a/long/runpath/that/is/enough",
+        ));
+        let new_path = b"$ORIGIN/../lib";
+        let result = patch_runpath_to(&mut elf, new_path).expect("should patch");
+        assert!(result);
+
+        // Verify
+        let info = find_rpath(&elf).expect("should find");
+        match info {
+            RpathInfo::Runpath { offset, len } => {
+                let s = std::str::from_utf8(&elf[offset as usize..offset as usize + new_path.len()])
+                    .expect("utf8");
+                assert_eq!(s, std::str::from_utf8(new_path).unwrap());
+                for i in new_path.len()..len {
+                    assert_eq!(elf[offset as usize + i], 0);
+                }
+            }
+            other => panic!("expected Runpath, got {:?}", other),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1428,5 +2377,398 @@ mod tests {
             X86_64_LEA_RIP <= BOOTSTRAP_X86_64.len(),
             "LEA RIP should be within payload"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // New PT_LOAD segment + PT_INTERP patching tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_segment_creates_pt_load_beyond_bss() {
+        // Build an ELF where the last PT_LOAD has BSS (p_memsz > p_filesz)
+        // to verify the new segment is placed safely beyond BSS.
+        let elf = build_elf_with_bss_and_short_runpath();
+
+        // Find the BSS segment before patching
+        let parsed_before = Elf::parse(&elf).expect("should parse");
+        let bss_load_before = parsed_before
+            .program_headers
+            .iter()
+            .filter(|p| p.p_type == program_header::PT_LOAD && p.p_memsz > p.p_filesz)
+            .max_by_key(|p| p.p_vaddr + p.p_memsz)
+            .expect("should have a PT_LOAD with BSS before patching");
+        let bss_end = bss_load_before.p_vaddr + bss_load_before.p_memsz;
+
+        let mut elf = elf;
+        let new_rpath = b"/this/is/a/very/long/runpath/that/exceeds/old/size";
+
+        let result = patch_elf_with_new_segment(&mut elf, new_rpath, None);
+        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.unwrap(), "should have patched");
+
+        // Parse and verify the new segment is beyond BSS
+        let parsed = Elf::parse(&elf).expect("should parse modified ELF");
+
+        // Find the new PT_LOAD (the one we added — it should be a pure PF_R segment)
+        let new_segment = parsed
+            .program_headers
+            .iter()
+            .filter(|p| p.p_type == program_header::PT_LOAD)
+            .filter(|p| p.p_flags == 4) // PF_R only
+            .max_by_key(|p| p.p_vaddr);
+        assert!(new_segment.is_some(), "should have a new PT_LOAD");
+        let seg = new_segment.unwrap();
+        assert!(
+            seg.p_vaddr >= bss_end,
+            "new segment at {:#x} should be beyond BSS end {:#x}",
+            seg.p_vaddr,
+            bss_end
+        );
+    }
+
+    #[test]
+    fn test_new_segment_patches_runpath_correctly() {
+        let mut elf = build_elf_with_short_runpath_and_padding(5);
+        let new_rpath = b"$ORIGIN/../lib:$ORIGIN/../../ab/deadbeef/lib";
+
+        let result = patch_elf_with_new_segment(&mut elf, new_rpath, None);
+        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.unwrap());
+
+        // Verify RUNPATH value via goblin
+        let parsed = Elf::parse(&elf).expect("should parse");
+        let dynamic = parsed.dynamic.as_ref().expect("should have dynamic");
+
+        let strtab_vaddr = dynamic.info.strtab as u64;
+        let runpath_idx = dynamic
+            .dyns
+            .iter()
+            .find(|e| e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
+            .map(|e| e.d_val)
+            .expect("should have DT_RUNPATH");
+
+        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let rp_off = strtab_off + runpath_idx as usize;
+        let rp_str = std::str::from_utf8(&elf[rp_off..rp_off + new_rpath.len()]).expect("utf8");
+        assert_eq!(rp_str, std::str::from_utf8(new_rpath).unwrap());
+    }
+
+    #[test]
+    fn test_new_segment_with_interp_patch() {
+        // Test combined RUNPATH + PT_INTERP patching
+        let mut elf = build_elf_with_short_runpath_and_padding(5);
+        let new_rpath = b"$ORIGIN/../lib";
+        let new_interp = b"../../fa/fa3fc22f4f29ca7f3adb97080b534617ac5f150720742d2f04e8b47a88995d98/lib/ld-linux-x86-64.so.2";
+
+        let result = patch_elf_with_new_segment(&mut elf, new_rpath, Some(new_interp));
+        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.unwrap());
+
+        // Verify PT_INTERP points to new string
+        let parsed = Elf::parse(&elf).expect("should parse");
+        let interp_phdr = parsed
+            .program_headers
+            .iter()
+            .find(|p| p.p_type == program_header::PT_INTERP)
+            .expect("should have PT_INTERP");
+
+        let interp_off = interp_phdr.p_offset as usize;
+        let interp_len = interp_phdr.p_filesz as usize;
+        let interp_str = std::str::from_utf8(&elf[interp_off..interp_off + interp_len - 1])
+            .expect("utf8");
+        assert_eq!(
+            interp_str,
+            std::str::from_utf8(new_interp).unwrap(),
+            "PT_INTERP should point to new interp string"
+        );
+
+        // Also verify RUNPATH
+        let dynamic = parsed.dynamic.as_ref().expect("should have dynamic");
+        let strtab_vaddr = dynamic.info.strtab as u64;
+        let runpath_idx = dynamic
+            .dyns
+            .iter()
+            .find(|e| e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
+            .map(|e| e.d_val)
+            .expect("should have DT_RUNPATH");
+        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let rp_off = strtab_off + runpath_idx as usize;
+        let rp_str = std::str::from_utf8(&elf[rp_off..rp_off + new_rpath.len()]).expect("utf8");
+        assert_eq!(rp_str, std::str::from_utf8(new_rpath).unwrap());
+    }
+
+    #[test]
+    fn test_patch_elf_for_relocation_with_interp() {
+        // Test the public API: patch_elf_for_relocation with interp
+        let mut elf = build_elf_with_short_runpath_and_padding(5);
+        let new_rpath = b"$ORIGIN/../lib";
+        let new_interp = b"../lib/ld-linux-x86-64.so.2";
+
+        let result = patch_elf_for_relocation(
+            &mut elf,
+            new_rpath,
+            Some(new_interp),
+        );
+        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.unwrap());
+
+        // Verify PT_INTERP was patched
+        let parsed = Elf::parse(&elf).expect("should parse");
+        let interp_phdr = parsed
+            .program_headers
+            .iter()
+            .find(|p| p.p_type == program_header::PT_INTERP)
+            .expect("should have PT_INTERP");
+        let interp_off = interp_phdr.p_offset as usize;
+        let interp_str = std::str::from_utf8(&elf[interp_off..interp_off + new_interp.len()])
+            .expect("utf8");
+        assert_eq!(interp_str, std::str::from_utf8(new_interp).unwrap());
+    }
+
+    #[test]
+    fn test_patch_elf_for_relocation_without_interp() {
+        // Without interp, should use standard strategy chain
+        let mut elf = build_minimal_elf_with_interp(Some(
+            "/this/is/a/long/runpath/that/is/enough",
+        ));
+        let new_rpath = b"$ORIGIN/../lib";
+
+        let result = patch_elf_for_relocation(&mut elf, new_rpath, None);
+        assert!(result.is_ok(), "should succeed: {:?}", result);
+        assert!(result.unwrap());
+
+        // Should have been patched in-place (existing RUNPATH is long enough)
+        let info = find_rpath(&elf).expect("should find");
+        match info {
+            RpathInfo::Runpath { offset, len } => {
+                let s = std::str::from_utf8(&elf[offset as usize..offset as usize + new_rpath.len()])
+                    .expect("utf8");
+                assert_eq!(s, std::str::from_utf8(new_rpath).unwrap());
+                let _ = len;
+            }
+            other => panic!("expected Runpath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_find_phdr_slot_repurposes_gnu_stack() {
+        let elf = build_elf_with_short_runpath_and_padding(5);
+        let mut data = elf;
+
+        let slot = find_phdr_slot(&mut data).expect("should find slot");
+        match slot {
+            PhdrSlot::RepurposedGnuStack { phdr_offset } => {
+                // Verify the slot was a PT_GNU_STACK
+                let p_type = u32::from_le_bytes(data[phdr_offset..phdr_offset + 4].try_into().unwrap());
+                assert_eq!(p_type, 0x6474e551, "should be PT_GNU_STACK");
+            }
+            PhdrSlot::FillGap { .. } => {
+                panic!("expected PT_GNU_STACK repurpose, got FillGap");
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_phdr_slot_gap_fill() {
+        // Build ELF without PT_GNU_STACK but with gap after phdr table
+        let elf = build_elf_without_gnu_stack_with_gap();
+        let mut data = elf;
+
+        let original_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap());
+
+        let slot = find_phdr_slot(&mut data).expect("should find slot");
+        match slot {
+            PhdrSlot::RepurposedGnuStack { .. } => {
+                panic!("expected FillGap, got PT_GNU_STACK repurpose");
+            }
+            PhdrSlot::FillGap { phdr_offset } => {
+                // e_phnum should have been incremented
+                let new_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap());
+                assert_eq!(new_phnum, original_phnum + 1, "e_phnum should be incremented");
+
+                // The new phdr should be at the gap location
+                let expected_offset = 64 + original_phnum as usize * 56;
+                assert_eq!(phdr_offset, expected_offset as usize);
+            }
+        }
+    }
+
+    /// Build an ELF where the last PT_LOAD has BSS (p_memsz > p_filesz).
+    /// This is the scenario that triggers the old bug.
+    fn build_elf_with_bss_and_short_runpath() -> Vec<u8> {
+        let interp_str = b"/lib64/ld-linux-x86-64.so.2\0";
+        let interp_len = interp_str.len();
+        let runpath_str = b"/short\0";
+        let runpath_len = runpath_str.len();
+
+        let e_phoff: u64 = 64;
+        let phentsize: u16 = 56;
+        let e_phnum: u16 = 5; // PT_PHDR, PT_INTERP, PT_LOAD, PT_DYNAMIC, PT_GNU_STACK
+
+        let phdr_total = (e_phnum as usize) * (phentsize as usize);
+        let interp_offset = (e_phoff as usize) + phdr_total;
+
+        let dyn_offset = interp_offset + interp_len;
+        let dyn_size = 4 * 16;
+        let dynstr_offset = dyn_offset + dyn_size;
+
+        // File ends right after dynstr; BSS extends beyond
+        let file_data_end = dynstr_offset + runpath_len;
+        let bss_size = 0x1000; // 4KB of BSS
+        let total_memsz = file_data_end + bss_size;
+
+        let mut elf = vec![0u8; file_data_end];
+
+        let phdr_write = |elf: &mut [u8],
+                          idx: usize,
+                          p_type: u32,
+                          p_flags: u32,
+                          p_offset: u64,
+                          p_vaddr: u64,
+                          p_paddr: u64,
+                          p_filesz: u64,
+                          p_memsz: u64,
+                          p_align: u64| {
+            let off = e_phoff as usize + idx * (phentsize as usize);
+            elf[off..off + 4].copy_from_slice(&p_type.to_le_bytes());
+            elf[off + 4..off + 8].copy_from_slice(&p_flags.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&p_offset.to_le_bytes());
+            elf[off + 16..off + 24].copy_from_slice(&p_vaddr.to_le_bytes());
+            elf[off + 24..off + 32].copy_from_slice(&p_paddr.to_le_bytes());
+            elf[off + 32..off + 40].copy_from_slice(&p_filesz.to_le_bytes());
+            elf[off + 40..off + 48].copy_from_slice(&p_memsz.to_le_bytes());
+            elf[off + 48..off + 56].copy_from_slice(&p_align.to_le_bytes());
+        };
+
+        // ELF header
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELFCLASS64
+        elf[5] = 1; // ELFDATA2LSB
+        elf[6] = 1; // EV_CURRENT
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        elf[24..32].copy_from_slice(&0u64.to_le_bytes()); // e_entry (no code)
+        elf[32..40].copy_from_slice(&e_phoff.to_le_bytes()); // e_phoff
+        elf[40..48].copy_from_slice(&0u64.to_le_bytes()); // e_shoff
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf[54..56].copy_from_slice(&phentsize.to_le_bytes());
+        elf[56..58].copy_from_slice(&e_phnum.to_le_bytes());
+
+        let phdr_filesz = (e_phnum as u64) * (phentsize as u64);
+        phdr_write(&mut elf, 0, 6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8);
+        phdr_write(&mut elf, 1, 3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1);
+        // PT_LOAD with BSS: p_filesz < p_memsz
+        phdr_write(&mut elf, 2, 1, 5, 0, 0, 0, file_data_end as u64, total_memsz as u64, 0x1000);
+        phdr_write(&mut elf, 3, 2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8);
+        // PT_GNU_STACK
+        phdr_write(&mut elf, 4, 0x6474e551, 6, 0, 0, 0, 0, 0, 0x10);
+
+        // .interp
+        elf[interp_offset..interp_offset + interp_len].copy_from_slice(interp_str);
+
+        // Dynamic section
+        let dyn_write = |elf: &mut [u8], base: usize, idx: usize, tag: u64, val: u64| {
+            let off = base + idx * 16;
+            elf[off..off + 8].copy_from_slice(&tag.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&val.to_le_bytes());
+        };
+        dyn_write(&mut elf, dyn_offset, 0, 5, dynstr_offset as u64); // DT_STRTAB
+        dyn_write(&mut elf, dyn_offset, 1, 10, runpath_len as u64); // DT_STRSZ
+        dyn_write(&mut elf, dyn_offset, 2, 29, 0); // DT_RUNPATH
+        dyn_write(&mut elf, dyn_offset, 3, 0, 0); // DT_NULL
+
+        // .dynstr
+        elf[dynstr_offset..dynstr_offset + runpath_len].copy_from_slice(runpath_str);
+
+        elf
+    }
+
+    /// Build an ELF without PT_GNU_STACK but with enough gap after phdr table
+    /// for a new entry.
+    fn build_elf_without_gnu_stack_with_gap() -> Vec<u8> {
+        let interp_str = b"/lib64/ld-linux-x86-64.so.2\0";
+        let interp_len = interp_str.len();
+        let runpath_str = b"/short\0";
+        let runpath_len = runpath_str.len();
+
+        let e_phoff: u64 = 64;
+        let phentsize: u16 = 56;
+        let e_phnum: u16 = 4; // PT_PHDR, PT_INTERP, PT_LOAD, PT_DYNAMIC (no PT_GNU_STACK!)
+
+        let phdr_total = (e_phnum as usize) * (phentsize as usize);
+        let phdr_table_end = (e_phoff as usize) + phdr_total;
+
+        // Insert a gap of 128 bytes between phdr table and .interp
+        let gap_size = 128;
+        let interp_offset = phdr_table_end + gap_size;
+
+        let dyn_offset = interp_offset + interp_len;
+        let dyn_size = 4 * 16;
+        let dynstr_offset = dyn_offset + dyn_size;
+        let total_size = (dynstr_offset + runpath_len + 7) & !7; // align to 8
+
+        let mut elf = vec![0u8; total_size];
+
+        let phdr_write = |elf: &mut [u8],
+                          idx: usize,
+                          p_type: u32,
+                          p_flags: u32,
+                          p_offset: u64,
+                          p_vaddr: u64,
+                          p_paddr: u64,
+                          p_filesz: u64,
+                          p_memsz: u64,
+                          p_align: u64| {
+            let off = e_phoff as usize + idx * (phentsize as usize);
+            elf[off..off + 4].copy_from_slice(&p_type.to_le_bytes());
+            elf[off + 4..off + 8].copy_from_slice(&p_flags.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&p_offset.to_le_bytes());
+            elf[off + 16..off + 24].copy_from_slice(&p_vaddr.to_le_bytes());
+            elf[off + 24..off + 32].copy_from_slice(&p_paddr.to_le_bytes());
+            elf[off + 32..off + 40].copy_from_slice(&p_filesz.to_le_bytes());
+            elf[off + 40..off + 48].copy_from_slice(&p_memsz.to_le_bytes());
+            elf[off + 48..off + 56].copy_from_slice(&p_align.to_le_bytes());
+        };
+
+        // ELF header
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELFCLASS64
+        elf[5] = 1; // ELFDATA2LSB
+        elf[6] = 1; // EV_CURRENT
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+        elf[24..32].copy_from_slice(&0u64.to_le_bytes()); // e_entry
+        elf[32..40].copy_from_slice(&e_phoff.to_le_bytes()); // e_phoff
+        elf[40..48].copy_from_slice(&0u64.to_le_bytes()); // e_shoff
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf[54..56].copy_from_slice(&phentsize.to_le_bytes());
+        elf[56..58].copy_from_slice(&e_phnum.to_le_bytes());
+
+        let phdr_filesz = (e_phnum as u64) * (phentsize as u64);
+        phdr_write(&mut elf, 0, 6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8);
+        phdr_write(&mut elf, 1, 3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1);
+        phdr_write(&mut elf, 2, 1, 5, 0, 0, 0, total_size as u64, total_size as u64, 0x1000);
+        phdr_write(&mut elf, 3, 2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8);
+
+        // .interp (with gap before it)
+        elf[interp_offset..interp_offset + interp_len].copy_from_slice(interp_str);
+
+        // Dynamic section
+        let dyn_write = |elf: &mut [u8], base: usize, idx: usize, tag: u64, val: u64| {
+            let off = base + idx * 16;
+            elf[off..off + 8].copy_from_slice(&tag.to_le_bytes());
+            elf[off + 8..off + 16].copy_from_slice(&val.to_le_bytes());
+        };
+        dyn_write(&mut elf, dyn_offset, 0, 5, dynstr_offset as u64); // DT_STRTAB
+        dyn_write(&mut elf, dyn_offset, 1, 10, runpath_len as u64); // DT_STRSZ
+        dyn_write(&mut elf, dyn_offset, 2, 29, 0); // DT_RUNPATH
+        dyn_write(&mut elf, dyn_offset, 3, 0, 0); // DT_NULL
+
+        // .dynstr
+        elf[dynstr_offset..dynstr_offset + runpath_len].copy_from_slice(runpath_str);
+
+        elf
     }
 }

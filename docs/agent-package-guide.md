@@ -11,8 +11,8 @@ Hod is a **deterministic, content-addressed build system**. Key concepts:
 - **Recipes** are TypeScript files in `recipes/` that encode build instructions into a binary format imported to the Hod store (SQLite + sharded filesystem blobs).
 - **The store** lives at `$HOD_STORE` or `$XDG_DATA_HOME/hod`. Outputs are staged at `<store>/staging/<2-char-shard>/<64-char-hash>/`.
 - **Builds run hermetically** in Linux namespace sandboxes (user, mount, PID, IPC, UTS, network namespaces). The sandbox chroots into an isolated filesystem — no access to `/nix`, `/usr`, `/home`, etc. Only `/dev` and `/proc` are bind-mounted from the host.
-- **Dependencies** are bind-mounted read-only at `/deps/<name>/` and `/store/<shard>/<hash>/`.
-- **Store-relative relocation** (`runtime_deps`) patches ELF RUNPATH and PT_INTERP with `$ORIGIN`-relative paths into the store, so dynamically-linked binaries find their shared libraries in the store without copying. This is the primary mechanism for runtime dependency resolution.
+- **Dependencies** are bind-mounted read-only at `/<shard>/<hash>/` (canonical path), with `/store/<shard>/<hash>/` and `/deps/<name>/` as symlink aliases into that topology.
+- **Store-relative relocation** (`runtime_deps`) patches ELF RUNPATH with `$ORIGIN`-relative paths into the store and injects the AT_EXECFN bootstrap for executable ELFs, so dynamically-linked binaries find their shared libraries without copying and work when invoked from both the host store and the sandbox. This is the primary mechanism for runtime dependency resolution.
 
 ### Recipe Structure
 
@@ -34,7 +34,7 @@ Source files use the `download()` SDK function. Build files use `shellBuild()`. 
 When a recipe produces dynamically-linked binaries, it must:
 1. Include `runtime_deps: ["toolchain"]` (or additional deps that provide shared libs).
 2. Use `$HOD_DUMMY_RPATH` in LDFLAGS (automatically set by `shellBuild`) to reserve ELF space for store-relative RUNPATH patching.
-3. After building, `src/relocate.rs` patches the binary with `$ORIGIN`-relative paths to its dependencies in the store.
+3. After building, `src/relocate.rs` patches RUNPATH with `$ORIGIN`-relative paths and injects the AT_EXECFN bootstrap so the binary works from any CWD on both the host and inside sandboxes.
 
 **Prefer shared libraries** (`--enable-shared`) over static-only builds. This is how NixOS works — shared libs live once in the store and are referenced via RUNPATH. The store-relative relocation system makes this possible without a fixed store root. Use static linking only when shared libs are impractical (e.g., the package has no shared lib support, or you're building a low-level bootstrap dependency).
 
@@ -116,6 +116,8 @@ This table shows how existing packages map to the policy. Use it as a reference 
 | cbonsai | exec only | — | — | Links shared ncurses + glibc |
 | ca-certificates | data only | — | — | Mozilla CA bundle, no binaries |
 | **git** | exec only | — | — | Links shared curl, openssl, zlib, expat, libiconv + glibc |
+| **ripgrep** | exec only | — | — | Rust binary; built with `cargoBuild`; links glibc via runtime_deps |
+| **fd** | exec only | — | — | Rust binary; built with `cargoBuild` (jemalloc disabled); links glibc via runtime_deps |
 
 **Key takeaways for new packages:**
 
@@ -236,9 +238,9 @@ tar xf /deps/source/source -C /tmp
 cd /tmp/<package>-<version>
 
 # CC, AR, RANLIB, STRIP, CFLAGS, PATH are auto-injected by shellBuild.
-# Add -I and -L flags for dependencies:
-# export CPPFLAGS="-I/deps/zlib/include"
-# export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/zlib/lib"
+# For deps with .pc files, use PKG_CONFIG_PATH (no manual -I/-L needed):
+# export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig"
+export LDFLAGS="$HOD_DUMMY_RPATH"
 
 ./configure \\
   --prefix=/ \\
@@ -249,6 +251,16 @@ cd /tmp/<package>-<version>
 
 make -j$(nproc)
 make install DESTDIR=$OUT
+
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
 
 # Strip binaries
 find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
@@ -280,9 +292,13 @@ export const <package>Recipe = recipe;
 
 4. **Prefer shared libraries**: for reusable libraries, use `--enable-shared` and keep downstream-facing metadata (`.so`, pkg-config, headers). Static-only builds should be justified by bootstrap constraints, intentionally standalone binaries, or broken upstream shared support.
 
-5. **For dependencies that provide headers/libraries**, add `-I/deps/<name>/include` to `CPPFLAGS` and `-L/deps/<name>/lib` to `LDFLAGS`.
+5. **For dependencies that provide pkg-config files**, set `PKG_CONFIG_PATH` to include their `lib/pkgconfig` directories. The library recipes use `pcfiledir` to make `.pc` files relocatable, so `pkg-config` returns the correct paths in both sandbox (`/deps/<name>/`) and store contexts:
+   ```bash
+   export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig:/deps/openssl/lib/pkgconfig"
+   ```
+   This replaces manual `-I` and `-L` flags for autotools-based packages. For packages with custom build systems that don't use pkg-config, you may still need explicit `CPPFLAGS`/`LDFLAGS`.
 
-6. **For dependencies whose binaries should be found at configure time**, add their `bin/` to `PATH` or set `PKG_CONFIG_PATH`.
+6. **For dependencies whose binaries should be found at configure time**, add their `bin/` to `PATH`.
 
 7. **Install to `--prefix=/`** with `DESTDIR=$OUT`.
 
@@ -308,9 +324,23 @@ export const <package>Recipe = recipe;
     # Then check if share/ has anything useful left before removing
     ```
 
-11. **Include `runtime_deps`** for any dep whose shared libraries your package links against at runtime. At minimum `["toolchain"]` for glibc. Add additional dep names if your package links their shared libs. If your package now provides shared libraries that downstream executables will use, preserve the `.so` files, soname symlinks, and pkg-config metadata so future recipes can link against them normally.
+11. **Make pkg-config files relocatable** when building library packages that produce `.pc` files. The standard install prefix of `/` produces `.pc` files with `prefix=/`, which is wrong in the sandbox (where deps are at `/deps/<name>/`) and in the store. Add this snippet after `make install` and before cleanup:
+    ```bash
+    # Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+    for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+      [ -f "$pc" ] || continue
+      case "$pc" in
+        */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=${pcfiledir}/../../..|' "$pc" ;;
+        */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pc" ;;
+        */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=${pcfiledir}/../..|' "$pc" ;;
+      esac
+    done
+    ```
+    This rewrites `prefix=` in all `.pc` files to use `${pcfiledir}` — a pkgconf extension that resolves to the directory containing the `.pc` file. Wherever the `.pc` file lives, `prefix` points to the output root. The snippet is safe to run even if no `.pc` files exist.
 
-12. **Do not** access anything outside the sandbox. No `/usr`, no `/nix`, no host tools. If a build fails because it can't find something, fix the recipe — don't mount host paths.
+12. **Include `runtime_deps`** for any dep whose shared libraries your package links against at runtime. At minimum `["toolchain"]` for glibc. Add additional dep names if your package links their shared libs. If your package now provides shared libraries that downstream executables will use, preserve the `.so` files, soname symlinks, and pkg-config metadata so future recipes can link against them normally.
+
+13. **Do not** access anything outside the sandbox. No `/usr`, no `/nix`, no host tools. If a build fails because it can't find something, fix the recipe — don't mount host paths.
 
 #### 3.6 Import and Build
 
@@ -383,7 +413,7 @@ Only after a successful build and verification:
 
 ---
 
-## 4. Reference: Existing Recipes by Build System
+## 7. Reference: Existing Recipes by Build System
 
 Use these as templates when creating new recipes:
 
@@ -396,10 +426,101 @@ Use these as templates when creating new recipes:
 | zstd | Makefile | `LIB_TYPE=static`, separate lib/programs builds |
 | bzip2 | Makefile | No configure, sed-patched Makefile |
 | perl | Configure + make | Complex, special env setup |
+| ripgrep | cargoBuild | Rust package, source tarball + network fetch |
+| hello-rust | cargoBuild | Rust test package, inline code |
 
 ---
 
-## 5. Quick Reference: File Layout
+## 5. Building Rust Packages with `cargoBuild`
+
+For Rust packages, use the `cargoBuild` SDK helper instead of `shellBuild`. This helper handles the complexities of running the Rust toolchain inside the sandbox.
+
+### Basic Pattern
+
+```typescript
+import { cargoBuild, dep, importToStore } from "../../../../js/src/index.js";
+import { nativeToolchainRecipe } from "../../../toolchain/native-toolchain.js";
+import { rustRecipe } from "../rust.js";
+import { zlibRecipe } from "../../zlib/zlib.js";
+import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
+import { myPackageSourceRecipe } from "./my-package-source.js";
+
+const recipe = await cargoBuild({
+  name: "my-binary",
+  toolchain: "toolchain",
+  rustToolchain: "rust",
+  source: "source",           // dep name for the source tarball
+  deps: [
+    dep("source", myPackageSourceRecipe),
+    dep("toolchain", nativeToolchainRecipe),
+    dep("rust", rustRecipe),
+    dep("zlib", zlibRecipe),      // needed by rust-lld/libLLVM
+    dep("ca-certs", caCertificatesRecipe),  // HTTPS for cargo
+  ],
+  env: {
+    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
+    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
+  },
+  unsafe_flags: 0x01,          // network access for cargo fetch
+  runtime_deps: ["toolchain"], // Rust binaries need libc at runtime
+});
+
+await importToStore(recipe);
+export const myPackageRecipe = recipe;
+```
+
+### Key Differences from `shellBuild`
+
+1. **Must include `rust` dep** — `dep("rust", rustRecipe)` for the Rust toolchain.
+2. **Must include `zlib` dep** — `rust-lld` and `libLLVM` need `libz.so`.
+3. **Must include `ca-certs` dep** — cargo needs HTTPS to download from crates.io.
+4. **`unsafe_flags: 0x01`** — required for network access (cargo fetches deps).
+5. **`source` option** — for real projects, provide a source tarball dep.
+6. **Runtime deps: only `toolchain`** — Rust binaries are dynamically linked to glibc but not to the Rust toolchain itself.
+
+### Inline Code (for simple test packages)
+
+For small test programs, you can use `cargoToml` and `mainRs` instead of `source`:
+
+```typescript
+const recipe = await cargoBuild({
+  name: "hello",
+  toolchain: "toolchain",
+  rustToolchain: "rust",
+  cargoToml: `[package]\nname = "hello"\nversion = "0.1.0"\nedition = "2021"`,
+  mainRs: 'fn main() { println!("hello"); }',
+  deps: [
+    dep("toolchain", nativeToolchainRecipe),
+    dep("rust", rustRecipe),
+    dep("zlib", zlibRecipe),
+  ],
+  runtime_deps: ["toolchain"],
+});
+```
+
+### How `cargoBuild` Handles the Sandbox
+
+The sandbox mounts dependencies in a **canonical store-shaped topology** so relocated executables can run directly from their dependency aliases:
+
+- canonical paths: `/<shard>/<hash>/...`
+- compatibility aliases: `/store/<shard>/<hash>/...`
+- human-friendly aliases: `/deps/<name>/ -> ../<shard>/<hash>/`
+
+This means a relocated tool like `/deps/rust/bin/rustc` can still resolve a sibling dependency path like `../../../fa/<hash>/lib/ld-linux-x86-64.so.2`, because walking up from `/deps/rust/bin/` lands at `/`, where the top-level shard directories exist.
+
+The `cargoBuild` helper therefore mainly:
+
+1. Copies crt startup files to `/lib/` for the linker.
+2. Configures cargo with the correct sysroot, linker, and library paths.
+3. Keeps a small compatibility bridge for older relocated toolchains that may still expect an explicit ld-linux file copy.
+
+### Hermeticity Note
+
+Packages built with `unsafe_flags: 0x01` are **not fully hermetic** — they depend on crates.io availability and version specifiers may drift. For fully reproducible builds, pre-vendor dependencies and build offline (future work).
+
+---
+
+## 6. Quick Reference: File Layout
 
 ```
 recipes/
@@ -407,6 +528,11 @@ recipes/
     <package>/
       <package>-source.ts    # download() + importToStore()
       <package>.ts           # shellBuild() + importToStore()
+    rust/
+      rust-source.ts         # Rust toolchain downloads
+      rust.ts                # Rust toolchain build + relocate
+      hello-world/           # test recipe
+      ripgrep/               # real package (cargoBuild)
   toolchain/
     native-toolchain.ts      # the bundled toolchain dep
   bootstrap/                  # seed/bootstrap (not for package agents)
@@ -418,7 +544,7 @@ recipes/
 src/
   build.rs      # DAG resolution, sandboxing, relocation
   sandbox.rs    # Linux namespace sandbox
-  relocate.rs   # store-relative ELF RUNPATH/PT_INTERP patching
+  relocate.rs   # store-relative ELF RUNPATH patching + AT_EXECFN bootstrap injection
   packed.rs     # AT_EXECFN bootstrap injection
   recipe.rs     # recipe binary format
   store.rs      # SQLite + filesystem store

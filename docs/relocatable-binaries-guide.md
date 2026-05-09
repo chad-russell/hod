@@ -4,7 +4,7 @@
 
 Hod’s goal is to produce binaries that run regardless of where the store lives on disk. This guide explains how, why, and what the constraints are.
 
-> Current status: `File.resources_hash` packed outputs use the restored AT_EXECFN bootstrap path when possible, patch RUNPATH/RPATH to `$ORIGIN/../lib`, and assemble `bin/binary` plus `lib/`. Process recipes with encoded `runtime_deps` run the store-relative relocation pass in `src/relocate.rs` after output staging.
+> Current status: `File.resources_hash` packed outputs use the restored AT_EXECFN bootstrap path when possible, patch RUNPATH/RPATH to `$ORIGIN/../lib`, and assemble `bin/binary` plus `lib/`. Process recipes with encoded `runtime_deps` run the store-relative relocation pass in `src/relocate.rs` after output staging, patch RUNPATH into the store, and inject the bootstrap for executable ELFs so they work both from the host store and inside sandboxes.
 
 ---
 
@@ -92,7 +92,18 @@ The advantage is direct execution without a wrapper process, while avoiding a fi
 
 ## 5. Store-Relative Relocation (New Design)
 
-**Status:** Implemented prototype. `src/relocate.rs` is exported and called by the Process builder when `runtime_deps` is present in the decoded recipe.
+**Status:** Implemented and in production. `src/relocate.rs` is exported and called by the Process builder when `runtime_deps` is present in the decoded recipe. See `docs/relocation-redesign.md` for full design details.
+
+### 5.0.1 New PT_LOAD Segment Strategy for RUNPATH/PT_INTERP Patching
+
+For prebuilt binaries (like the Rust toolchain) that have short or absent RUNPATHs and BSS sections that prevent simple in-place patching, a **new PT_LOAD segment** strategy was implemented in `src/packed.rs`:
+
+1. A new PT_LOAD segment is placed beyond all existing segments (including BSS).
+2. The segment contains an updated `.dynstr` with the new RUNPATH and PT_INTERP strings.
+3. The phdr slot is acquired by repurposing `PT_GNU_STACK` (purely advisory, always present with zero-size) or by filling a gap after the phdr table.
+4. `DT_STRTAB`, `DT_STRSZ`, `DT_RUNPATH`, and `PT_INTERP` are updated to reference the new segment.
+
+This replaced the old append-extension approach that corrupted BSS in large binaries like `librustc_driver.so` (83 MB BSS). See `docs/relocation-redesign.md` for full details.
 
 ### 5.1 Motivation
 
@@ -224,13 +235,16 @@ This is passed to the bootstrap as metadata (the same mechanism as today's `../l
 
 The transition from "copy everything" to "store-relative" is incremental:
 
-1. **Keep the existing `File` + `resources_hash` pipeline** working.
-2. **Use the restored ELF bootstrap APIs** for packed outputs and store-relative relocation.
-3. **Run store-relative relocation from `build.rs`** after Process output capture/staging.
-4. **Use encoded `runtime_deps`** to select which dependency outputs provide runtime libraries.
-5. **Migrate recipes incrementally** — bash, coreutils, etc. are candidate consumers of the Process relocation path.
-
-Longer term, the evaluator can automate this: when producing a Process recipe for a dynamically linked binary, it automatically adds `runtime_deps` and the dummy RUNPATH LDFLAGS.
+1. **Keep the existing `File` + `resources_hash` pipeline** working. ✅
+2. **Use the restored ELF bootstrap APIs** for packed outputs and store-relative relocation. ✅
+3. **Run store-relative relocation from `build.rs`** after Process output capture/staging. ✅
+4. **Use encoded `runtime_deps`** to select which dependency outputs provide runtime libraries. ✅
+5. **New PT_LOAD segment strategy** for prebuilt binaries with short RUNPATHs/BSS. ✅
+6. **Bootstrap-backed Process relocation** — Process outputs patch RUNPATH into the store and inject the bootstrap for executable ELFs. ✅
+7. **Sandbox closure mounting** — dependency closures are mounted at canonical store-shaped paths so relocated tools run via `/deps/<name>` aliases too. ✅
+8. **Rust toolchain support** — prebuilt Rust binaries relocated and working in sandbox. ✅
+9. **`cargoBuild` SDK helper** — builds Rust packages using the relocated toolchain. ✅
+10. **ripgrep proof-of-concept** — real Rust package built via `cargoBuild`. ✅
 
 ---
 
@@ -278,17 +292,17 @@ Builds run in hermetic sandboxes with declared dependencies only. Already Hod's 
 Outputs use `$ORIGIN`-relative RUNPATH entries pointing at other store outputs. No copying of shared libraries. Dependencies live exactly once in the store. **Implemented prototype via `runtime_deps`.**
 
 ### Layer 3: Bootstrap for PT_INTERP
-AT_EXECFN bootstrap injection is the preferred design for the kernel's absolute `PT_INTERP` requirement without a fixed store root. **Implemented for x86_64 in `src/packed.rs`.**
+AT_EXECFN bootstrap injection is the preferred design for the kernel's absolute `PT_INTERP` requirement without a fixed store root. **Implemented for x86_64 in `src/packed.rs` and used by both packed outputs and relocated Process executables.**
 
 ### Layer 4: Automatic relocation in the builder
-Target behavior: when a Process recipe declares `runtime_deps`, the builder automatically:
+Current behavior: when a Process recipe declares `runtime_deps`, the builder automatically:
 - Compiles with a long dummy RUNPATH (recipe or evaluator provides the LDFLAGS)
 - After building, resolves DT_NEEDED against runtime_dep outputs
 - Patches RUNPATH with store-relative paths
-- Injects bootstrap with store-relative ld-linux path
+- Injects the AT_EXECFN bootstrap for executable ELFs using a store-relative ld-linux path
 - **No separate File recipe needed** — relocation is part of the Process build
 
-This would eliminate the current manual two-step (compile → File recipe → packed output). Current `build.rs` does not do this yet.
+The sandbox mounts dependency closures at canonical store-shaped paths (`/<shard>/<hash>/`, with `/store/...` and `/deps/<name>/` aliases) so these relocated Process outputs can also be executed as build tools inside the sandbox.
 
 ### Layer 5: Evaluator automation
 When Hod has an evaluator, it can automatically:

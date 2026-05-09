@@ -8,7 +8,7 @@
 //! 3. Resolves each needed library against the runtime_dep outputs.
 //! 4. Computes `$ORIGIN`-relative paths to the dependency lib directories.
 //! 5. Patches RUNPATH with the computed paths.
-//! 6. Injects AT_EXECFN bootstrap with a store-relative path to ld-linux.
+//! 6. Injects the AT_EXECFN bootstrap with a store-relative path to ld-linux.
 //!
 //! The result: binaries that reference their dependencies in-place within the
 //! store, with no copying of shared libraries. The store is store-portable —
@@ -19,7 +19,7 @@ use std::path::Path;
 
 use crate::build::artifact_staging_path;
 use crate::hash::{hash_shard, hash_to_hex, Hash};
-use crate::packed::{inject_bootstrap, is_elf, patch_runpath_to};
+use crate::packed::{inject_bootstrap, is_elf, patch_elf_for_relocation};
 use crate::store::Store;
 
 // ---------------------------------------------------------------------------
@@ -101,9 +101,19 @@ fn discover_elf_files(dir: &Path) -> Vec<std::path::PathBuf> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+
+            if meta.file_type().is_symlink() {
+                // Skip symlink aliases like unxz -> xz. The target file will be
+                // discovered and relocated once via its canonical path.
+                continue;
+            }
+
+            if meta.is_dir() {
                 result.extend(discover_elf_files(&path));
-            } else if path.is_file() {
+            } else if meta.is_file() {
                 // Quick ELF magic check (read first 4 bytes)
                 if let Ok(data) = std::fs::read(&path) {
                     if is_elf(&data) {
@@ -191,12 +201,20 @@ fn relocate_single_elf(
     );
     let runpath = runpath_parts.join(":");
 
-    // Step 6: Patch RUNPATH
-    // NOTE: The recipe MUST compile with a long dummy RUNPATH (-Wl,-rpath,...)
-    // to reserve space in the ELF for this in-place patching. If no RUNPATH
-    // exists, the patch is silently skipped (the binary won't be relocatable).
-    match patch_runpath_to(&mut data, runpath.as_bytes()) {
-        Ok(true) => {} // patched
+    // Step 6: Compute PT_INTERP path (store-relative, no $ORIGIN)
+    let new_interp: Option<String> = ld_linux_info.as_ref().map(|(_dep_name, dep_hash, ld_relpath)| {
+        let shard = hash_shard(dep_hash);
+        let hex = hash_to_hex(dep_hash);
+        let up = "../".repeat(up_steps);
+        format!("{}{}/{}/{}", up, shard, hex, ld_relpath)
+    });
+
+    // Step 7: Patch RUNPATH.
+    // Shared libraries only need RUNPATH. Executables also need the bootstrap
+    // in Step 8 so they can locate ld-linux from their own invocation path on
+    // both the host store and in sandboxes.
+    match patch_elf_for_relocation(&mut data, runpath.as_bytes(), None) {
+        Ok(true) => {}
         Ok(false) => {
             eprintln!(
                 "[hod] warning: no RUNPATH to patch in {}",
@@ -211,24 +229,15 @@ fn relocate_single_elf(
         }
     }
 
-    // Step 7: Inject AT_EXECFN bootstrap with store-relative ld-linux path
-    // NOTE: The bootstrap code prefixes the path with the dirname of AT_EXECFN,
-    // so the interp path must be a plain relative path WITHOUT $ORIGIN/.
-    // $ORIGIN is a dynamic linker token, not understood by the bootstrap.
-    if let Some((_dep_name, dep_hash, ld_linux_rel_path)) = &ld_linux_info {
-        let dep_shard = hash_shard(dep_hash);
-        let dep_hex = hash_to_hex(dep_hash);
-        let bootstrap_prefix = "../".repeat(up_steps);
-        let rel_interp = format!("{bootstrap_prefix}{dep_shard}/{dep_hex}/{ld_linux_rel_path}");
-
-        match inject_bootstrap(&mut data, &rel_interp) {
-            Ok(true) => {} // bootstrap injected
-            Ok(false) => {
-                eprintln!(
-                    "[hod] warning: no PT_INTERP in {} — skipping bootstrap injection",
-                    elf_path.display()
-                );
-            }
+    // Step 8: Inject the AT_EXECFN bootstrap for executables with PT_INTERP.
+    // This converts PT_INTERP into self-locating bootstrap code so the binary
+    // works when executed from arbitrary CWDs on the host and via /deps/<name>
+    // aliases inside sandboxes. Shared libraries have no PT_INTERP and are
+    // skipped automatically.
+    if let Some(interp) = new_interp.as_deref() {
+        match inject_bootstrap(&mut data, interp) {
+            Ok(true) => {}
+            Ok(false) => {}
             Err(e) => {
                 eprintln!(
                     "[hod] warning: failed to inject bootstrap in {}: {e}",
@@ -238,7 +247,7 @@ fn relocate_single_elf(
         }
     }
 
-    // Step 8: Write the modified binary back
+    // Step 9: Write the modified binary back
     std::fs::write(elf_path, &data)?;
 
     Ok(())

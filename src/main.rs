@@ -43,9 +43,15 @@ enum Commands {
         #[arg(long)]
         store: Option<PathBuf>,
 
-        /// Rebuild even if output is cached.
+        /// Rebuild the specified recipe even if output is cached.
+        /// Dependencies are still served from cache. Use --force-recursive
+        /// to also rebuild all transitive dependencies.
         #[arg(long)]
         force: bool,
+
+        /// Rebuild the recipe and all transitive dependencies unconditionally.
+        #[arg(long)]
+        force_recursive: bool,
 
         /// Keep the sandbox working directory on build failure (for debugging).
         #[arg(long)]
@@ -174,10 +180,11 @@ fn main() {
             hash,
             store,
             force,
+            force_recursive,
             keep_failed,
             quiet,
             verbose,
-        } => cmd_build(recipe_file, hash, store, force, keep_failed, quiet, verbose),
+        } => cmd_build(recipe_file, hash, store, force, force_recursive, keep_failed, quiet, verbose),
         Commands::LsOutput {
             hash,
             store,
@@ -204,6 +211,7 @@ fn cmd_build(
     hash_str: Option<String>,
     store_path: Option<PathBuf>,
     force: bool,
+    force_recursive: bool,
     keep_failed: bool,
     quiet: bool,
     verbose: bool,
@@ -283,6 +291,7 @@ fn cmd_build(
 
     let options = BuildOptions {
         force,
+        force_recursive,
         quiet,
         keep_failed,
     };

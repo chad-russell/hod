@@ -22,6 +22,8 @@ export { hermeticPreamble } from "./preamble.js";
 export type { HermeticPreambleOptions } from "./preamble.js";
 export { shellBuild } from "./shell.js";
 export type { ShellBuildOptions } from "./shell.js";
+export { cargoBuild } from "./cargo.js";
+export type { CargoBuildOptions } from "./cargo.js";
 
 // Import helpers
 export { fromHod, importToStore } from "./import.js";

@@ -22,13 +22,8 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/curl-8.20.0
 
-# Dynamically link shared openssl + zlib.
-# Include dummy RPATH for store-relative relocation.
-export CPPFLAGS="-I/deps/openssl/include -I/deps/zlib/include"
-export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/openssl/lib -L/deps/zlib/lib"
-export LIBS="-lssl -lcrypto -ldl -lpthread -lz"
-
-# pkg-config for feature detection (shared mode, no --static)
+# pkg-config provides all -I/-L/-l flags from the relocatable .pc files.
+export LDFLAGS="$HOD_DUMMY_RPATH"
 export PKG_CONFIG_PATH=/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig
 
 # Allow configure's test programs to find shared deps
@@ -62,6 +57,16 @@ export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 
 make -j$(nproc)
 make install DESTDIR=$OUT
+
+# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
 
 # Strip binary and shared library
 /deps/toolchain/bin/strip $OUT/bin/curl 2>/dev/null || true

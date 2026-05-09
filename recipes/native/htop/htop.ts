@@ -21,10 +21,9 @@ const recipe = await shellBuild({
 tar xf /deps/source/source -C /tmp
 cd /tmp/htop-3.5.1
 
-export CPPFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
-export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
-export NCURSES_CFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
-export NCURSES_LIBS="-L/deps/ncurses/lib -lncursesw"
+# pkg-config provides -I/-L/-l flags from the relocatable ncurses .pc files.
+export LDFLAGS="$HOD_DUMMY_RPATH"
+export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 
 ./configure \\
   --prefix=/ \\

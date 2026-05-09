@@ -29,8 +29,10 @@ use crate::store::Store;
 /// Options that control build behaviour.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
-    /// Skip the output cache check and rebuild unconditionally.
+    /// Force rebuild of the top-level recipe only (dependencies use cache normally).
     pub force: bool,
+    /// Force rebuild of all recipes recursively, including all transitive dependencies.
+    pub force_recursive: bool,
     /// Suppress streaming stdout/stderr from build processes to the terminal.
     pub quiet: bool,
     /// Keep the sandbox working directory on build failure (for debugging).
@@ -41,6 +43,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             force: false,
+            force_recursive: false,
             quiet: false,
             keep_failed: false,
         }
@@ -242,8 +245,8 @@ fn do_build(
     }
     building.insert(recipe_hash);
 
-    // 3. Check cache (unless --force)
-    if !options.force {
+    // 3. Check cache (unless --force or --force-recursive)
+    if !options.force && !options.force_recursive {
         if let Some(cached) = store.get_output(&recipe_hash)? {
             eprintln!(
                 "[hod] cache hit for {} ({})",
@@ -319,7 +322,11 @@ fn do_build(
                     let relocated_hash = artifact_to_hash(&relocated_artifact);
                     stage_artifact(store, &relocated_artifact, &relocated_hash)?;
 
-                    let _ = std::fs::remove_dir_all(&output_staging_dir);
+                    // Only remove the original staging if the relocated hash is
+                    // different — otherwise we'd delete the only copy.
+                    if relocated_hash != output_hash {
+                        let _ = std::fs::remove_dir_all(&output_staging_dir);
+                    }
                     output_hash = relocated_hash;
                 }
                 Ok(_) => {}
@@ -426,8 +433,10 @@ fn build_dependency(
     options: &BuildOptions,
     building: &mut std::collections::HashSet<Hash>,
 ) -> Result<Hash> {
-    // Check if already built (output cache)
-    if !options.force {
+    // Check if already built (output cache).
+    // Only skip cache when --force-recursive is set (--force only applies to
+    // the top-level recipe, so dependencies still use the cache).
+    if !options.force_recursive {
         if let Some(cached) = store.get_output(&dep_recipe_hash)? {
             return Ok(cached);
         }

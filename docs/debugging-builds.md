@@ -84,17 +84,18 @@ Compute the BLAKE3 hash of a file's raw bytes.
 
 ## Current Sandbox Layout
 
-Process dependencies are mounted in a store-like layout and symlinked into `/deps`:
+Dependencies are mounted at canonical store-shaped paths and symlinked into `/store` and `/deps` for convenience:
 
 ```text
 /
-├── deps/<name>        -> ../store/<shard>/<output-hash>
-├── store/<shard>/<output-hash>/
-├── out/               # writable output directory
-├── tmp/               # writable tmpfs when possible
-├── homeless-shelter/  # writable HOME
-├── dev/               # host /dev bind mount
-└── proc/              # host /proc bind mount
+├── <shard>/<output-hash>/  # canonical bind mount (the real mount point)
+├── store/<shard>/<output-hash>/  -> ../../<shard>/<output-hash>/
+├── deps/<name>/            -> ../<shard>/<output-hash>/
+├── out/                    # writable output directory
+├── tmp/                    # writable tmpfs when possible
+├── homeless-shelter/       # writable HOME
+├── dev/                    # host /dev bind mount
+└── proc/                   # host /proc bind mount
 ```
 
 The builder also auto-populates environment variables from dependency outputs:

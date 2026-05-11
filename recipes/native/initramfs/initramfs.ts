@@ -18,9 +18,10 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { baseFilesRecipe } from "../base-files/base-files.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
 # --- Assemble rootfs ---

@@ -175,7 +175,7 @@ correct.
 │  Executor: toolchain busybox  |  Compiler: gcc-stage2 (glibc)       │
 │                                                                     │
 │  musl-build-stage2         musl 1.2.5 rebuilt by native toolchain   │
-│  binutils-musl-stage2      binutils 2.37 targeting musl, rebuilt    │
+│  binutils-musl-stage2      binutils 2.44 targeting musl, rebuilt    │
 │  gcc-musl-stage2           GCC 14.2.0 targeting musl, rebuilt       │
 │  validate-roundtrip        Proves the round-trip GCC produces       │
 │                            correct binaries (C, math, strings)      │
@@ -246,7 +246,7 @@ of opaque artifacts is reduced from "the entire pipeline uses them" to
 "only the bootstrap ladder uses them."
 
 Every downstream package traces through `hod-seed-root` →
-`hod-musl-toolchain` → source code (musl 1.2.5, binutils 2.37, gcc 14.2.0).
+`hod-musl-toolchain` → source code (musl 1.2.5, binutils 2.44, gcc 14.2.0).
 The only opaque artifacts are the ones needed to build the first compiler —
 the theoretical minimum for any bootstrapping build system.
 
@@ -265,6 +265,9 @@ Bit-for-bit comparison is not expected because the original `hod-musl-toolchain`
 was built by musl.cc GCC 11.2.1 (musl compiler) while the round-trip was
 built by GCC 13.2.0 (glibc compiler) — different compilers produce different
 object code. The value is *functional* correctness.
+
+Note: the original bootstrap binutils is now 2.44 (upgraded from 2.37 for
+musl header compatibility), so the round-trip should also target binutils 2.44.
 
 See `recipes/roundtrip/` for the implementation.
 
@@ -306,6 +309,15 @@ They bridge the gap until the native toolchain is ready.
 
 Once native-toolchain exists, downstream recipes don't need shims anymore.
 
+**Important bootstrap detail:** All shim recipes (and all bootstrap ladder
+recipes that use the seed gcc) must wrap `/deps/seed/bin/gcc` with a script
+that passes `-B` flags pointing at the seed's internal directories
+(`libexec/gcc/...`, `lib/gcc/...`, `x86_64-linux-musl/lib/`). The seed
+gcc has hardcoded paths from its original build host that don't exist in
+the sandbox; without the `-B` flags, configure test compilations fail
+silently and produce broken binaries. See `recipes/shims/make.ts` for the
+canonical wrapper pattern.
+
 ## Folder Map
 
 ```
@@ -318,8 +330,8 @@ recipes/
                   hod-seed-root.ts        → source-built busybox + Hod-built toolchain
                   musl-source.ts          → download musl 1.2.5 source
                   musl-build.ts           → build musl from source
-                  binutils-source.ts      → download binutils 2.37 source
-                  binutils-musl.ts        → build binutils targeting musl
+                  binutils-source.ts      → download binutils 2.44 source
+                  binutils-musl.ts        → build binutils 2.44 targeting musl
                   gcc-source.ts           → download gcc 14.2.0 source
                   gcc-musl.ts             → build gcc 14.2.0 targeting musl (C + C++)
                   hod-musl-toolchain.ts   → assemble gcc + binutils + musl
@@ -335,7 +347,6 @@ recipes/
                   linux-headers, glibc, glibc-runtime
                   gcc-stage1 (cross-compiler, GCC 13.2.0)
                   validate-stage1, validate-complex
-                  hello-packed, run-packed-hello (packed binary tests)
                   NOTE: gmp/mpfr/mpc are in the bootstrap ladder (seed-root).
                   Everything else uses hod-seed-root.
 
@@ -357,7 +368,7 @@ recipes/
 
   roundtrip/    Round-trip verification (Phase C.2)
                   musl-build-stage2.ts       → musl rebuilt by native toolchain
-                  binutils-musl-stage2.ts    → binutils-musl rebuilt
+                  binutils-musl-stage2.ts    → binutils-musl 2.44 rebuilt
                   gcc-musl-stage2.ts         → gcc-musl rebuilt (cross-compilation)
                   validate-roundtrip.ts      → proves round-trip GCC works
 
@@ -367,7 +378,32 @@ recipes/
 
 ## Known Issues and Future Work
 
-### 1. hermeticPreamble glibc libc.so bug
+### 1. Seed gcc requires -B wrapper in sandbox
+
+All recipes that use `/deps/seed/bin/gcc` as the compiler must create a
+wrapper script that passes `-B` flags for the seed's internal directories.
+Without this, the seed gcc cannot find cc1, collect2, libgcc, crt*.o, etc.
+in the sandbox (its hardcoded paths point at the original build host).
+Configure test compilations fail silently, producing broken or missing
+binaries. This was the root cause of the "no acceptable m4" error in the
+bootstrap ladder — shim recipes compiled with bare `CC=/deps/seed/bin/gcc`
+produced non-functional binaries.
+
+The canonical pattern (from `recipes/shims/make.ts`):
+```sh
+mkdir -p /tmp/gcc-wrapper
+cat > /tmp/gcc-wrapper/gcc << 'WRAPPER'
+#!/bin/sh
+exec /deps/seed/bin/gcc \\
+  -B/deps/seed/libexec/gcc/x86_64-linux-musl/11.2.1/ \\
+  -B/deps/seed/lib/gcc/x86_64-linux-musl/11.2.1/ \\
+  -B/deps/seed/x86_64-linux-musl/lib/ \\
+  "$@"
+WRAPPER
+chmod +x /tmp/gcc-wrapper/gcc
+```
+
+### 2. hermeticPreamble glibc libc.so bug
 
 `hermeticPreamble()` symlinks ALL `$toolchain/lib/*.so*` files into `/lib/`,
 including glibc's `libc.so` linker script (a text file, not ELF). The
@@ -375,7 +411,7 @@ dynamic linker fails with "invalid ELF header" when it encounters this.
 Currently worked around in the roundtrip recipes with a custom preamble.
 A proper fix should exclude linker scripts from symlinking.
 
-### 2. Round-trip not bit-for-bit
+### 3. Round-trip not bit-for-bit
 
 The round-trip proves *functional* correctness, not bit-identical
 reproducibility. The two compilers (musl.cc GCC 11.2.1 vs. native GCC
@@ -383,7 +419,7 @@ reproducibility. The two compilers (musl.cc GCC 11.2.1 vs. native GCC
 would require solving `__DATE__` macros, `ar` archive ordering, build
 timestamps, and using the same compiler version for both stages.
 
-### 3. Opaque busybox still in bootstrap ladder
+### 4. Opaque busybox still in bootstrap ladder
 
 `seed-root.ts` still bundles the opaque busybox. It's used as the shell
 executor for bootstrap ladder builds. `busybox-from-source.ts` depends on
@@ -391,7 +427,7 @@ executor for bootstrap ladder builds. `busybox-from-source.ts` depends on
 technically on the dependency path of the source-built one. See
 `plans/bootstrap-roadmap.md` "Future Considerations" for discussion.
 
-### 4. Seed minimization (Phase D)
+### 5. Seed minimization (Phase D)
 
 The musl.cc tarball (~50MB) includes a full GCC installation. Most of
 this is redundant since we build musl, binutils, and gcc from source.

@@ -6,13 +6,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { zlibSourceRecipe } from "./zlib-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-tar xf /deps/source/source -C /tmp
-cd /tmp/zlib-1.3.1
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Build shared + static (zlib's configure enables both by default without --static)
 ./configure --prefix=/

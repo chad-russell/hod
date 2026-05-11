@@ -14,6 +14,7 @@ import { mpfrStage2Recipe } from "./mpfr.js";
 import { mpcSourceRecipe } from "../cross/mpc-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",

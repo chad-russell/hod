@@ -15,14 +15,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { procpsNgSourceRecipe } from "./procps-ng-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses"],
+    includePaths: ["/deps/ncurses/include/ncursesw"],
+    libDeps: ["ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/procps-ng-4.0.6
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 export CPPFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"

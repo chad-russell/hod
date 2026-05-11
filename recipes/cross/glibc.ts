@@ -13,7 +13,7 @@ import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { linuxHeadersRecipe } from "./linux-headers.js";
 import { glibcSourceRecipe } from "./glibc-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
 const recipe = await process({
   platform: "x86_64-linux",
@@ -24,6 +24,10 @@ const recipe = await process({
     `set -e
 
 ${preamble}
+
+export PATH="/deps/python/bin:$PATH"
+export MAKE="/deps/shims/bin/make"
+export PYTHON="/deps/python/bin/python3"
 
 tar xf /deps/source/source -C /tmp
 cd /tmp/glibc-2.41

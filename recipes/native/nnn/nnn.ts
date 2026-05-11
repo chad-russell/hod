@@ -15,14 +15,18 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { readlineRecipe } from "../readline/readline.js";
 import { nnnSourceRecipe } from "./nnn-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses", "readline"],
+    libDeps: ["ncurses", "readline"],
+    pkgConfigDeps: ["ncurses", "readline"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/nnn-5.2
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # pkg-config provides ncurses -I/-L/-l flags from the relocatable .pc files.
 # readline is linked directly (not via pkg-config), so we need explicit paths.

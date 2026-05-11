@@ -19,19 +19,30 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { ncduSourceRecipe } from "./ncdu-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includePaths: ["/deps/ncurses/include/ncursesw"],
+    libDeps: ["ncurses"],
+    pkgConfigDeps: ["ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/ncdu-1.22
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # pkg-config provides -I/-L/-l flags from the relocatable ncurses .pc files.
-export LDFLAGS="$HOD_DUMMY_RPATH"
-export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
+# CPPFLAGS includes ncurses' ncursesw header subdirectory explicitly because
+# ncdu's configure checks for <ncurses.h> before using pkg-config results.
+find . -type f \\( -name '*.c' -o -name '*.h' -o -name 'configure' \\) \
+  -exec sed -i 's/<ncurses\.h>/<curses.h>/g; s/ ncurses\.h/ curses.h/g' {} +
+mkdir -p /tmp/ncdu-include
+cp /deps/ncurses/include/ncursesw/curses.h /tmp/ncdu-include/curses.h
 
+ac_cv_header_curses_h=yes \
+CPPFLAGS="-I/tmp/ncdu-include -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw" \
+LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib" \
 ./configure \\
   --prefix=/ \\
   --with-ncursesw

@@ -312,6 +312,28 @@ impl Store {
         Ok(deps)
     }
 
+    /// List all recipe hashes in the store.
+    ///
+    /// Returns `Vec<(hex_hash, Hash)>` for every stored recipe.
+    pub fn list_recipes(&self) -> Result<Vec<(String, Hash)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT recipe_hash FROM recipes ORDER BY stored_at")?;
+        let mut rows = stmt.query([])?;
+        let mut recipes = Vec::new();
+        while let Some(row) = rows.next()? {
+            let hex: String = row.get(0)?;
+            let hash = crate::hash::hex_to_hash(&hex).ok_or_else(|| {
+                StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("corrupt recipe hash in DB: {hex}"),
+                ))
+            })?;
+            recipes.push((hex, hash));
+        }
+        Ok(recipes)
+    }
+
     // -- Path helpers --
 
     /// Path to the blobs directory.

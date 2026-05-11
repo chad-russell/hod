@@ -5,7 +5,7 @@ import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { gmpRecipe } from "./gmp.js";
 import { mpfrSourceRecipe } from "./mpfr-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
 const recipe = await process({
   platform: "x86_64-linux",

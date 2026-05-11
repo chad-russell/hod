@@ -11,14 +11,17 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { bzip2Recipe } from "../bzip2/bzip2.js";
 import { xzRecipe } from "../xz/xz.js";
 import { fileSourceRecipe } from "./file-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["zlib", "bzip2", "xz"],
+    libDeps: ["zlib", "bzip2", "xz"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/file-5.46
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/zlib/lib -L/deps/bzip2/lib -L/deps/xz/lib"
 export CPPFLAGS="-I/deps/zlib/include -I/deps/bzip2/include -I/deps/xz/include"

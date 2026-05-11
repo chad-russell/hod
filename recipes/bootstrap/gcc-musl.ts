@@ -25,6 +25,7 @@ import { gccSourceRecipe } from "./gcc-source.js";
 import { muslBuildRecipe } from "./musl-build.js";
 import { binutilsMuslRecipe } from "./binutils-musl.js";
 import { makeRecipe as shimMakeRecipe } from "../shims/make.js";
+import { m4Recipe } from "../shims/m4.js";
 import { gmpRecipe } from "../cross/gmp.js";
 import { mpfrRecipe } from "../cross/mpfr.js";
 import { mpcRecipe } from "../cross/mpc.js";
@@ -44,7 +45,7 @@ const recipe = await process({
 
 ${preamble}
 
-export PATH=/tmp/gcc-wrapper:/deps/make/bin:/deps/binutils/bin:/deps/seed/bin
+export PATH=/tmp/gcc-wrapper:/deps/m4/bin:/deps/make/bin:/deps/binutils/bin:/deps/seed/bin
 MAKE=/deps/make/bin/make
 
 # The seed musl gcc has hardcoded paths from the host staging directory.
@@ -114,7 +115,7 @@ cd /tmp/gcc-build
   --disable-bootstrap \\
   --disable-fixincludes \\
   --disable-libsanitizer \\
-  --disable-lto \
+  --disable-lto \\
   --disable-gnu-indirect-function \\
   --enable-tls \\
   --enable-initfini-array \\
@@ -204,6 +205,7 @@ echo "=== All key GCC outputs present ==="`,
     dep("binutils", binutilsMuslRecipe),
     dep("gmp", gmpRecipe),
     dep("make", shimMakeRecipe),
+    dep("m4", m4Recipe),
     dep("mpc", mpcRecipe),
     dep("mpfr", mpfrRecipe),
     dep("musl", muslBuildRecipe),

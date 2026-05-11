@@ -13,6 +13,7 @@ import { gmpStage2Recipe } from "./gmp.js";
 import { mpfrSourceRecipe } from "../cross/mpfr-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",

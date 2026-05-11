@@ -8,14 +8,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { m4SourceRecipe } from "./m4-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/m4-1.4.19
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 ./configure \\
   --prefix=/ \\

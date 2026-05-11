@@ -1,30 +1,75 @@
-//! Cargo build helper for Rust packages.
+//! Rust build profile + cargoBuild driver.
 //!
-//! Creates a Process recipe that:
-//!   1. Writes Cargo.toml + source files into the sandbox
-//!   2. Runs `cargo build --release` using the prebuilt Rust toolchain
-//!   3. Copies the compiled binary to `$OUT/bin/<name>`
+//! Provides the standard environment for Rust/Cargo builds and the `cargoBuild`
+//! convenience helper that wraps shell-driven builds with Cargo-specific setup.
 //!
-//! ## Runtime dependencies
+//! Usage (profile only):
+//!   import { rustProfile } from "../helpers/rust.js";
+//!   shellBuild({ ...rustProfile(), deps: [...], script: `...` });
 //!
-//! Compiled Rust binaries are statically linked by default (except for
-//! libc/libgcc_s/ld-linux from the C toolchain). So `runtime_deps` only
-//! needs the C toolchain — NOT the Rust toolchain.
+//! Usage (cargoBuild):
+//!   import { cargoBuild } from "../helpers/rust.js";
+//!   const recipe = await cargoBuild({ name: "rg", toolchain: tc, rustToolchain: rust, ... });
 
-import type { ProcessDependency } from "./dep.js";
-import type { BuiltRecipe } from "./file.js";
-import { hermeticPreamble } from "./preamble.js";
-import { process, type EnvEntry } from "./process.js";
+import {
+  hermeticPreamble,
+  HOD_DUMMY_RPATH_FLAG,
+  dep,
+  shellBuild,
+} from "../../js/src/index.js";
+import type { ProcessDependency } from "../../js/src/dep.js";
+import type { BuiltRecipe } from "../../js/src/file.js";
+import type { EnvEntry } from "../../js/src/process.js";
+
+export interface RustProfileOptions {
+  /** Dep name for the C toolchain bundle (default: "toolchain"). */
+  tc?: string;
+  /** Dep name for the Rust toolchain bundle (default: "rust"). */
+  rust?: string;
+}
+
+/**
+ * Return environment defaults for a Rust/Cargo build.
+ *
+ * Returns shell, preamble, and process-level env vars.  Use with shellBuild:
+ *
+ *   shellBuild({ ...rustProfile(), deps: [...], script: `...` });
+ */
+export function rustProfile(opts: RustProfileOptions = {}): {
+  shell: string;
+  preamble: string;
+  env: Record<string, string>;
+} {
+  const tc = opts.tc ?? "toolchain";
+  const rust = opts.rust ?? "rust";
+
+  return {
+    shell: `/deps/${tc}/bin/busybox`,
+    preamble: hermeticPreamble({ shell: tc, glibcLinker: tc }),
+    env: {
+      PATH: `/deps/${tc}/bin:/deps/${rust}/bin`,
+      CC: `/deps/${tc}/bin/gcc --sysroot=/deps/${tc}/sysroot -B/deps/${tc}/bin`,
+      AR: `/deps/${tc}/bin/ar`,
+      RANLIB: `/deps/${tc}/bin/ranlib`,
+      STRIP: `/deps/${tc}/bin/strip`,
+      CFLAGS: "-O2",
+      C_INCLUDE_PATH: "",
+      CARGO_HOME: "/tmp/.cargo",
+      HOD_DUMMY_RPATH: HOD_DUMMY_RPATH_FLAG,
+      LDFLAGS: HOD_DUMMY_RPATH_FLAG,
+    },
+  };
+}
 
 export interface CargoBuildOptions {
   /** Binary name (used for Cargo.toml [[bin]] and output path). */
   name: string;
 
-  /** Dependency name providing `bin/busybox`, gcc, and glibc runtime. */
-  toolchain: string;
+  /** BuiltRecipe for the C toolchain (gcc + glibc). */
+  toolchain: BuiltRecipe;
 
-  /** Dependency name providing `bin/rustc`, `bin/cargo`, and `lib/`. */
-  rustToolchain: string;
+  /** BuiltRecipe for the Rust toolchain (rustc + cargo). */
+  rustToolchain: BuiltRecipe;
 
   /**
    * Source dependency name. When provided, the source tarball is extracted
@@ -40,19 +85,19 @@ export interface CargoBuildOptions {
   /** Contents of Cargo.toml. Required unless `source` is provided. */
   cargoToml?: string;
 
-  /** Contents of src/main.rs. Required unless `source` is provided. */
+  /** Contents of src/main.rs. Required unless `source` is not provided. */
   mainRs?: string;
 
   /** Additional source files: { "src/lib.rs": "..." }. Paths relative to project root. */
   extraFiles?: Record<string, string>;
 
-  /** Named dependencies mounted under `/deps/<name>/`. */
+  /** Named dependencies mounted under `/deps/<name>/` (excluding toolchain and rust, which are auto-injected). */
   deps: ProcessDependency[];
 
   /** Runtime dependencies for ELF relocation. */
   runtime_deps?: string[];
 
-  /** Environment variables for the process recipe. */
+  /** Environment variables for the process recipe (merged with rustProfile defaults). */
   env?: Record<string, string> | EnvEntry[];
 
   /** Additional Cargo build flags (e.g., "--features", "feature1"). */
@@ -62,46 +107,22 @@ export interface CargoBuildOptions {
   unsafe_flags?: number;
 }
 
-function normalizeEnv(env?: Record<string, string> | EnvEntry[]): Record<string, string> {
-  const merged: Record<string, string> = {
-    C_INCLUDE_PATH: "",
-  };
-
-  if (!env) {
-    return merged;
-  }
-
-  if (Array.isArray(env)) {
-    for (const entry of env) {
-      merged[entry.key] = entry.value;
-    }
-    return merged;
-  }
-
-  return {
-    ...merged,
-    ...env,
-  };
-}
-
-// Long dummy RUNPATH (same as shellBuild)
-const DUMMY_RUNPATH =
-  "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy";
-
-// Avoid triggering Bun parser bug with `/*` inside template literals.
-const PAT_SLASH_STAR = "/" + "*";
-
 /**
  * Build a Rust binary using `cargo build --release` inside the sandbox.
+ *
+ * Uses shellBuild with rustProfile defaults.  The profile provides:
+ *   - shell: /deps/toolchain/bin/busybox
+ *   - preamble: ld-linux + glibc symlinks
+ *   - env: PATH, CC, AR, RANLIB, STRIP, CFLAGS, CARGO_HOME, LDFLAGS + dummy RUNPATH
  */
 export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> {
   if (!opts.name || opts.name.trim() === "") {
     throw new Error("cargoBuild(): name is required");
   }
-  if (!opts.toolchain || opts.toolchain.trim() === "") {
+  if (!opts.toolchain) {
     throw new Error("cargoBuild(): toolchain is required");
   }
-  if (!opts.rustToolchain || opts.rustToolchain.trim() === "") {
+  if (!opts.rustToolchain) {
     throw new Error("cargoBuild(): rustToolchain is required");
   }
   if (!opts.source) {
@@ -113,39 +134,45 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     }
   }
 
-  const deps = opts.deps ?? [];
-  if (!deps.some((dep) => dep.name === opts.toolchain)) {
-    throw new Error(
-      `cargoBuild(): deps must include dep("${opts.toolchain}", ...) for the C toolchain`,
-    );
+  const tc = "toolchain";
+  const rust = "rust";
+
+  // Auto-inject toolchain and rust deps.  Use dep() to normalize
+  // BuiltRecipe → {name, recipe_hash}.
+  const deps: ProcessDependency[] = [
+    dep(tc, opts.toolchain),
+    dep(rust, opts.rustToolchain),
+    ...(opts.deps ?? []),
+  ];
+
+  const profile = rustProfile({ tc, rust });
+
+  // Merge user-supplied env over the profile defaults.
+  const env: Record<string, string> = { ...profile.env };
+  if (opts.env) {
+    if (Array.isArray(opts.env)) {
+      for (const entry of opts.env) {
+        env[entry.key] = entry.value;
+      }
+    } else {
+      Object.assign(env, opts.env);
+    }
   }
-  if (!deps.some((dep) => dep.name === opts.rustToolchain)) {
-    throw new Error(
-      `cargoBuild(): deps must include dep("${opts.rustToolchain}", ...) for the Rust toolchain`,
-    );
-  }
 
-  const tc = opts.toolchain;
-  const rust = opts.rustToolchain;
-
-  const preamble = hermeticPreamble({
-    shell: tc,
-    glibcLinker: tc,
-  });
-
-  // Current sandbox design mounts dependencies at canonical store-shaped paths
-  // (/<shard>/<hash>/ with /deps/<name> symlinks into that topology), so
-  // relocated toolchain binaries execute correctly when invoked from /deps.
+  // --- Script body ---
   //
-  // Older stores may still contain toolchains that embed a raw relative
-  // ld-linux path instead of using the bootstrap path. Keep a best-effort
-  // compatibility bridge for those older outputs, but skip it when the target
-  // path already exists (the normal case with the current sandbox layout).
+  // shellBuild handles set -e, preamble, and process-level env.  The script
+  // only contains Rust-specific sandbox setup, source unpacking, and the
+  // cargo build steps.
+
+  // Compatibility bridge for older relocated Rust toolchains.  Not needed
+  // for current stores (canonical sandbox paths handle this), but kept as a
+  // best-effort fallback for historical artifacts.
   const rustSandboxSetup = [
     "# Compatibility bridge for older relocated Rust toolchains (best-effort)",
     `HOD_RUST_INTERP=$(/deps/${tc}/bin/busybox grep -a -o 'fa/[0-9a-f]\\{64\\}/lib/ld-linux' /deps/${rust}/bin/rustc 2>/dev/null | /deps/${tc}/bin/busybox head -1 || true)`,
     'if [ -n "$HOD_RUST_INTERP" ] && [ ! -e "/$HOD_RUST_INTERP" ]; then',
-    `  HOD_INTERP_DIR=$(/deps/${tc}/bin/busybox dirname "/\$HOD_RUST_INTERP")`,
+    `  HOD_INTERP_DIR=$(/deps/${tc}/bin/busybox dirname "/\\$HOD_RUST_INTERP")`,
     '  "$HOD_SHELL_BUSYBOX" mkdir -p "$HOD_INTERP_DIR"',
     `  "$HOD_SHELL_BUSYBOX" cp /deps/${tc}/sysroot/lib/ld-linux-x86-64.so.2 "$HOD_INTERP_DIR/ld-linux-x86-64.so.2" 2>/dev/null || true`,
     "  # Older cargo setups may exec from registry source directories.",
@@ -164,48 +191,26 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     `"$HOD_SHELL_BUSYBOX" cp /deps/${tc}/sysroot/lib/crt1.o /lib/ 2>/dev/null || true`,
   ].join("\n");
 
-  const toolchainEnv = [
-    `export PATH=/deps/${tc}/bin:/deps/${rust}/bin`,
-    `export CC="/deps/${tc}/bin/gcc --sysroot=/deps/${tc}/sysroot -B/deps/${tc}/bin"`,
-    `export AR=/deps/${tc}/bin/ar`,
-    `export RANLIB=/deps/${tc}/bin/ranlib`,
-    `export STRIP=/deps/${tc}/bin/strip`,
-    `export CFLAGS="-O2"`,
-    "export CARGO_HOME=/tmp/.cargo",
-  ].join("\n");
-
-  const rpathEnv = [
-    `export HOD_DUMMY_RPATH="-Wl,-rpath,${DUMMY_RUNPATH}"`,
-    `export LDFLAGS="\${HOD_DUMMY_RPATH}"`,
-  ].join("\n");
-
   // Cargo config to use the right linker and rustc
-  // Both [build] rustflags and [target.*] linker are needed:
-  // - [build] rustflags: applied to build scripts and target compilation
-  // - [target.*] linker: applied to target compilation (build scripts use cc)
-  // We don't use -B/deps/<tc>/bin because that overrides the Rust-bundled ld.lld
-  // with our GNU ld, which then can't find crt files. Instead we use --sysroot
-  // and -L flags only, and let rustc use its bundled lld.
   const cargoConfig = [
     "[build]",
     `rustc = "/deps/${rust}/bin/rustc"`,
     `rustdoc = "/deps/${rust}/bin/rustdoc"`,
-    `rustflags = ["-C", "link-arg=--sysroot=/deps/${tc}/sysroot", "-C", "link-arg=-L/deps/${tc}/sysroot/lib", "-C", "link-arg=-L/deps/${tc}/lib", "-C", "link-arg=-Wl,--sysroot=/deps/${tc}/sysroot", "-C", "link-arg=-Wl,-rpath,${DUMMY_RUNPATH}"]`,
+    `rustflags = ["-C", "link-arg=--sysroot=/deps/${tc}/sysroot", "-C", "link-arg=-L/deps/${tc}/sysroot/lib", "-C", "link-arg=-L/deps/${tc}/lib", "-C", "link-arg=-Wl,--sysroot=/deps/${tc}/sysroot", "-C", "link-arg=${HOD_DUMMY_RPATH_FLAG}"]`,
     "",
     "[target.x86_64-unknown-linux-gnu]",
     `linker = "/deps/${tc}/bin/gcc"`,
   ].join("\n");
 
-  // Build the source preparation section
+  // Source preparation — extract tarball or write inline files
   const sourceSetupParts: string[] = [];
 
   if (opts.source) {
-    // Extract source tarball from the named dependency
     const srcDep = opts.source;
-    sourceSetupParts.push("mkdir -p /tmp/build");
-    sourceSetupParts.push(`tar xf /deps/${srcDep}/source -C /tmp/build --strip-components=1`);
+    // fetchTarball() sources produce already-extracted directories.
+    // Copy the extracted tree directly (top-level dir already stripped by fetchTarball).
+    sourceSetupParts.push(`cp -a /deps/${srcDep}/. /tmp/build`);
   } else {
-    // Write inline source files
     sourceSetupParts.push("mkdir -p /tmp/build/src");
     sourceSetupParts.push("");
     sourceSetupParts.push("cat > /tmp/build/Cargo.toml << 'CARGO_EOF'");
@@ -227,7 +232,6 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
   }
 
   // Always write .cargo/config.toml to override any source-provided config
-  // and point at the sandbox's toolchain
   sourceSetupParts.push("mkdir -p /tmp/build/.cargo");
   sourceSetupParts.push("cat > /tmp/build/.cargo/config.toml << 'CONFIG_EOF'");
   sourceSetupParts.push(cargoConfig);
@@ -238,15 +242,13 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
   const cargoFlags = opts.cargoFlags ? ` ${opts.cargoFlags.join(" ")}` : "";
 
   // Build LD_LIBRARY_PATH from all deps that have a lib/ directory.
-  // This ensures the dynamic linker can find all needed shared libraries.
-  // We always include rust and toolchain explicitly since they're required.
   const libPathParts = [
     `/deps/${rust}/lib`,
     `/deps/${tc}/lib`,
   ];
-  for (const dep of deps) {
-    if (dep.name !== tc && dep.name !== rust) {
-      libPathParts.push(`/deps/${dep.name}/lib`);
+  for (const d of opts.deps ?? []) {
+    if (d.name !== tc && d.name !== rust) {
+      libPathParts.push(`/deps/${d.name}/lib`);
     }
   }
 
@@ -260,13 +262,10 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     `/deps/${tc}/bin/strip $OUT/bin/${opts.name} 2>/dev/null || true`,
   ].join("\n");
 
+  // shellBuild handles set -e, the preamble, and sets env vars from rustProfile.
+  // The script body only contains Rust-specific sandbox setup, source unpacking,
+  // and the cargo build.
   const fullScript = [
-    "set -e",
-    "",
-    preamble,
-    toolchainEnv,
-    rpathEnv,
-    "",
     rustSandboxSetup,
     "",
     sourceSetup,
@@ -274,13 +273,13 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     buildCmd,
   ].join("\n");
 
-  return await process({
-    platform: "x86_64-linux",
-    command: `/deps/${tc}/bin/busybox`,
-    args: ["sh", "-c", fullScript],
-    env: normalizeEnv(opts.env),
-    dependencies: deps,
+  return await shellBuild({
+    shell: profile.shell,
+    preamble: profile.preamble,
+    env,
+    deps,
     runtime_deps: opts.runtime_deps,
     unsafe_flags: opts.unsafe_flags,
+    script: fullScript,
   });
 }

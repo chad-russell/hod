@@ -15,14 +15,14 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { autoconfSourceRecipe } from "./autoconf-source.js";
 import { m4Recipe } from "../m4/m4.js";
 import { perlRecipe } from "../perl/perl.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["m4", "perl"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/autoconf-2.73
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make m4 and perl discoverable by configure
 export PATH="/deps/m4/bin:/deps/perl/bin:$PATH"

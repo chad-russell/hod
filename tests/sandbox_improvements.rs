@@ -1,10 +1,11 @@
 //! Sandbox Improvements tests — Work Stream 2.
 //!
 //! Tests for:
-//! - Auto-population of PATH, LIBRARY_PATH, C_INCLUDE_PATH from deps
+//! - Core does NOT inject C-specific env vars (PATH, LIBRARY_PATH, C_INCLUDE_PATH)
+//! - Recipe env is the sole source of builder-controlled env (besides standard vars)
 //! - Host PATH no longer inherited
 //! - All builds are hermetic (host bind-mounts removed)
-//! - Env var precedence: auto-env < recipe env < standard builder env
+//! - Env var precedence: recipe env < standard builder env
 //!
 //! All tests in this file spawn processes inside the sandbox. Since the sandbox
 //! is fully hermetic (no host filesystem), these tests use the real hod store
@@ -77,56 +78,6 @@ fn make_directory_recipe(entries: Vec<(&str, Hash)>) -> Recipe {
     Recipe::Directory(RecipeDirectory { entries })
 }
 
-/// Build a simple dependency that produces a directory with bin/ and/or lib/ and/or include/
-/// subdirectories. Returns (recipe_hash, output_hash).
-///
-/// Uses seed-root's busybox for the shell.
-fn build_toolchain_dep_with_hash(
-    store: &Store,
-    has_bin: bool,
-    has_lib: bool,
-    has_include: bool,
-) -> (Hash, Hash) {
-    let mut script = String::from("mkdir -p $OUT");
-    if has_bin {
-        script.push_str(" $OUT/bin");
-        script.push_str(" && touch $OUT/bin/tool");
-    }
-    if has_lib {
-        script.push_str(" $OUT/lib");
-        script.push_str(" && touch $OUT/lib/lib.a");
-    }
-    if has_include {
-        script.push_str(" $OUT/include");
-        script.push_str(" && touch $OUT/include/header.h");
-    }
-
-    let recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), script],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    let recipe_hash = recipe.recipe_hash();
-    let output_hash = build_recipe(
-        store,
-        &recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    (recipe_hash, output_hash)
-}
-
 /// Build a simple dep that runs a shell script and returns (recipe_hash, output_hash).
 fn build_dep_script(store: &Store, script: &str) -> (Hash, Hash) {
     let recipe = Recipe::Process(RecipeProcess {
@@ -174,26 +125,56 @@ fn staging_path(store: &Store, hash: &Hash) -> std::path::PathBuf {
 }
 
 // ===========================================================================
-// Tests: Auto-PATH from deps
+// Tests: Core does NOT inject C-specific env vars from deps
 // ===========================================================================
 
+/// Regression test: deps with bin/ do NOT automatically contribute to PATH.
+/// PATH must come from recipe env (e.g., cProfile/rustProfile) or be unset.
 #[test]
 #[ignore]
-fn auto_path_constructed_from_deps_with_bin() {
+fn deps_with_bin_do_not_auto_set_path() {
     let store = real_store();
 
     // Build a dependency that has a bin/ subdirectory
-    let (dep_recipe_hash, _dep_output) = build_toolchain_dep_with_hash(&store, true, false, false);
+    let dep_recipe = Recipe::Process(RecipeProcess {
+        platform: build::current_platform(),
+        command: SANDBOX_SHELL.to_string(),
+        args: vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "mkdir -p $OUT/bin && touch $OUT/bin/tool".to_string(),
+        ],
+        env: vec![],
+        dependencies: vec![seed_dep()],
+        workdir_hash: None,
+        output_scaffold_hash: None,
+        unsafe_flags: 0,
+        runtime_deps: None,
+    });
+
+    let _ = build_recipe(
+        &store,
+        &dep_recipe,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    );
 
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
         command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "echo $PATH > $OUT/path.txt".to_string()],
+        args: vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            // Use printf to capture possibly-empty PATH
+            "printf '%s' \"$PATH\" > $OUT/path.txt".to_string(),
+        ],
         env: vec![],
         dependencies: vec![
             ProcessDependency {
                 name: "mytool".to_string(),
-                recipe_hash: dep_recipe_hash,
+                recipe_hash: dep_recipe.recipe_hash(),
             },
             seed_dep(),
         ],
@@ -216,117 +197,17 @@ fn auto_path_constructed_from_deps_with_bin() {
     let sp = staging_path(&store, &output_hash);
     let path_content = read_staged_file(&sp, "path.txt").unwrap_or_default();
 
-    // PATH should contain /deps/mytool/bin
+    // Core should NOT auto-set PATH from dep bin/ directories.
     assert!(
-        path_content.contains("/deps/mytool/bin"),
-        "PATH should contain /deps/mytool/bin, got: {path_content}"
+        !path_content.contains("/deps/mytool/bin"),
+        "Core must not auto-inject PATH from deps, got: {path_content}"
     );
 }
 
+/// Regression test: deps with lib/ do NOT automatically contribute to LIBRARY_PATH.
 #[test]
 #[ignore]
-fn auto_path_sorted_by_dep_name() {
-    let store = real_store();
-
-    // Build two DIFFERENT dependencies with bin/ dirs
-    let (_, _) = build_dep_script(&store, "mkdir -p $OUT/bin && echo alpha > $OUT/bin/tool");
-    let dep_a_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "mkdir -p $OUT/bin && echo alpha > $OUT/bin/tool".to_string(),
-        ],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-    let dep_b_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "mkdir -p $OUT/bin && echo zoo > $OUT/bin/tool".to_string(),
-        ],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    // Build both deps
-    let _ = build_recipe(
-        &store,
-        &dep_a_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-    let _ = build_recipe(
-        &store,
-        &dep_b_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-
-    // Build a process depending on both — deps MUST be sorted by name
-    let process_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "echo $PATH > $OUT/path.txt".to_string()],
-        env: vec![],
-        dependencies: vec![
-            ProcessDependency {
-                name: "alpha".to_string(),
-                recipe_hash: dep_a_recipe.recipe_hash(),
-            },
-            seed_dep(),
-            ProcessDependency {
-                name: "zoo".to_string(),
-                recipe_hash: dep_b_recipe.recipe_hash(),
-            },
-        ],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    let output_hash = build_recipe(
-        &store,
-        &process_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    let sp = staging_path(&store, &output_hash);
-    let path_content = read_staged_file(&sp, "path.txt").unwrap_or_default();
-
-    // PATH should be sorted: alpha before zoo
-    let alpha_pos = path_content.find("/deps/alpha/bin").unwrap_or(usize::MAX);
-    let zoo_pos = path_content.find("/deps/zoo/bin").unwrap_or(usize::MAX);
-    assert!(
-        alpha_pos < zoo_pos,
-        "PATH should have alpha before zoo (sorted by dep name), got: {path_content}"
-    );
-}
-
-#[test]
-#[ignore]
-fn auto_library_path_constructed_from_deps_with_lib() {
+fn deps_with_lib_do_not_auto_set_library_path() {
     let store = real_store();
 
     let dep_recipe = Recipe::Process(RecipeProcess {
@@ -360,7 +241,7 @@ fn auto_library_path_constructed_from_deps_with_lib() {
         args: vec![
             "sh".to_string(),
             "-c".to_string(),
-            "echo $LIBRARY_PATH > $OUT/libpath.txt".to_string(),
+            "printf '%s' \"$LIBRARY_PATH\" > $OUT/libpath.txt".to_string(),
         ],
         env: vec![],
         dependencies: vec![
@@ -389,15 +270,17 @@ fn auto_library_path_constructed_from_deps_with_lib() {
     let sp = staging_path(&store, &output_hash);
     let content = read_staged_file(&sp, "libpath.txt").unwrap_or_default();
 
+    // Core should NOT auto-set LIBRARY_PATH from dep lib/ directories.
     assert!(
-        content.contains("/deps/mylib/lib"),
-        "LIBRARY_PATH should contain /deps/mylib/lib, got: {content}"
+        !content.contains("/deps/mylib/lib"),
+        "Core must not auto-inject LIBRARY_PATH from deps, got: {content}"
     );
 }
 
+/// Regression test: deps with include/ do NOT automatically contribute to C_INCLUDE_PATH.
 #[test]
 #[ignore]
-fn auto_c_include_path_constructed_from_deps_with_include() {
+fn deps_with_include_do_not_auto_set_c_include_path() {
     let store = real_store();
 
     let dep_recipe = Recipe::Process(RecipeProcess {
@@ -431,7 +314,7 @@ fn auto_c_include_path_constructed_from_deps_with_include() {
         args: vec![
             "sh".to_string(),
             "-c".to_string(),
-            "echo $C_INCLUDE_PATH > $OUT/incpath.txt".to_string(),
+            "printf '%s' \"$C_INCLUDE_PATH\" > $OUT/incpath.txt".to_string(),
         ],
         env: vec![],
         dependencies: vec![
@@ -460,26 +343,50 @@ fn auto_c_include_path_constructed_from_deps_with_include() {
     let sp = staging_path(&store, &output_hash);
     let content = read_staged_file(&sp, "incpath.txt").unwrap_or_default();
 
+    // Core should NOT auto-set C_INCLUDE_PATH from dep include/ directories.
     assert!(
-        content.contains("/deps/mylib/include"),
-        "C_INCLUDE_PATH should contain /deps/mylib/include, got: {content}"
+        !content.contains("/deps/mylib/include"),
+        "Core must not auto-inject C_INCLUDE_PATH from deps, got: {content}"
     );
 }
 
+/// Regression test: deps with mixed subdirs do NOT auto-set any C-specific env vars.
 #[test]
 #[ignore]
-fn auto_path_not_set_when_no_deps_have_bin() {
+fn mixed_deps_do_not_auto_set_any_c_env() {
     let store = real_store();
 
-    // Dependency without bin/
-    let dep_recipe = Recipe::Process(RecipeProcess {
+    // Dep 1: has bin/ only
+    let dep1_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
         command: SANDBOX_SHELL.to_string(),
-        args: vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "mkdir -p $OUT/lib && echo 'lib' > $OUT/lib/libtest.a".to_string(),
-        ],
+        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/bin".to_string()],
+        env: vec![],
+        dependencies: vec![seed_dep()],
+        workdir_hash: None,
+        output_scaffold_hash: None,
+        unsafe_flags: 0,
+        runtime_deps: None,
+    });
+
+    // Dep 2: has lib/ only
+    let dep2_recipe = Recipe::Process(RecipeProcess {
+        platform: build::current_platform(),
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/lib".to_string()],
+        env: vec![],
+        dependencies: vec![seed_dep()],
+        workdir_hash: None,
+        output_scaffold_hash: None,
+        unsafe_flags: 0,
+        runtime_deps: None,
+    });
+
+    // Dep 3: has include/ only
+    let dep3_recipe = Recipe::Process(RecipeProcess {
+        platform: build::current_platform(),
+        command: SANDBOX_SHELL.to_string(),
+        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/include".to_string()],
         env: vec![],
         dependencies: vec![seed_dep()],
         workdir_hash: None,
@@ -490,7 +397,23 @@ fn auto_path_not_set_when_no_deps_have_bin() {
 
     let _ = build_recipe(
         &store,
-        &dep_recipe,
+        &dep1_recipe,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    );
+    let _ = build_recipe(
+        &store,
+        &dep2_recipe,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    );
+    let _ = build_recipe(
+        &store,
+        &dep3_recipe,
         &BuildOptions {
             quiet: true,
             ..Default::default()
@@ -503,16 +426,23 @@ fn auto_path_not_set_when_no_deps_have_bin() {
         args: vec![
             "sh".to_string(),
             "-c".to_string(),
-            // Use env to print if PATH is set
-            "env > $OUT/env.txt".to_string(),
+            "printf 'PATH=%s\\nLIBRARY_PATH=%s\\nC_INCLUDE_PATH=%s\\n' \"$PATH\" \"$LIBRARY_PATH\" \"$C_INCLUDE_PATH\" > $OUT/env.txt".to_string(),
         ],
         env: vec![],
         dependencies: vec![
-            ProcessDependency {
-                name: "mylib".to_string(),
-                recipe_hash: dep_recipe.recipe_hash(),
-            },
             seed_dep(),
+            ProcessDependency {
+                name: "tool_a".to_string(),
+                recipe_hash: dep1_recipe.recipe_hash(),
+            },
+            ProcessDependency {
+                name: "tool_b".to_string(),
+                recipe_hash: dep2_recipe.recipe_hash(),
+            },
+            ProcessDependency {
+                name: "tool_c".to_string(),
+                recipe_hash: dep3_recipe.recipe_hash(),
+            },
         ],
         workdir_hash: None,
         output_scaffold_hash: None,
@@ -531,18 +461,20 @@ fn auto_path_not_set_when_no_deps_have_bin() {
     .unwrap();
 
     let sp = staging_path(&store, &output_hash);
-    let env_content = read_staged_file(&sp, "env.txt").unwrap_or_default();
+    let content = read_staged_file(&sp, "env.txt").unwrap_or_default();
 
-    // PATH should only come from seed (since seed has bin/) — not from mylib.
-    // The key assertion: no /deps/mylib/bin in PATH.
+    // NONE of the auto-env vars should be set from deps
     assert!(
-        !env_content.contains("/deps/mylib/bin"),
-        "mylib has no bin/ so it should not contribute to PATH, got:\n{env_content}"
+        !content.contains("/deps/tool_a/bin"),
+        "Core must not auto-inject PATH from tool_a, got: {content}"
     );
-    // seed always contributes PATH=/deps/seed/bin, that's expected.
     assert!(
-        env_content.contains("PATH=/deps/seed/bin"),
-        "seed should contribute to PATH, got:\n{env_content}"
+        !content.contains("/deps/tool_b/lib"),
+        "Core must not auto-inject LIBRARY_PATH from tool_b, got: {content}"
+    );
+    assert!(
+        !content.contains("/deps/tool_c/include"),
+        "Core must not auto-inject C_INCLUDE_PATH from tool_c, got: {content}"
     );
 }
 
@@ -555,15 +487,15 @@ fn auto_path_not_set_when_no_deps_have_bin() {
 fn host_path_not_inherited_when_no_deps() {
     let store = real_store();
 
-    // Process with only seed as a dependency — PATH should come from seed only,
-    // not from any host inheritance.
+    // Process with only seed as a dependency and no recipe env —
+    // PATH should be empty (not inherited from host, not auto-generated).
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
         command: SANDBOX_SHELL.to_string(),
         args: vec![
             "sh".to_string(),
             "-c".to_string(),
-            "echo $PATH > $OUT/path.txt".to_string(),
+            "printf '%s' \"$PATH\" > $OUT/path.txt".to_string(),
         ],
         env: vec![],
         dependencies: vec![seed_dep()],
@@ -586,12 +518,11 @@ fn host_path_not_inherited_when_no_deps() {
     let sp = staging_path(&store, &output_hash);
     let content = read_staged_file(&sp, "path.txt").unwrap_or_default();
 
-    // PATH should be ONLY from seed auto-env — no host PATH leaking in.
-    // The value should be exactly "/deps/seed/bin" with no host paths.
+    // PATH should be empty — no host inheritance, no auto-env injection.
     let path_value = content.trim();
     assert_eq!(
-        path_value, "/deps/seed/bin",
-        "PATH should be exactly /deps/seed/bin (no host paths), got: {path_value}"
+        path_value, "",
+        "PATH should be empty (no host paths, no auto-env), got: {path_value}"
     );
 }
 
@@ -601,47 +532,19 @@ fn host_path_not_inherited_when_no_deps() {
 
 #[test]
 #[ignore]
-fn recipe_env_overrides_auto_path() {
+fn recipe_env_sets_path() {
     let store = real_store();
 
-    // Dependency with bin/
-    let dep_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/bin".to_string()],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    let _ = build_recipe(
-        &store,
-        &dep_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-
-    // Process that explicitly sets PATH — should override auto-generated PATH
+    // Process that explicitly sets PATH via recipe env
     let process_recipe = Recipe::Process(RecipeProcess {
         platform: build::current_platform(),
         command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "echo $PATH > $OUT/path.txt".to_string()],
+        args: vec!["sh".to_string(), "-c".to_string(), "printf '%s' \"$PATH\" > $OUT/path.txt".to_string()],
         env: vec![EnvVar {
             key: "PATH".to_string(),
             value: "/custom/path".to_string(),
         }],
-        dependencies: vec![
-            ProcessDependency {
-                name: "mytool".to_string(),
-                recipe_hash: dep_recipe.recipe_hash(),
-            },
-            seed_dep(),
-        ],
+        dependencies: vec![seed_dep()],
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
@@ -663,7 +566,7 @@ fn recipe_env_overrides_auto_path() {
 
     assert!(
         content.contains("/custom/path"),
-        "Recipe env should override auto PATH, got: {content}"
+        "Recipe env should set PATH, got: {content}"
     );
 }
 
@@ -766,7 +669,7 @@ fn recipe_env_cannot_override_standard_vars() {
 }
 
 // ===========================================================================
-// Tests: Deps without standard subdirs don't contribute to auto-env
+// Tests: Deps without standard subdirs produce no env vars
 // ===========================================================================
 
 #[test]
@@ -831,16 +734,15 @@ fn dep_without_subdirs_contributes_nothing() {
     let sp = staging_path(&store, &output_hash);
     let content = read_staged_file(&sp, "env.txt").unwrap_or_default();
 
-    // None of the auto-env vars should be contributed by mydata (it has no
-    // bin/lib/include). Only seed contributes its auto-env.
+    // Core does not auto-generate any env from deps.
     assert!(
         !content.contains("/deps/mydata/"),
-        "mydata should not contribute to any auto-env, got:\n{content}"
+        "mydata should not appear in any env var, got:\n{content}"
     );
-    // seed always contributes PATH, LIBRARY_PATH, C_INCLUDE_PATH — that's expected.
+    // No auto-env means PATH should not be set from seed either.
     assert!(
-        content.contains("PATH=/deps/seed/bin"),
-        "seed should contribute PATH, got:\n{content}"
+        !content.contains("PATH=/deps/seed"),
+        "Core must not auto-inject PATH from seed, got:\n{content}"
     );
 }
 
@@ -903,156 +805,17 @@ fn no_host_env_vars_inherited() {
 }
 
 // ===========================================================================
-// Tests: Multiple deps with mixed subdirs
+// Tests: Internal deps (<workdir>) don't affect env
 // ===========================================================================
 
 #[test]
 #[ignore]
-fn mixed_deps_only_relevant_auto_env_set() {
-    let store = real_store();
-
-    // Dep 1: has bin/ only
-    let dep1_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/bin".to_string()],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    // Dep 2: has lib/ only
-    let dep2_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/lib".to_string()],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    // Dep 3: has include/ only
-    let dep3_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec!["sh".to_string(), "-c".to_string(), "mkdir -p $OUT/include".to_string()],
-        env: vec![],
-        dependencies: vec![seed_dep()],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    let _ = build_recipe(
-        &store,
-        &dep1_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-    let _ = build_recipe(
-        &store,
-        &dep2_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-    let _ = build_recipe(
-        &store,
-        &dep3_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    );
-
-    let process_recipe = Recipe::Process(RecipeProcess {
-        platform: build::current_platform(),
-        command: SANDBOX_SHELL.to_string(),
-        args: vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "echo PATH=$PATH > $OUT/env.txt; echo LIBRARY_PATH=$LIBRARY_PATH >> $OUT/env.txt; echo C_INCLUDE_PATH=$C_INCLUDE_PATH >> $OUT/env.txt".to_string(),
-        ],
-        env: vec![],
-        dependencies: vec![
-            seed_dep(),
-            ProcessDependency {
-                name: "tool_a".to_string(),
-                recipe_hash: dep1_recipe.recipe_hash(),
-            },
-            ProcessDependency {
-                name: "tool_b".to_string(),
-                recipe_hash: dep2_recipe.recipe_hash(),
-            },
-            ProcessDependency {
-                name: "tool_c".to_string(),
-                recipe_hash: dep3_recipe.recipe_hash(),
-            },
-        ],
-        workdir_hash: None,
-        output_scaffold_hash: None,
-        unsafe_flags: 0,
-        runtime_deps: None,
-    });
-
-    let output_hash = build_recipe(
-        &store,
-        &process_recipe,
-        &BuildOptions {
-            quiet: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    let sp = staging_path(&store, &output_hash);
-    let content = read_staged_file(&sp, "env.txt").unwrap_or_default();
-
-    // PATH should have tool_a but not tool_b or tool_c
-    assert!(
-        content.contains("/deps/tool_a/bin"),
-        "PATH should contain /deps/tool_a/bin, got: {content}"
-    );
-    assert!(
-        !content.contains("/deps/tool_b/bin"),
-        "PATH should NOT contain /deps/tool_b/bin, got: {content}"
-    );
-
-    // LIBRARY_PATH should have tool_b but not tool_a or tool_c
-    assert!(
-        content.contains("/deps/tool_b/lib"),
-        "LIBRARY_PATH should contain /deps/tool_b/lib, got: {content}"
-    );
-
-    // C_INCLUDE_PATH should have tool_c but not tool_a or tool_b
-    assert!(
-        content.contains("/deps/tool_c/include"),
-        "C_INCLUDE_PATH should contain /deps/tool_c/include, got: {content}"
-    );
-}
-
-// ===========================================================================
-// Tests: Internal deps (<workdir>, <scaffold>) don't affect auto-env
-// ===========================================================================
-
-#[test]
-#[ignore]
-fn internal_deps_excluded_from_auto_env() {
+fn internal_deps_do_not_affect_env() {
     let store = real_store();
 
     // Create a directory recipe that has a bin/ entry — this will be used
     // as a workdir. The workdir is an internal dep (<workdir>) and should
-    // NOT contribute to auto-env.
+    // NOT contribute to any env vars.
     let content = b"workdir file";
     store.write_blob(content).unwrap();
     let file_recipe = make_file_recipe(content, false);
@@ -1105,15 +868,14 @@ fn internal_deps_excluded_from_auto_env() {
     let sp = staging_path(&store, &output_hash);
     let content = read_staged_file(&sp, "env.txt").unwrap_or_default();
 
-    // Internal deps (<workdir>) should NOT contribute to PATH — only seed should.
-    // The workdir has a bin/ entry but it's an internal dep, so it should be excluded.
+    // Internal deps (<workdir>) should NOT contribute to PATH or any env var.
     assert!(
         !content.contains("/workdir/"),
-        "Internal dep (<workdir>) should not contribute to auto-env, got:\n{content}"
+        "Internal dep (<workdir>) should not contribute to any env, got:\n{content}"
     );
-    // seed always contributes PATH — expected.
+    // Core does not auto-inject PATH from seed either.
     assert!(
-        content.contains("PATH=/deps/seed/bin"),
-        "seed should contribute PATH, got:\n{content}"
+        !content.contains("PATH=/deps/seed"),
+        "Core must not auto-inject PATH from seed, got:\n{content}"
     );
 }

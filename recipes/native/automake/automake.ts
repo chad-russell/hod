@@ -17,14 +17,14 @@ import { automakeSourceRecipe } from "./automake-source.js";
 import { autoconfRecipe } from "../autoconf/autoconf.js";
 import { m4Recipe } from "../m4/m4.js";
 import { perlRecipe } from "../perl/perl.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["autoconf", "m4", "perl"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/automake-1.18.1
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make autoconf, m4, and perl discoverable by configure
 export PATH="/deps/autoconf/bin:/deps/m4/bin:/deps/perl/bin:$PATH"

@@ -12,7 +12,7 @@
 //! See PRD §9 for the full build execution flow.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::encoding::EncodeError;
 use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
@@ -285,9 +285,12 @@ fn do_build(
     // Stage the artifact to disk (for materialization by downstream recipes)
     stage_artifact(store, &artifact, &output_hash)?;
 
-    // Apply store-relative relocation if this is a Process recipe with runtime_deps.
-    // Relocation mutates the staged output in place, so re-capture/re-hash the
-    // modified output afterward.
+    // Apply platform-appropriate post-build fixup if this recipe declares
+    // runtime_deps. The fixup phase is platform-specific (ELF RUNPATH patching
+    // on Linux, potentially Mach-O install_name editing on macOS in the
+    // future). runtime_deps also serves as runtime dependency metadata even
+    // on platforms where no binary fixup is needed (e.g., static Go binaries,
+    // WASM, JVM).
     if let Recipe::Process(p) = &recipe {
         if let Some(runtime_dep_names) = p.runtime_deps.as_ref() {
             let mut runtime_dep_outputs = std::collections::BTreeMap::new();
@@ -307,31 +310,32 @@ fn do_build(
             }
 
             let output_staging_dir = artifact_staging_path(store, &output_hash);
-            match crate::relocate::relocate_staged_output(
+            match apply_runtime_fixup(
+                &p.platform,
                 store,
                 &output_staging_dir,
                 &runtime_dep_outputs,
             ) {
                 Ok(count) if count > 0 => {
                     eprintln!(
-                        "[hod] relocated {} ELF binary(ies) with store-relative paths",
-                        count,
+                        "[hod] applied {} runtime fixup(s) for platform '{}'",
+                        count, p.platform,
                     );
 
-                    let relocated_artifact = capture_output(&output_staging_dir, store)?;
-                    let relocated_hash = artifact_to_hash(&relocated_artifact);
-                    stage_artifact(store, &relocated_artifact, &relocated_hash)?;
+                    let fixed_artifact = capture_output(&output_staging_dir, store)?;
+                    let fixed_hash = artifact_to_hash(&fixed_artifact);
+                    stage_artifact(store, &fixed_artifact, &fixed_hash)?;
 
-                    // Only remove the original staging if the relocated hash is
+                    // Only remove the original staging if the fixed hash is
                     // different — otherwise we'd delete the only copy.
-                    if relocated_hash != output_hash {
+                    if fixed_hash != output_hash {
                         let _ = std::fs::remove_dir_all(&output_staging_dir);
                     }
-                    output_hash = relocated_hash;
+                    output_hash = fixed_hash;
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!("[hod] warning: store-relative relocation failed: {e}");
+                    eprintln!("[hod] warning: runtime fixup failed: {e}");
                 }
             }
         }
@@ -416,6 +420,15 @@ fn build_dependencies(
                 outputs.named.push(("<resources>".to_string(), output_hash));
             }
         }
+        Recipe::Unpack(u) => {
+            // Unpack may have a download dependency that must be built first
+            // to ensure the archive blob is in the store.
+            if let Some(archive_recipe_hash) = u.archive_recipe_hash {
+                let output_hash =
+                    build_dependency(store, archive_recipe_hash, options, building)?;
+                outputs.named.push(("<archive>".to_string(), output_hash));
+            }
+        }
         _ => {}
     }
 
@@ -482,6 +495,44 @@ fn collect_dep_edges(recipe: &Recipe, dep_outputs: &DepOutputs) -> Vec<(Option<S
     }
 
     edges
+}
+
+// ---------------------------------------------------------------------------
+// Runtime fixup — platform-specific post-build processing
+// ---------------------------------------------------------------------------
+
+/// Apply platform-appropriate post-build fixup to a staged output.
+///
+/// `runtime_deps` declares which dependencies are needed at runtime. The
+/// fixup phase applies platform-specific binary modifications so the output
+/// can find its runtime dependencies when executed from the store.
+///
+/// Currently supported platforms:
+///
+/// | Platform            | Fixup                                        |
+/// |---------------------|----------------------------------------------|
+/// | `x86_64-linux`      | ELF RUNPATH patching + AT_EXECFN bootstrap  |
+/// | `aarch64-linux`     | ELF RUNPATH patching + AT_EXECFN bootstrap  |
+/// | `wasm32-wasi`       | None (WASM has no dynamic linker)            |
+/// | `x86_64-darwin`     | None (future: Mach-O install_name editing)  |
+/// | other               | None (no-op, deps still recorded as metadata) |
+///
+/// Returns `Ok(count)` with the number of binaries modified.
+fn apply_runtime_fixup(
+    platform: &str,
+    store: &Store,
+    output_staging_dir: &Path,
+    runtime_dep_outputs: &std::collections::BTreeMap<String, Hash>,
+) -> std::result::Result<usize, crate::relocate::RelocateError> {
+    match platform {
+        "x86_64-linux" | "aarch64-linux" => {
+            crate::relocate::relocate_staged_output(store, output_staging_dir, runtime_dep_outputs)
+        }
+        // No binary fixup needed for these platforms. runtime_deps is still
+        // valuable as metadata for downstream consumers (initramfs builders,
+        // packed executable bundlers, etc.).
+        _ => Ok(0),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -608,8 +659,17 @@ fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
         ArchiveFormat::TarGz => "-xzf",
         ArchiveFormat::TarXz => "-xJf",
     };
+    let mut tar_args = vec![
+        format_arg.to_string(),
+        archive_path.to_str().unwrap().to_string(),
+        "-C".to_string(),
+        extract_dir.to_str().unwrap().to_string(),
+    ];
+    if let Some(n) = u.strip_components {
+        tar_args.push(format!("--strip-components={}", n));
+    }
     let tar_output = std::process::Command::new("tar")
-        .args([format_arg, archive_path.to_str().unwrap(), "-C", extract_dir.to_str().unwrap()])
+        .args(&tar_args)
         .output()?;
 
     if !tar_output.status.success() {
@@ -697,6 +757,7 @@ fn build_process(
             continue;
         }
         let staging_path = artifact_staging_path(store, output_hash);
+        canonicalize_mtimes_recursive(&staging_path)?;
         let shard = hash_shard(output_hash);
         let hex = hash_to_hex(output_hash);
 
@@ -746,54 +807,20 @@ fn build_process(
     }
 
     // Build environment variables with proper precedence:
-    //   1. Auto-env (PATH, LIBRARY_PATH, C_INCLUDE_PATH from deps)
-    //   2. Recipe env (overrides auto-env)
-    //   3. Standard builder env (OUT, DEPS, HOME, TMPDIR — always wins)
+    //   1. Recipe env (from the recipe's env field — SDK profiles compose this)
+    //   2. Standard builder env (OUT, DEPS, HOME, TMPDIR — always wins)
+    //
+    // Core Hod does NOT inject C-specific env vars (PATH, LIBRARY_PATH,
+    // C_INCLUDE_PATH) by scanning dep outputs. That policy belongs in
+    // SDK profiles (cProfile, rustProfile) and recipe helpers.
     let mut env = std::collections::HashMap::new();
 
-    // --- Layer 1: Auto-env from deps ---
-    // Scan dep staging paths for bin/, lib/, include/ subdirs.
-    // Sort by dep name for determinism.
-    let mut auto_path_parts: Vec<String> = Vec::new();
-    let mut auto_library_path_parts: Vec<String> = Vec::new();
-    let mut auto_c_include_path_parts: Vec<String> = Vec::new();
-
-    for (name, output_hash) in &dep_outputs.named {
-        // Skip internal deps (<workdir>, <scaffold>, <resources>)
-        if name.starts_with('<') {
-            continue;
-        }
-        let dep_guest_path = format!("/deps/{}", name);
-        let dep_staging = artifact_staging_path(store, output_hash);
-
-        if dep_staging.join("bin").is_dir() {
-            auto_path_parts.push(format!("{}/bin", dep_guest_path));
-        }
-        if dep_staging.join("lib").is_dir() {
-            auto_library_path_parts.push(format!("{}/lib", dep_guest_path));
-        }
-        if dep_staging.join("include").is_dir() {
-            auto_c_include_path_parts.push(format!("{}/include", dep_guest_path));
-        }
-    }
-
-    // Deps are already sorted by name (from the recipe), so the lists are deterministic.
-    if !auto_path_parts.is_empty() {
-        env.insert("PATH".to_string(), auto_path_parts.join(":"));
-    }
-    if !auto_library_path_parts.is_empty() {
-        env.insert("LIBRARY_PATH".to_string(), auto_library_path_parts.join(":"));
-    }
-    if !auto_c_include_path_parts.is_empty() {
-        env.insert("C_INCLUDE_PATH".to_string(), auto_c_include_path_parts.join(":"));
-    }
-
-    // --- Layer 2: Recipe env vars (override auto-env) ---
+    // --- Layer 1: Recipe env vars ---
     for var in &p.env {
         env.insert(var.key.clone(), var.value.clone());
     }
 
-    // --- Layer 3: Standard builder env vars (always win) ---
+    // --- Layer 2: Standard builder env vars (always win) ---
     env.insert("OUT".to_string(), guest_out.to_string_lossy().to_string());
     env.insert("DEPS".to_string(), guest_deps.to_string_lossy().to_string());
     env.insert("TMPDIR".to_string(), guest_tmp.to_string_lossy().to_string());
@@ -946,6 +973,7 @@ pub fn materialize_artifact(store: &Store, output_hash: &Hash, path: &Path) -> R
             }
         }
         std::fs::copy(&staging_path, path)?;
+        canonicalize_mtime(path)?;
     }
     Ok(())
 }
@@ -967,8 +995,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
             std::os::unix::fs::symlink(&target, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
+            canonicalize_mtime(&dst_path)?;
         }
     }
+    canonicalize_mtime(dst)?;
     Ok(())
 }
 
@@ -995,9 +1025,11 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
         }
         if out_dir.is_file() || out_dir.is_symlink() {
             std::fs::copy(out_dir, &staging_path)?;
+            canonicalize_mtime(&staging_path)?;
         } else if out_dir.is_dir() {
             copy_dir_recursive(out_dir, &staging_path)?;
         }
+        canonicalize_mtimes_recursive(&staging_path)?;
     }
 
     // Set executable bit if needed
@@ -1159,7 +1191,54 @@ fn stage_artifact(store: &Store, artifact: &Artifact, output_hash: &Hash) -> Res
         }
     }
 
+    canonicalize_mtimes_recursive(&staging_path)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem determinism helpers
+// ---------------------------------------------------------------------------
+
+/// Canonical mtime used for all materialized artifacts.
+///
+/// Artifact hashes intentionally ignore mtimes, so every on-disk materialization
+/// must choose a deterministic timestamp instead of inheriting the current wall
+/// clock time from extraction/copy/write operations. Keeping every file at the
+/// same fixed timestamp is also compatible with Autotools release tarballs:
+/// `make` rebuilds generated files only when prerequisites are strictly newer,
+/// not when mtimes are equal.
+fn canonical_mtime() -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800) // 2000-01-01T00:00:00Z
+}
+
+/// Set the canonical mtime for a regular file or directory.
+///
+/// Symlinks are skipped because `std` does not provide a stable no-follow mtime
+/// setter, and symlink mtimes are not part of Hod's artifact semantics.
+fn canonicalize_mtime(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    let file = std::fs::OpenOptions::new().read(true).open(path)?;
+    file.set_modified(canonical_mtime())
+}
+
+/// Recursively set canonical mtimes for a materialized artifact tree.
+fn canonicalize_mtimes_recursive(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            canonicalize_mtimes_recursive(&entry?.path())?;
+        }
+    }
+
+    canonicalize_mtime(path)
 }
 
 // ---------------------------------------------------------------------------

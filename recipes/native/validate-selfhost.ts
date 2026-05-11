@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { binutilsRecipe } from "./binutils.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",

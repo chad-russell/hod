@@ -23,6 +23,12 @@ export interface HermeticPreambleOptions {
    * ```
    */
   sysroot?: { glibc: string; linuxHeaders: string };
+
+  /**
+   * Dep name providing the shims bundle (bison, m4, make, etc.).
+   * Sets up /share/bison symlink so bison can find its data files.
+   */
+  shims?: string;
 }
 
 /**
@@ -84,6 +90,18 @@ export function hermeticPreamble(opts: HermeticPreambleOptions = {}): string {
   if (opts.muslLinker) {
     lines.push(`${lnCmd} -sf /deps/${opts.muslLinker}/lib/libc.so /lib/libc.so || true`);
     lines.push(`${lnCmd} -sf /deps/${opts.muslLinker}/lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1 || true`);
+  }
+
+  // Shims bundle — bison data directory + PATH + m4 symlink
+  if (opts.shims) {
+    lines.push(`${mkdirCmd} -p /share /bin`);
+    lines.push(`${lnCmd} -sf /deps/${opts.shims}/share/bison /share/bison`);
+    // Bison built in a sandbox with m4 at /deps/m4/bin/m4 hardcodes that path.
+    // Create the expected directory structure so bison can find m4.
+    lines.push(`${mkdirCmd} -p /deps/m4/bin`);
+    lines.push(`${lnCmd} -sf /deps/${opts.shims}/bin/m4 /deps/m4/bin/m4`);
+    // Add shims bin to PATH so tools can find make, sed, etc.
+    lines.push(`export PATH="/deps/${opts.shims}/bin:$PATH"`);
   }
 
   // Sysroot — merged glibc + linux-headers at /tmp/sysroot

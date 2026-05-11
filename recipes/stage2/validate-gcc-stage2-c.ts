@@ -99,7 +99,7 @@ cp /tmp/build/hello $OUT/hello
 echo 'gcc-stage2-c validation passed' > $OUT/result.txt`,
   ],
   env: [
-    // Override auto-env C_INCLUDE_PATH to prevent musl headers from
+    // Set C_INCLUDE_PATH explicitly to prevent musk headers from
     // contaminating glibc compilations. gcc-stage2 finds its own headers
     // via --sysroot; it doesn't need C_INCLUDE_PATH at all.
     { key: "C_INCLUDE_PATH", value: "" },

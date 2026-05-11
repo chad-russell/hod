@@ -9,6 +9,7 @@ export type { ProcessDependency } from "./dep.js";
 export type { ProcessDefinition, EnvEntry } from "./process.js";
 export type { DownloadOptions } from "./download.js";
 export type { UnpackOptions, ArchiveFormat } from "./unpack.js";
+export type { FetchTarballOptions } from "./fetch.js";
 
 // Recipe constructors
 export { fileFromPath, fileFromHash } from "./file.js";
@@ -17,13 +18,19 @@ export { process } from "./process.js";
 export { download } from "./download.js";
 export { unpack } from "./unpack.js";
 
+// Source fetching
+export { fetchTarball } from "./fetch.js";
+
 // Build script helpers
 export { hermeticPreamble } from "./preamble.js";
 export type { HermeticPreambleOptions } from "./preamble.js";
 export { shellBuild } from "./shell.js";
 export type { ShellBuildOptions } from "./shell.js";
-export { cargoBuild } from "./cargo.js";
-export type { CargoBuildOptions } from "./cargo.js";
+export { depPath, depSubpath, pathList, depSubpathList, appendPath, mergeEnv } from "./env.js";
+// cargoBuild has moved to recipes/helpers/rust.ts
+
+// ELF relocation constants
+export { HOD_DUMMY_RUNPATH, HOD_DUMMY_RPATH_FLAG } from "./elf.js";
 
 // Import helpers
 export { fromHod, importToStore } from "./import.js";

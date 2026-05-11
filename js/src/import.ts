@@ -31,5 +31,6 @@ export async function fromHod(path: string): Promise<BuiltRecipe> {
  */
 export async function importToStore(recipe: BuiltRecipe): Promise<string> {
   const hash = await importFromJson(recipe.json);
+  console.log(`Imported to store: ${hash}`);
   return hash;
 }

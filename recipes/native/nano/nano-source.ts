@@ -2,12 +2,11 @@
 //!
 //! GNU nano 9.0 — a small, friendly text editor inspired by Pico.
 
-import { download, importToStore } from "../../../js/src/index.js";
+import { fetchTarball } from "../../../js/src/index.js";
 
-const recipe = await download({
+const recipe = await fetchTarball({
   url: "https://www.nano-editor.org/dist/v9/nano-9.0.tar.xz",
   hash: "0b1905d417e50c67be9cb347eb0061eb198682b657d445c282a106137ca7171c",
 });
 
-await importToStore(recipe);
 export const nanoSourceRecipe = recipe;

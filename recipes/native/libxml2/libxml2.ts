@@ -12,14 +12,18 @@ import { libxml2SourceRecipe } from "./libxml2-source.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { xzRecipe } from "../xz/xz.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["zlib", "xz", "libiconv"],
+    libDeps: ["zlib", "xz", "libiconv"],
+    pkgConfigDeps: ["zlib", "xz"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/libxml2-2.13.8
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make dependency headers and libs discoverable
 export CPPFLAGS="-I/deps/zlib/include -I/deps/xz/include -I/deps/libiconv/include"

@@ -6,7 +6,7 @@ import { gmpRecipe } from "./gmp.js";
 import { mpfrRecipe } from "./mpfr.js";
 import { mpcSourceRecipe } from "./mpc-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
 const recipe = await process({
   platform: "x86_64-linux",

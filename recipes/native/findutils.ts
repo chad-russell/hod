@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { findutilsSourceRecipe } from "./findutils-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,9 +25,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source (xz format — use busybox xz to decompress)
-xz -d < /deps/source/source | tar xf - -C /tmp
-cd /tmp/findutils-4.9.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 # Configure findutils as cross-compile
 CC="/deps/gcc-stage1/bin/x86_64-linux-gnu-gcc --sysroot=/tmp/sysroot -B/deps/seed/bin/" \\

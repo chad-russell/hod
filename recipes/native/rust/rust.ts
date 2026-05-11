@@ -32,36 +32,34 @@
 
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
-import { xzRecipe } from "../xz/xz.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import {
   rustcSourceRecipe,
   cargoSourceRecipe,
   rustStdSourceRecipe,
 } from "./rust-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
-# === Extract source tarballs ===
-# Use xz-utils from the xz dep (not busybox's limited xz) — Rust tarballs
-# use lzma2 dict=128MiB which exceeds busybox's xz capabilities.
-/deps/xz/bin/xz -d < /deps/rustc-source/rustc-source | tar xf - -C /tmp
-/deps/xz/bin/xz -d < /deps/cargo-source/cargo-source | tar xf - -C /tmp
-/deps/xz/bin/xz -d < /deps/rust-std-source/rust-std-source | tar xf - -C /tmp
-
 # === Install each component ===
+# Source tarballs are pre-extracted by fetchTarball, so the deps contain
+# the extracted directory tree directly (top-level dir stripped).
 # Each tarball contains its own install.sh that copies files into the prefix.
 # --prefix=/ means files go directly into the target (no /usr/local prefix).
 # --ldconfig=0 skips running ldconfig (not available/needed in the sandbox).
 
-cd /tmp/rustc-1.95.0-x86_64-unknown-linux-gnu
+cp -r /deps/rustc-source/. /tmp/rustc-source
+cd /tmp/rustc-source
 /deps/toolchain/bin/bash ./install.sh --prefix=/ --disable-ldconfig --destdir=$OUT
 
-cd /tmp/cargo-1.95.0-x86_64-unknown-linux-gnu
+cp -r /deps/cargo-source/. /tmp/cargo-source
+cd /tmp/cargo-source
 /deps/toolchain/bin/bash ./install.sh --prefix=/ --disable-ldconfig --destdir=$OUT
 
-cd /tmp/rust-std-1.95.0-x86_64-unknown-linux-gnu
+cp -r /deps/rust-std-source/. /tmp/rust-std-source
+cd /tmp/rust-std-source
 /deps/toolchain/bin/bash ./install.sh --prefix=/ --disable-ldconfig --destdir=$OUT
 
 # === Strip executables (but NOT shared libraries) ===
@@ -85,7 +83,6 @@ echo "=== Rust installation complete ==="
     dep("rust-std-source", rustStdSourceRecipe),
     dep("rustc-source", rustcSourceRecipe),
     dep("toolchain", nativeToolchainRecipe),
-    dep("xz", xzRecipe),
     dep("zlib", zlibRecipe),
   ],
   runtime_deps: ["toolchain", "zlib"],

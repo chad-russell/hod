@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { gawkSourceRecipe } from "../shims/gawk-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,7 +25,6 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
 tar xf /deps/source/source -C /tmp
 cd /tmp/gawk-5.3.2
 

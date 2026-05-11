@@ -28,9 +28,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/pkgconf-2.5.1
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 export PATH=/tmp/cross-bin:/deps/gcc-stage1/bin:/deps/seed/bin:/deps/shims/bin
 mkdir -p /tmp/cross-bin

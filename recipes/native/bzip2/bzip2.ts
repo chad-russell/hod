@@ -10,14 +10,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { bzip2SourceRecipe } from "./bzip2-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/bzip2-1.0.8
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 CFLAGS="-Wall -Winline -O2 -D_FILE_OFFSET_BITS=64"
 LDFLAGS="$HOD_DUMMY_RPATH"
@@ -69,7 +69,7 @@ ln -sf bzip2 bunzip2
 ln -sf bzip2 bzcat
 
 # Install helper scripts and their symlinks
-cd /tmp/bzip2-1.0.8
+cd /tmp/build
 cp bzgrep bzdiff bzmore $OUT/bin/
 chmod 755 $OUT/bin/bzgrep $OUT/bin/bzdiff $OUT/bin/bzmore
 cd $OUT/bin

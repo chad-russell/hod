@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { coreutilsSourceRecipe } from "./coreutils-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,9 +25,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source (tar.gz format)
-tar xf /deps/source/source -C /tmp
-cd /tmp/coreutils-9.5
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 # Configure coreutils as cross-compile (musl build -> glibc target)
 # FORCE_UNSAFE_CONFIGURE=1 needed when building as root (uid 0 in user namespace)
@@ -57,7 +58,7 @@ FORCE_UNSAFE_CONFIGURE=1 \\
   gl_cv_func_working_futimes=yes
 
 make -j$(nproc)
-make install DESTDIR=$OUT
+make install DESTDIR=$OUT MAKEINFO=true
 
 # Strip binaries
 cd $OUT/bin

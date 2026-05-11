@@ -105,6 +105,24 @@ export async function encodeJson(
 }
 
 /**
+ * Import a file as a content blob into the store.
+ * Returns the BLAKE3 hex hash of the blob.
+ *
+ * Idempotent: importing a blob that already exists in the store is a no-op.
+ */
+export async function importBlob(
+  filePath: string,
+  storePath?: string,
+): Promise<string> {
+  const args = ["import-blob", filePath];
+  if (storePath) {
+    args.push("--store", storePath);
+  }
+  const stdout = await runHod(args);
+  return stdout.trim();
+}
+
+/**
  * Import a recipe from JSON directly into the store via stdin.
  * Returns the BLAKE3 hex hash.
  *

@@ -14,14 +14,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { zstdSourceRecipe } from "./zstd-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/zstd-1.5.7
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Build shared + static library and CLI
 make -j$(nproc) lib-release LIB_TYPE=dynamic

@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { grepSourceRecipe } from "./grep-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,9 +25,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/grep-3.11
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 # Configure grep as cross-compile
 CC="/deps/gcc-stage1/bin/x86_64-linux-gnu-gcc --sysroot=/tmp/sysroot -B/deps/seed/bin/" \\

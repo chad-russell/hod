@@ -6,9 +6,14 @@
 import { shellBuild, dep, importToStore } from "../../js/src/index.js";
 import { nativeToolchainRecipe } from "../toolchain/native-toolchain.js";
 import { zlibRecipe } from "./zlib/zlib.js";
+import { cProfile } from "../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["zlib"],
+    libDeps: ["zlib"],
+    pkgConfigDeps: ["zlib"],
+  }),
   script: `
 
 echo "=== 1. pkgconf is in the toolchain ==="

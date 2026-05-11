@@ -20,7 +20,9 @@ export interface ProcessDefinition {
   env?: Record<string, string> | EnvEntry[];
   /** Named dependencies (output of `dep()`). */
   dependencies: ProcessDependency[];
-  /** Runtime dependencies for ELF relocation (JSON-only, not in binary format). */
+  /** Runtime dependency names for store-relative binary fixup (ELF RUNPATH
+   *  patching on Linux, no-op on other platforms). Also serves as metadata
+   *  for downstream consumers (initramfs builders, packed executable bundlers). */
   runtime_deps?: string[];
   /** Optional working directory contents hash. */
   workdir_hash?: string;

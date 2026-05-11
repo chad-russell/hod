@@ -25,14 +25,18 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { expatRecipe } from "../expat/expat.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { gitSourceRecipe } from "./git-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["curl", "expat", "libiconv", "openssl", "zlib"],
+    libDeps: ["curl", "expat", "libiconv", "openssl", "zlib"],
+    pkgConfigDeps: ["curl", "expat", "openssl", "zlib"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/git-2.54.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Allow shared lib resolution during build for test programs / generated code
 export LD_LIBRARY_PATH=/deps/curl/lib:/deps/openssl/lib:/deps/zlib/lib:/deps/expat/lib:/deps/libiconv/lib

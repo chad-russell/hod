@@ -3,18 +3,18 @@
 //! Validates that cargoBuild can compile and run a Rust binary.
 
 import {
-  cargoBuild,
   dep,
   importToStore,
 } from "../../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../../toolchain/native-toolchain.js";
 import { rustRecipe } from "../rust.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
+import { cargoBuild } from "../../../helpers/rust.js";
 
 const recipe = await cargoBuild({
   name: "hello-rust",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   cargoToml: `[package]
 name = "hello-rust"
 version = "0.1.0"
@@ -25,8 +25,6 @@ edition = "2021"
 }
 `,
   deps: [
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),
   ],
   runtime_deps: ["toolchain"],

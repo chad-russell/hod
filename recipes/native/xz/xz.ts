@@ -11,14 +11,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { xzSourceRecipe } from "./xz-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/xz-5.8.3
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Configure: shared + static, no NLS, no docs
 ./configure \\

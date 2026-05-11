@@ -20,6 +20,7 @@ import { mpcStage2Recipe } from "./mpc.js";
 import { gccStage1SourceRecipe } from "../cross/gcc-stage1-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",

@@ -9,10 +9,12 @@
 
 import { download, importToStore } from "../../../js/src/index.js";
 
-const recipe = await download({
+const dl = await download({
   url: "https://curl.se/ca/cacert.pem",
   hash: "d4fa062695f9036fdea31af9b4305b9d2e6cb941b80e89c49d5e6780bd0bed01",
 });
+await importToStore(dl);
 
-await importToStore(recipe);
+const recipe = dl;
+
 export const caCertificatesSourceRecipe = recipe;

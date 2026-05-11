@@ -3,12 +3,11 @@
 //! GNU m4 1.4.19 — macro processor. Build infrastructure that unblocks
 //! autoconf/automake.
 
-import { download, importToStore } from "../../../js/src/index.js";
+import { fetchTarball } from "../../../js/src/index.js";
 
-const recipe = await download({
-  url: "https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.gz",
+const recipe = await fetchTarball({
+  url: "https://mirrors.kernel.org/gnu/m4/m4-1.4.19.tar.gz",
   hash: "22f5754f80b347b525eb1ad89e8ef84312ec80432b79110c7f0161e2185bdc06",
 });
 
-await importToStore(recipe);
 export const m4SourceRecipe = recipe;

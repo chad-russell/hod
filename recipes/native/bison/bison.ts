@@ -11,14 +11,14 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { bisonSourceRecipe } from "./bison-source.js";
 import { m4Recipe } from "../m4/m4.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["m4"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/bison-3.8.2
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make m4 discoverable by configure
 export PATH="/deps/m4/bin:$PATH"

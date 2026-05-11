@@ -1,6 +1,6 @@
 //! binutils musl build from source.
 //!
-//! Builds GNU binutils 2.37 targeting x86_64-linux-musl using the seed's
+//! Builds GNU binutils 2.44 targeting x86_64-linux-musl using the seed's
 //! musl gcc. This produces the assembler, linker, archiver, and other
 //! binary utilities needed for a complete musl toolchain.
 //!
@@ -12,7 +12,7 @@
 //! Key bootstrap detail: we build as a native x86_64-linux-musl toolchain
 //! (build=host=target=x86_64-linux-musl), but use the seed's gcc as the
 //! bootstrap compiler. The --disable-werror flag is needed because
-//! binutils 2.37 may have warnings that are errors with newer host compilers.
+//! binutils may have warnings that are errors with newer host compilers.
 import { process, dep, importToStore, hermeticPreamble } from "../../js/src/index.js";
 import { seedRootRecipe } from "./seed-root.js";
 import { binutilsSourceRecipe } from "./binutils-source.js";
@@ -39,6 +39,11 @@ MAKE=/deps/make/bin/make
 # The seed musl gcc has hardcoded paths from the host staging directory.
 # In the sandbox those don't exist. We create a wrapper that uses
 # -B to tell gcc where to find cc1, collect2, crt*.o, libgcc.a, etc.
+#
+# NOTE: No -I or -L flags! The seed's include/ has headers from its
+# pre-built binutils (2.37), glibc, etc. that conflict with the
+# headers from the source we're building (2.44). The -B flags are
+# sufficient for GCC to find its subprograms and runtime objects.
 mkdir -p /tmp/gcc-wrapper
 cat > /tmp/gcc-wrapper/gcc << 'WRAPPER'
 #!/bin/sh
@@ -46,8 +51,6 @@ exec /deps/seed/bin/gcc \\
   -B/deps/seed/libexec/gcc/x86_64-linux-musl/11.2.1/ \\
   -B/deps/seed/lib/gcc/x86_64-linux-musl/11.2.1/ \\
   -B/deps/seed/x86_64-linux-musl/lib/ \\
-  -I/deps/seed/include \\
-  -L/deps/seed/lib \\
   "$@"
 WRAPPER
 chmod +x /tmp/gcc-wrapper/gcc
@@ -67,10 +70,15 @@ cd /tmp/binutils-build
 # --disable-werror to avoid build failures from warnings.
 # --disable-nls to avoid locale/translation dependencies.
 # --enable-gold=yes to build the gold linker (present in musl.cc).
+#
+# config.cache: libiberty's autoconf header checks fail in our sandboxed
+# environment (the seed gcc's include paths aren't fully detected by
+# configure's preprocessor tests). We pre-seed the answers for headers
+# that we know exist in the seed toolchain.
 CC=/tmp/gcc-wrapper/gcc \\
 AR=/deps/seed/bin/ar \\
 RANLIB=/deps/seed/bin/ranlib \\
-/tmp/binutils-2.37/configure \\
+/tmp/binutils-2.44/configure \\
   --target=x86_64-linux-musl \\
   --prefix=/ \\
   --disable-werror \\

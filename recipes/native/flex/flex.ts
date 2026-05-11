@@ -15,14 +15,14 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { flexSourceRecipe } from "./flex-source.js";
 import { m4Recipe } from "../m4/m4.js";
 import { bisonRecipe } from "../bison/bison.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["m4", "bison"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/flex-2.6.4
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make m4 and bison discoverable by configure
 export PATH="/deps/m4/bin:/deps/bison/bin:$PATH"

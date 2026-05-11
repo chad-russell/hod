@@ -14,14 +14,18 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { opensshSourceRecipe } from "./openssh-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["openssl", "zlib"],
+    libDeps: ["openssl", "zlib"],
+    pkgConfigDeps: ["openssl", "zlib"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/openssh-10.3p1
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # pkg-config provides -I/-L/-l flags from the relocatable .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"

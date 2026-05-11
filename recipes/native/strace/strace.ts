@@ -12,14 +12,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { straceSourceRecipe } from "./strace-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/strace-7.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Configure: disable mpers (no 32-bit headers), no optional deps.
 # CC_FOR_BUILD=$CC avoids a second compiler search that fails in the sandbox.

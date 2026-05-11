@@ -23,7 +23,7 @@ Each package has two files in `recipes/native/<package>/`:
 <package>.ts          # Builds it
 ```
 
-Source files use the `download()` SDK function. Build files use `shellBuild()`. Both call `importToStore()` at the end.
+Source files use the `fetchTarball()` SDK function (which composes `download()` + `unpack()`). Build files use `shellBuild()`. Both call `importToStore()` at the end.
 
 ### The Toolchain
 
@@ -33,7 +33,7 @@ Source files use the `download()` SDK function. Build files use `shellBuild()`. 
 
 When a recipe produces dynamically-linked binaries, it must:
 1. Include `runtime_deps: ["toolchain"]` (or additional deps that provide shared libs).
-2. Use `$HOD_DUMMY_RPATH` in LDFLAGS (automatically set by `shellBuild`) to reserve ELF space for store-relative RUNPATH patching.
+2. Use `$HOD_DUMMY_RPATH` in LDFLAGS (set as a process env var by `cProfile()`) to reserve ELF space for store-relative RUNPATH patching.
 3. After building, `src/relocate.rs` patches RUNPATH with `$ORIGIN`-relative paths and injects the AT_EXECFN bootstrap so the binary works from any CWD on both the host and inside sandboxes.
 
 **Prefer shared libraries** (`--enable-shared`) over static-only builds. This is how NixOS works — shared libs live once in the store and are referenced via RUNPATH. The store-relative relocation system makes this possible without a fixed store root. Use static linking only when shared libs are impractical (e.g., the package has no shared lib support, or you're building a low-level bootstrap dependency).
@@ -201,16 +201,20 @@ Create `recipes/native/<package>/<package>-source.ts`:
 //!
 //! <Full name> <version> — <one-line description>.
 
-import { download, importToStore } from "../../../js/src/index.js";
+import { fetchTarball } from "../../../js/src/index.js";
 
-const recipe = await download({
+const recipe = await fetchTarball({
   url: "<download-url>",
   hash: "<blake3-hex-hash>",
 });
 
-await importToStore(recipe);
 export const <package>SourceRecipe = recipe;
 ```
+
+`fetchTarball` auto-detects the archive format from the URL extension
+(`.tar.gz` → `tar_gz`, `.tar.xz` → `tar_xz`) and strips the top-level
+directory (`--strip-components=1`) so the source tree is available directly
+at `/deps/<name>/` without extraction boilerplate.
 
 #### 3.4 Create the Build Recipe
 
@@ -227,17 +231,16 @@ Create `recipes/native/<package>/<package>.ts`. Use an existing recipe as a temp
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { <package>SourceRecipe } from "./<package>-source.js";
+import { cProfile } from "../../helpers/c.js";
 // Import any additional dep recipes as needed
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/<package>-<version>
+cd /deps/source
 
-# CC, AR, RANLIB, STRIP, CFLAGS, PATH are auto-injected by shellBuild.
+# CC, AR, RANLIB, STRIP, CFLAGS, PATH are set by cProfile() as process env vars.
 # For deps with .pc files, use PKG_CONFIG_PATH (no manual -I/-L needed):
 # export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig"
 export LDFLAGS="$HOD_DUMMY_RPATH"
@@ -284,11 +287,11 @@ export const <package>Recipe = recipe;
 
 #### 3.5 Key Build Recipe Rules
 
-1. **Always use `shellBuild`** with `toolchain: "toolchain"` and include `dep("toolchain", nativeToolchainRecipe)` in deps.
+1. **Always use `shellBuild`** with `...cProfile()` spread and include `dep("toolchain", nativeToolchainRecipe)` in deps.
 
-2. **`shellBuild` auto-injects `CC`, `AR`, `RANLIB`, `STRIP`, `CFLAGS`, and `PATH`** pointing at the toolchain. You do not need to set these yourself unless the package's build system ignores environment variables (e.g., git's `config.mak` overrides `CC = cc` — in that case, write the values directly into the config file).
+2. **`cProfile()` provides `CC`, `AR`, `RANLIB`, `STRIP`, `CFLAGS`, and `PATH`** via the process environment, pointing at the toolchain. You do not need to set these yourself unless the package's build system ignores environment variables (e.g., git's `config.mak` overrides `CC = cc` — in that case, write the values directly into the config file).
 
-3. **Always include `$HOD_DUMMY_RPATH`** in `LDFLAGS`. This reserves space in the ELF for store-relative RUNPATH patching. The default `LDFLAGS` is set to `$HOD_DUMMY_RPATH` by `shellBuild` — if you override `LDFLAGS`, you must include `$HOD_DUMMY_RPATH` yourself.
+3. **Always include `$HOD_DUMMY_RPATH`** in `LDFLAGS`. This reserves space in the ELF for store-relative RUNPATH patching. The default `LDFLAGS` is set to the dummy RPATH flag by `cProfile()` — if you override `LDFLAGS` in your script, you must include `$HOD_DUMMY_RPATH` yourself.
 
 4. **Prefer shared libraries**: for reusable libraries, use `--enable-shared` and keep downstream-facing metadata (`.so`, pkg-config, headers). Static-only builds should be justified by bootstrap constraints, intentionally standalone binaries, or broken upstream shared support.
 
@@ -426,34 +429,35 @@ Use these as templates when creating new recipes:
 | zstd | Makefile | `LIB_TYPE=static`, separate lib/programs builds |
 | bzip2 | Makefile | No configure, sed-patched Makefile |
 | perl | Configure + make | Complex, special env setup |
-| ripgrep | cargoBuild | Rust package, source tarball + network fetch |
-| hello-rust | cargoBuild | Rust test package, inline code |
+| ripgrep | cargoBuild (helpers/rust.ts) | Rust package, source tarball + network fetch |
+| hello-rust | cargoBuild (helpers/rust.ts) | Rust test package, inline code |
 
 ---
 
 ## 5. Building Rust Packages with `cargoBuild`
 
-For Rust packages, use the `cargoBuild` SDK helper instead of `shellBuild`. This helper handles the complexities of running the Rust toolchain inside the sandbox.
+For Rust packages, use the `cargoBuild` helper from `recipes/helpers/rust.ts`
+instead of `shellBuild`.  This helper handles the complexities of running the
+Rust toolchain inside the sandbox.
 
 ### Basic Pattern
 
 ```typescript
-import { cargoBuild, dep, importToStore } from "../../../../js/src/index.js";
+import { dep, importToStore } from "../../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../../toolchain/native-toolchain.js";
 import { rustRecipe } from "../rust.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { myPackageSourceRecipe } from "./my-package-source.js";
+import { cargoBuild } from "../../../helpers/rust.js";
 
 const recipe = await cargoBuild({
   name: "my-binary",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   source: "source",           // dep name for the source tarball
   deps: [
     dep("source", myPackageSourceRecipe),
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),      // needed by rust-lld/libLLVM
     dep("ca-certs", caCertificatesRecipe),  // HTTPS for cargo
   ],
@@ -469,29 +473,30 @@ await importToStore(recipe);
 export const myPackageRecipe = recipe;
 ```
 
-### Key Differences from `shellBuild`
+### Key Differences from shellBuild
 
-1. **Must include `rust` dep** — `dep("rust", rustRecipe)` for the Rust toolchain.
-2. **Must include `zlib` dep** — `rust-lld` and `libLLVM` need `libz.so`.
-3. **Must include `ca-certs` dep** — cargo needs HTTPS to download from crates.io.
-4. **`unsafe_flags: 0x01`** — required for network access (cargo fetches deps).
-5. **`source` option** — for real projects, provide a source tarball dep.
-6. **Runtime deps: only `toolchain`** — Rust binaries are dynamically linked to glibc but not to the Rust toolchain itself.
+1. **Import `cargoBuild` from `helpers/rust.ts`** — not from the SDK.
+2. **`toolchain` and `rustToolchain` accept `BuiltRecipe` objects** (not strings). `cargoBuild` auto-injects `dep("toolchain", ...)` and `dep("rust", ...)` — do not include them in the `deps` array.
+3. **Must include `zlib` dep** — `rust-lld` and `libLLVM` need `libz.so`.
+4. **Must include `ca-certs` dep** — cargo needs HTTPS to download from crates.io.
+5. **`unsafe_flags: 0x01`** — required for network access (cargo fetches deps).
+6. **`source` option** — for real projects, provide a source tarball dep.
+7. **Runtime deps: only `toolchain`** — Rust binaries are dynamically linked to glibc but not to the Rust toolchain itself.
 
 ### Inline Code (for simple test packages)
 
 For small test programs, you can use `cargoToml` and `mainRs` instead of `source`:
 
 ```typescript
+import { cargoBuild } from "../../../helpers/rust.js";
+
 const recipe = await cargoBuild({
   name: "hello",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   cargoToml: `[package]\nname = "hello"\nversion = "0.1.0"\nedition = "2021"`,
   mainRs: 'fn main() { println!("hello"); }',
   deps: [
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),
   ],
   runtime_deps: ["toolchain"],
@@ -526,7 +531,7 @@ Packages built with `unsafe_flags: 0x01` are **not fully hermetic** — they dep
 recipes/
   native/
     <package>/
-      <package>-source.ts    # download() + importToStore()
+      <package>-source.ts    # fetchTarball() — source tarball
       <package>.ts           # shellBuild() + importToStore()
     rust/
       rust-source.ts         # Rust toolchain downloads

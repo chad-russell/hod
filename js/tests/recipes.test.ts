@@ -127,10 +127,12 @@ describe("process", () => {
 
 
 describe("shellBuild", () => {
-  test("creates a shell build recipe using the toolchain busybox", async () => {
+  test("creates a shell build recipe with shell and preamble", async () => {
     const recipe = await shellBuild({
-      toolchain: "toolchain",
+      shell: "/deps/toolchain/bin/busybox",
+      preamble: "export PATH=/deps/toolchain/bin",
       script: "echo hello > $OUT/hello.txt",
+      env: { C_INCLUDE_PATH: "" },
       deps: [
         dep("source", "a".repeat(64)),
         dep("toolchain", "b".repeat(64)),
@@ -141,22 +143,30 @@ describe("shellBuild", () => {
     expect(json.command).toBe("/deps/toolchain/bin/busybox");
     expect(json.dependencies.map((d: any) => d.name)).toEqual(["source", "toolchain"]);
     expect(json.env).toContainEqual({ key: "C_INCLUDE_PATH", value: "" });
-    expect(json.args[2]).toContain("ln -sf /deps/toolchain/bin/busybox /bin/sh");
-    expect(json.args[2]).toContain("ln -sf /deps/toolchain/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2");
+    expect(json.args[2]).toContain("set -e");
+    expect(json.args[2]).toContain("export PATH=/deps/toolchain/bin");
     expect(json.args[2]).toContain("echo hello > $OUT/hello.txt");
   });
 
-  test("requires the matching toolchain dependency", async () => {
+  test("requires shell parameter", async () => {
     await expect(shellBuild({
-      toolchain: "toolchain",
+      shell: "",
       script: "true",
       deps: [dep("source", "a".repeat(64))],
-    })).rejects.toThrow(/deps must include dep\("toolchain"/);
+    })).rejects.toThrow(/shell is required/);
   });
 
-  test("allows callers to override C_INCLUDE_PATH", async () => {
+  test("requires script parameter", async () => {
+    await expect(shellBuild({
+      shell: "/bin/busybox",
+      script: "",
+      deps: [],
+    })).rejects.toThrow(/script is required/);
+  });
+
+  test("allows callers to pass env vars", async () => {
     const recipe = await shellBuild({
-      toolchain: "toolchain",
+      shell: "/deps/toolchain/bin/busybox",
       script: "true",
       env: { C_INCLUDE_PATH: "/custom/include", FOO: "bar" },
       deps: [dep("toolchain", "b".repeat(64))],
@@ -165,6 +175,20 @@ describe("shellBuild", () => {
     const env = Object.fromEntries((recipe.json as any).env.map((entry: any) => [entry.key, entry.value]));
     expect(env.C_INCLUDE_PATH).toBe("/custom/include");
     expect(env.FOO).toBe("bar");
+  });
+
+  test("works without preamble or env", async () => {
+    const recipe = await shellBuild({
+      shell: "/bin/sh",
+      script: "echo hello",
+      deps: [],
+    });
+
+    const json = recipe.json as any;
+    expect(json.command).toBe("/bin/sh");
+    expect(json.env).toEqual([]);
+    expect(json.args[2]).toContain("set -e");
+    expect(json.args[2]).toContain("echo hello");
   });
 });
 

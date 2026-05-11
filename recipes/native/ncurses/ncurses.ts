@@ -11,13 +11,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesSourceRecipe } from "./ncurses-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-tar xf /deps/source/source -C /tmp
-cd /tmp/ncurses-6.6
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 ./configure \\
   --srcdir=. \\
@@ -53,6 +54,11 @@ for pc in $OUT/lib/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
   sed -i '/^Cflags:/ s|$| -I\${prefix}/include|' "$pc"
 done
+
+# Some downstream configure scripts check for <ncurses.h>. Wide ncurses
+# installs curses.h as the canonical header, so provide the conventional alias
+# in the ncursesw include directory.
+[ -e $OUT/include/ncursesw/ncurses.h ] || cp $OUT/include/ncursesw/curses.h $OUT/include/ncursesw/ncurses.h
 
 # Strip shared libraries
 for f in $OUT/lib/lib*.so.*.*.*; do

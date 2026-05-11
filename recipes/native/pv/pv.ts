@@ -9,14 +9,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { pvSourceRecipe } from "./pv-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/pv-1.10.5
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Configure: no NLS, no dependency tracking
 ./configure \\

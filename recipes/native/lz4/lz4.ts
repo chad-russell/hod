@@ -10,14 +10,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { lz4SourceRecipe } from "./lz4-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/lz4-1.10.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Build shared library and CLI
 make -j$(nproc) -C lib lib-release LIB_TYPE=dynamic

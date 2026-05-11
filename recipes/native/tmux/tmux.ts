@@ -12,14 +12,19 @@ import { tmuxSourceRecipe } from "./tmux-source.js";
 import { libeventRecipe } from "../libevent/libevent.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { bisonRecipe } from "../bison/bison.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    binDeps: ["bison"],
+    includeDeps: ["libevent", "ncurses"],
+    libDeps: ["libevent", "ncurses"],
+    pkgConfigDeps: ["libevent", "ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/tmux-3.6a
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # pkg-config provides all -I/-L/-l flags from the relocatable .pc files.
 export PATH="/deps/bison/bin:$PATH"

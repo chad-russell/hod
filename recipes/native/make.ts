@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { makeSourceRecipe } from "../shims/make-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,7 +25,6 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
 tar xf /deps/source/source -C /tmp
 cd /tmp/make-4.4.1
 

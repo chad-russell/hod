@@ -86,10 +86,18 @@ import {
   dep,
   fromHod,
   importToStore,
+  shellBuild,
+  hermeticPreamble,
+  HOD_DUMMY_RUNPATH,
+  HOD_DUMMY_RPATH_FLAG,
 } from "hod-sdk";
 ```
 
 When running directly from this repo, examples commonly import from `../../js/src/index.js` instead.
+
+Build-system-specific helpers (`cargoBuild`, `cProfile`, `rustProfile`) live in
+`recipes/helpers/` — not in the SDK.  See `docs/agent-package-guide.md` for
+usage patterns.
 
 ### Core Type
 
@@ -263,8 +271,7 @@ const recipe = await process({
   command: "/deps/seed/bin/busybox",
   args: ["sh", "-c", `
     set -e
-    tar xf /deps/source/source -C /tmp
-    cd /tmp/hello-1.0
+    cd /deps/source
     ./configure --prefix=/
     make
     make install DESTDIR=$OUT
@@ -300,14 +307,21 @@ js/
   src/
     index.ts      public exports
     cli.ts        hod subprocess wrappers
+    elf.ts        HOD_DUMMY_RUNPATH / HOD_DUMMY_RPATH_FLAG
     file.ts       fileFromPath(), fileFromHash()
     download.ts   download()
     unpack.ts     unpack()
+    fetch.ts      fetchTarball()
     process.ts    process()
     dep.ts        dep()
+    shell.ts      shellBuild() — thin sandbox runner
+    preamble.ts   hermeticPreamble()
     import.ts     fromHod(), importToStore()
   tests/          Bun tests
 recipes/
+  helpers/
+    c.ts          cProfile() — C build environment
+    rust.ts       rustProfile() + cargoBuild() — Rust build environment
   **/*.ts         TypeScript recipe files — sole source of truth
                  (no .hod or .json files)
 ```
@@ -315,7 +329,7 @@ recipes/
 ## Recipe Authoring Workflow
 
 1. Create a `.ts` file that imports dependencies from other `.ts` recipe modules.
-2. Use SDK constructors (`download()`, `process()`, `fileFromHash()`, `unpack()`) to define the recipe.
+2. Use SDK constructors (`download()`, `process()`, `fileFromHash()`, `unpack()`, `fetchTarball()`) to define the recipe.
 3. Call `importToStore(recipe)` to import the recipe into the Hod store.
 4. Export the recipe for downstream `.ts` files to import.
 5. Run with `bun run <file>.ts` to import recipes to the store.
@@ -345,6 +359,7 @@ Implemented:
 - TS `fileFromHash()`
 - TS `download()`
 - TS `unpack()`
+- TS `fetchTarball()` (composes download + unpack with format auto-detection and strip-components=1)
 - TS `process()`
 - TS `dep()`
 - TS `fromHod()`

@@ -35,8 +35,14 @@ export PATH=/tmp/gcc-wrapper:/deps/make/bin:/deps/seed/bin
 MAKE=/deps/make/bin/make
 
 # The seed musl gcc has hardcoded paths from the host staging directory.
-# In the sandbox those don't exist. We create a wrapper that uses
-# -B to tell gcc where to find cc1, collect2, crt*.o, libgcc.a, etc.
+# In the sandbox those don't exist. We create a wrapper that uses -B
+# flags to point gcc at the right subprogram/library directories.
+#
+# NOTE: No -I or -L flags! musl's configure uses -nostdinc and provides
+# its own headers. Injecting the seed's musl headers (-I/deps/seed/include)
+# would conflict with musl's own headers, causing weak_alias expansion
+# failures. The -B flags are sufficient for GCC to find cc1, collect2,
+# crt*.o, libgcc.a, etc.
 mkdir -p /tmp/gcc-wrapper
 cat > /tmp/gcc-wrapper/gcc << 'WRAPPER'
 #!/bin/sh
@@ -44,8 +50,6 @@ exec /deps/seed/bin/gcc \\
   -B/deps/seed/libexec/gcc/x86_64-linux-musl/11.2.1/ \\
   -B/deps/seed/lib/gcc/x86_64-linux-musl/11.2.1/ \\
   -B/deps/seed/x86_64-linux-musl/lib/ \\
-  -I/deps/seed/include \\
-  -L/deps/seed/lib \\
   "$@"
 WRAPPER
 chmod +x /tmp/gcc-wrapper/gcc

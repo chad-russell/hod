@@ -7,13 +7,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { cbonsaiSourceRecipe } from "./cbonsai-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses"],
+    includePaths: ["/deps/ncurses/include/ncursesw"],
+    libDeps: ["ncurses"],
+  }),
   script: `
 
-tar xf /deps/source/source -C /tmp
-cd /tmp/cbonsai-v1.4.2
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 make cbonsai \\
   CC="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin" \\

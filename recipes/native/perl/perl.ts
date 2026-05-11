@@ -30,9 +30,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/perl-5.40.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 # Set up cross-compilation tools on PATH
 export PATH=/deps/gcc-stage1/bin:/deps/seed/bin:/deps/shims/bin

@@ -14,6 +14,7 @@ const preamble = hermeticPreamble({
   muslLinker: "seed",
   glibcLinker: "glibc",
   sysroot: { glibc: "glibc", linuxHeaders: "linux-headers" },
+  shims: "shims",
 });
 
 const recipe = await process({

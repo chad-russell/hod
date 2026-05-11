@@ -29,6 +29,8 @@ const recipe = await process({
     "-c",
     `set -e
 
+export PATH=/deps/seed/bin:$PATH
+
 ROOT=$OUT/x86_64-linux-musl-native
 mkdir -p $ROOT/bin $ROOT/lib $ROOT/include
 

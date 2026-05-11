@@ -1,10 +1,9 @@
 //! bzip2 source download.
-import { download, importToStore } from "../../../js/src/index.js";
+import { fetchTarball } from "../../../js/src/index.js";
 
-const recipe = await download({
+const recipe = await fetchTarball({
   url: "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
   hash: "97af3f520629c65fe41292f77e6ca798fe594d7987bfb2aebe7c6fcdc7ab5ed2",
 });
 
-await importToStore(recipe);
 export const bzip2SourceRecipe = recipe;

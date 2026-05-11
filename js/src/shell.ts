@@ -1,24 +1,31 @@
-//! Convenience helper for common shell-driven build recipes.
+//! Convenience helper for shell-driven build recipes.
+//!
+//! This is a thin wrapper over process() that handles the shell invocation
+//! and preamble injection. Build-system-specific environment (CC, PATH,
+//! LDFLAGS, etc.) is provided via the `env` and `preamble` fields — use
+//! a profile helper (e.g., cProfile from helpers/c.ts) to supply defaults.
 
 import type { ProcessDependency } from "./dep.js";
 import type { BuiltRecipe } from "./file.js";
-import { hermeticPreamble } from "./preamble.js";
 import { process, type EnvEntry } from "./process.js";
 
 export interface ShellBuildOptions {
-  /** Dependency name that provides `bin/busybox`, glibc runtime, and toolchain binaries. */
-  toolchain: string;
+  /** Absolute sandbox path to the shell binary (e.g., "/deps/toolchain/bin/busybox"). */
+  shell: string;
 
-  /** Shell script to run inside the sandbox. */
+  /** Shell script to execute. */
   script: string;
 
-  /** Environment variables for the process recipe. */
+  /** Optional setup commands injected before the script (e.g., linker symlinks). */
+  preamble?: string;
+
+  /** Environment variables for the build process. */
   env?: Record<string, string> | EnvEntry[];
 
-  /** Named dependencies mounted under `/deps/<name>/`. Must include `toolchain`. */
-  deps?: ProcessDependency[];
+  /** Named dependencies mounted at /deps/<name>/. */
+  deps: ProcessDependency[];
 
-  /** Runtime dependencies for ELF relocation. */
+  /** Runtime dependency names for store-relative ELF relocation. */
   runtime_deps?: string[];
 
   /** Optional working directory contents hash. */
@@ -31,97 +38,46 @@ export interface ShellBuildOptions {
   unsafe_flags?: number;
 }
 
-function normalizeEnv(env?: Record<string, string> | EnvEntry[]): Record<string, string> {
-  const merged: Record<string, string> = {
-    C_INCLUDE_PATH: "",
-  };
-
-  if (!env) {
-    return merged;
-  }
-
-  if (Array.isArray(env)) {
-    for (const entry of env) {
-      merged[entry.key] = entry.value;
-    }
-    return merged;
-  }
-
-  return {
-    ...merged,
-    ...env,
-  };
-}
-
-// Long dummy RUNPATH that reserves space in the ELF for store-relative
-// relocation patching by src/relocate.rs.  Must be long enough to hold any
-// store-relative path the relocation system generates (roughly
-// "$ORIGIN/../../../xx/<64-hex-chars>/lib" ≈ 88 chars per runtime dep,
-// plus ~15 chars for the self-referencing $ORIGIN/../lib path).
-// We use a generous length to cover 6+ runtime deps plus the self path.
-// Total ≈ 15 + 88*6 + 6 = 549 chars; we reserve ~600 to be safe.
-const DUMMY_RUNPATH =
-  "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dummy";
-
 /**
- * Build a standard shell-driven Process recipe using `/deps/<toolchain>/bin/busybox`.
+ * Build a shell-driven Process recipe.
  *
- * Automatically injects:
- *   - Standard toolchain environment (CC, AR, RANLIB, STRIP, CFLAGS, PATH)
- *     pointing at `/deps/<toolchain>/bin`.  Override by re-exporting in script.
- *   - A long dummy RUNPATH (-Wl,-rpath) in LDFLAGS so that dynamically-linked
- *     output binaries can be patched by the store-relative relocation pass
- *     (triggered by `runtime_deps`).  If the recipe script sets its own
- *     LDFLAGS, it MUST include `$HOD_DUMMY_RPATH` to reserve ELF space.
+ * Concatenates the optional preamble with the user script, wraps in
+ * `set -e`, and delegates to process(). All build environment setup
+ * (PATH, CC, LDFLAGS, linker symlinks, etc.) is the caller's
+ * responsibility via the `preamble` and `env` fields.
  *
- * For fully-static builds (no PT_INTERP), the dummy RPATH is harmlessly ignored
- * by the linker — it only matters for dynamically-linked outputs.
+ * Use a profile helper for common build systems:
+ *
+ * ```ts
+ * import { cProfile } from "../helpers/c.js";
+ * shellBuild({
+ *   ...cProfile(),
+ *   deps: [dep("source", src), dep("toolchain", tc)],
+ *   runtime_deps: ["toolchain"],
+ *   script: `cd /deps/source && ./configure --prefix=/ && make`,
+ * });
+ * ```
  */
 export async function shellBuild(opts: ShellBuildOptions): Promise<BuiltRecipe> {
-  if (!opts.toolchain || opts.toolchain.trim() === "") {
-    throw new Error("shellBuild(): toolchain is required");
+  if (!opts.shell || opts.shell.trim() === "") {
+    throw new Error("shellBuild(): shell is required");
   }
   if (!opts.script || opts.script.trim() === "") {
     throw new Error("shellBuild(): script is required");
   }
 
-  const deps = opts.deps ?? [];
-  if (!deps.some((dep) => dep.name === opts.toolchain)) {
-    throw new Error(
-      `shellBuild(): deps must include dep("${opts.toolchain}", ...) so /deps/${opts.toolchain}/ is available`,
-    );
-  }
-
-  const preamble = hermeticPreamble({
-    shell: opts.toolchain,
-    glibcLinker: opts.toolchain,
-  });
-
-  // Inject standard toolchain environment variables (CC, AR, RANLIB, STRIP,
-  // CFLAGS, PATH).  Recipes can override these by re-exporting in their script.
-  const tc = opts.toolchain;
-  const toolchainPreamble = `export PATH=/deps/${tc}/bin
-export CC="/deps/${tc}/bin/gcc --sysroot=/deps/${tc}/sysroot -B/deps/${tc}/bin"
-export AR=/deps/${tc}/bin/ar
-export RANLIB=/deps/${tc}/bin/ranlib
-export STRIP=/deps/${tc}/bin/strip
-export CFLAGS="-O2"`;
-
-  // Inject dummy RUNPATH into the build environment.  Export LDFLAGS prepended
-  // with the dummy RPATH.  If the recipe script sets its own LDFLAGS, those
-  // will override this export — so the script MUST include the dummy RPATH
-  // itself (or use the HOD_DUMMY_RPATH variable) if it overrides LDFLAGS.
-  const rpathPreamble = `export HOD_DUMMY_RPATH="-Wl,-rpath,${DUMMY_RUNPATH}"
-export LDFLAGS="\${HOD_DUMMY_RPATH}"`;
-
-  const fullScript = `set -e\n\n${preamble}\n${toolchainPreamble}\n${rpathPreamble}\n\n${opts.script}`;
+  const fullScript = [
+    "set -e",
+    opts.preamble ? `\n${opts.preamble}` : "",
+    `\n${opts.script}`,
+  ].join("");
 
   return await process({
     platform: "x86_64-linux",
-    command: `/deps/${opts.toolchain}/bin/busybox`,
+    command: opts.shell,
     args: ["sh", "-c", fullScript],
-    env: normalizeEnv(opts.env),
-    dependencies: deps,
+    env: opts.env,
+    dependencies: opts.deps,
     runtime_deps: opts.runtime_deps,
     workdir_hash: opts.workdir_hash,
     output_scaffold_hash: opts.output_scaffold_hash,

@@ -13,14 +13,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { sqliteSourceRecipe } from "./sqlite-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/sqlite-autoconf-3530100
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Autosetup builds a bootstrap jimsh using plain 'cc'/'gcc', ignoring CC.
 # Create a wrapper that includes sysroot flags so the bootstrap can compile.

@@ -13,9 +13,10 @@ import { shellBuild, dep, importToStore } from "../../js/src/index.js";
 import { nativeToolchainRecipe } from "../toolchain/native-toolchain.js";
 import { gccMuslStage2Recipe } from "../roundtrip/gcc-musl-stage2.js";
 import { binutilsMuslStage2Recipe } from "../roundtrip/binutils-musl-stage2.js";
+import { cProfile } from "../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["binutils", "gcc"] }),
   script: `
 export PATH=/deps/toolchain/bin:/deps/gcc/bin:/deps/binutils/bin:$PATH
 

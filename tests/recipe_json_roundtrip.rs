@@ -186,6 +186,8 @@ fn roundtrip_unpack_tar_gz() {
     let recipe = Recipe::Unpack(RecipeUnpack {
         archive_hash: test_hash_a(),
         format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: None,
     });
     assert_binary_roundtrip(&recipe);
     assert_json_roundtrip(&recipe);
@@ -196,6 +198,8 @@ fn roundtrip_unpack_tar_xz() {
     let recipe = Recipe::Unpack(RecipeUnpack {
         archive_hash: test_hash_b(),
         format: ArchiveFormat::TarXz,
+        archive_recipe_hash: None,
+        strip_components: None,
     });
     assert_binary_roundtrip(&recipe);
     assert_json_roundtrip(&recipe);
@@ -236,6 +240,8 @@ fn json_unpack_uses_type_tag() {
     let recipe = Recipe::Unpack(RecipeUnpack {
         archive_hash: test_hash_a(),
         format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: None,
     });
     let json = serde_json::to_string(&recipe).unwrap();
     assert!(
@@ -245,6 +251,77 @@ fn json_unpack_uses_type_tag() {
     assert!(
         json.contains("\"format\":\"tar_gz\""),
         "should use 'tar_gz' format"
+    );
+}
+
+#[test]
+fn roundtrip_unpack_with_archive_recipe_hash() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarXz,
+        archive_recipe_hash: Some(test_hash_b()),
+        strip_components: None,
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
+
+#[test]
+fn roundtrip_unpack_with_strip_components() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: Some(1),
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
+
+#[test]
+fn roundtrip_unpack_with_all_tail_fields() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarXz,
+        archive_recipe_hash: Some(test_hash_b()),
+        strip_components: Some(1),
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
+
+#[test]
+fn json_unpack_omits_strip_components_when_none() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: None,
+    });
+    let json = serde_json::to_string(&recipe).unwrap();
+    assert!(
+        !json.contains("archive_recipe_hash"),
+        "archive_recipe_hash should be omitted when None"
+    );
+}
+
+#[test]
+fn json_unpack_includes_archive_recipe_hash_when_some() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::TarGz,
+        archive_recipe_hash: Some(test_hash_b()),
+        strip_components: None,
+    });
+    let json = serde_json::to_string(&recipe).unwrap();
+    assert!(
+        json.contains("archive_recipe_hash"),
+        "archive_recipe_hash should be present when Some"
+    );
+    let expected_hex = hex(&test_hash_b());
+    assert!(
+        json.contains(&expected_hex),
+        "archive_recipe_hash should contain the hash hex: {expected_hex}"
     );
 }
 

@@ -13,6 +13,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { gmpSourceRecipe } from "../cross/gmp-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -63,7 +64,7 @@ CFLAGS="-O2" \\
 find $OUT -name '*.la' -delete`,
   ],
   env: [
-    // Empty overrides to prevent auto-env from adding conflicting header paths.
+    // Explicit empty values to prevent conflicting header paths.
     // CC_FOR_BUILD gets seed headers via the musl toolchain's built-in paths.
     // The cross-compiler gets glibc headers via -isystem.
     { key: "C_INCLUDE_PATH", value: "" },

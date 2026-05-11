@@ -11,6 +11,7 @@ const preamble = hermeticPreamble({
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
+  shims: "shims",
   sysroot: { glibc: "glibc", linuxHeaders: "linux-headers" },
 });
 
@@ -24,9 +25,8 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/bash-5.2.37
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Configure bash as a cross-compile (musl build machine -> glibc target)
 # CC includes --sysroot so all compiler invocations find glibc headers/libs

@@ -62,10 +62,59 @@ cd /tmp/busybox-1.37.0
 # Minimal static config
 $MAKE defconfig
 
-# Enable static linking
-echo "CONFIG_STATIC=y" >> .config
-# Also disable SELinux (not available)
-echo "CONFIG_SELINUX=n" >> .config
+set_config_y() {
+  key="CONFIG_$1"
+  if grep -q "^$key=" .config; then
+    sed -i "s/^$key=.*/$key=y/" .config
+  elif grep -q "^# $key is not set" .config; then
+    sed -i "s/^# $key is not set/$key=y/" .config
+  else
+    echo "$key=y" >> .config
+  fi
+}
+
+set_config_n() {
+  key="CONFIG_$1"
+  if grep -q "^$key=" .config; then
+    sed -i "s/^$key=.*/# $key is not set/" .config
+  elif ! grep -q "^# $key is not set" .config; then
+    echo "# $key is not set" >> .config
+  fi
+}
+
+# Enable static linking and disable unavailable/unneeded features.
+set_config_y STATIC
+set_config_n SELINUX
+
+# Keep the native toolchain busybox focused on build/executor applets. Some
+# defconfig networking/coreutils applets pull kernel headers in ways that
+# conflict with musl's libc headers in this bootstrap environment.
+set_config_n WGET
+set_config_n SSL_CLIENT
+set_config_n TLS
+set_config_n FEATURE_WGET_HTTPS
+set_config_n SPLIT
+set_config_n BC
+set_config_n DC
+
+# Disable applets that require Linux kernel headers not needed by builds.
+set_config_n KBD_MODE
+set_config_n LOADKMAP
+set_config_n OPENVT
+set_config_n DEALLOCVT
+set_config_n SETKEYCODES
+set_config_n SHOWKEY
+set_config_n SETCONSOLE
+set_config_n FGCONSOLE
+set_config_n CONSOLEFONT
+set_config_n SETLOGCONS
+set_config_n INIT
+set_config_n HALT
+set_config_n POWEROFF
+set_config_n REBOOT
+set_config_n FEATURE_UTMP
+set_config_n FEATURE_WTMP
+
 yes n | $MAKE oldconfig
 
 # Build with the gcc wrapper — statically linked via musl, no glibc issues.
@@ -73,7 +122,7 @@ yes n | $MAKE oldconfig
 $MAKE -j$(nproc) \
   HOSTCC=/tmp/gcc-wrapper/gcc \
   CC=/tmp/gcc-wrapper/gcc \
-  CFLAGS="-O2 -static -I/deps/linux-headers/include"
+  CFLAGS="-O2 -static -DNAME_MAX=255 -DLONG_BIT=64 -DSSIZE_MAX=9223372036854775807L -I/deps/linux-headers/include"
 
 # Install just the busybox binary
 mkdir -p $OUT/bin

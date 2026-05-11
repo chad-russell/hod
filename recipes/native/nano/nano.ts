@@ -15,14 +15,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { nanoSourceRecipe } from "./nano-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses"],
+    includePaths: ["/deps/ncurses/include/ncursesw"],
+    libDeps: ["ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/nano-9.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Set flags for ncurses (both include paths needed for ncurses_dll.h resolution)
 export CPPFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"

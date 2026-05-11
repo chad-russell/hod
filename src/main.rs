@@ -6,13 +6,15 @@
 //!
 //! See PRD §8 for the full CLI specification.
 
-use std::path::PathBuf;
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
 
 use hod::build::{self, BuildOptions};
 use hod::hash::{hash_bytes, hex_to_hash, hash_to_hex};
+use hod::recipe::Recipe;
 use hod::store::{Store, StoreConfig};
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,69 @@ enum Commands {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+
+    /// Reset the store: delete all recipes, outputs, blobs, and build logs.
+    Reset {
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
+    /// Build all recipes in the store that have no cached output yet.
+    ///
+    /// Discovers unbuilt recipes via topological sort of the dependency
+    /// graph, then builds them in dependency order. Useful after evaluating
+    /// all TypeScript recipes with `bun run` to perform a full rebuild.
+    #[command(name = "build-remaining")]
+    BuildRemaining {
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Suppress stdout/stderr streaming from build processes.
+        #[arg(long, short)]
+        quiet: bool,
+
+        /// Keep the sandbox working directory on build failure.
+        #[arg(long)]
+        keep_failed: bool,
+    },
+
+    /// Build the current graph reachable from an explicit roots file.
+    #[command(name = "build-roots")]
+    BuildRoots {
+        /// File containing one recipe hash per line. Text after whitespace or # is ignored.
+        #[arg(long)]
+        roots_file: PathBuf,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Suppress stdout/stderr streaming from build processes.
+        #[arg(long, short)]
+        quiet: bool,
+
+        /// Keep the sandbox working directory on failure.
+        #[arg(long)]
+        keep_failed: bool,
+    },
+
+    /// Garbage-collect store objects unreachable from an explicit roots file.
+    #[command(name = "gc")]
+    Gc {
+        /// File containing one recipe hash per line. Text after whitespace or # is ignored.
+        #[arg(long)]
+        roots_file: PathBuf,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Print what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +264,12 @@ fn main() {
         Commands::Inspect { hash, store } => cmd_inspect(hash, store),
         Commands::ImportBlob { file, store } => cmd_import_blob(file, store),
         Commands::ExportRecipe { hash, output, store } => cmd_export_recipe(hash, output, store),
+        Commands::Reset { store } => cmd_reset(store),
+        Commands::BuildRemaining { store, quiet, keep_failed } => cmd_build_remaining(store, quiet, keep_failed),
+        Commands::BuildRoots { roots_file, store, quiet, keep_failed } => {
+            cmd_build_roots(roots_file, store, quiet, keep_failed)
+        }
+        Commands::Gc { roots_file, store, dry_run } => cmd_gc(roots_file, store, dry_run),
     }
 }
 
@@ -628,6 +699,587 @@ fn cmd_export_recipe(hash_str: String, output: PathBuf, store_path: Option<PathB
 
     eprintln!("Exported recipe {hash_str} to {}", output.display());
     process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod reset`
+// ---------------------------------------------------------------------------
+
+fn cmd_reset(store_path: Option<PathBuf>) -> ! {
+    let config = StoreConfig { path: store_path };
+    let root = config.resolve();
+
+    if !root.exists() {
+        eprintln!("hod: store not found at {}", root.display());
+        process::exit(0);
+    }
+
+    match std::fs::remove_dir_all(&root) {
+        Ok(()) => {
+            eprintln!("hod: reset store at {}", root.display());
+            process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("hod: error removing store: {e}");
+            process::exit(10);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Root-set helpers, `hod build-roots`, and `hod gc`
+// ---------------------------------------------------------------------------
+
+fn read_roots_file(path: &Path) -> std::result::Result<Vec<[u8; 32]>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("error reading {}: {e}", path.display()))?;
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for (idx, line) in text.lines().enumerate() {
+        let before_comment = line.split('#').next().unwrap_or("").trim();
+        if before_comment.is_empty() {
+            continue;
+        }
+        let hash_text = before_comment
+            .split_whitespace()
+            .next()
+            .unwrap_or(before_comment);
+        let hash = hex_to_hash(hash_text).ok_or_else(|| {
+            format!(
+                "{}:{}: invalid recipe hash '{}'; expected 64 lowercase hex chars",
+                path.display(),
+                idx + 1,
+                hash_text,
+            )
+        })?;
+        if seen.insert(hash) {
+            roots.push(hash);
+        }
+    }
+    if roots.is_empty() {
+        return Err(format!("{} contains no recipe roots", path.display()));
+    }
+    Ok(roots)
+}
+
+fn recipe_dependencies(recipe: &Recipe) -> Vec<[u8; 32]> {
+    match recipe {
+        Recipe::File(f) => f.resources_hash.iter().copied().collect(),
+        Recipe::Directory(d) => d.entries.iter().map(|e| e.entry_hash).collect(),
+        Recipe::Symlink(_) | Recipe::Download(_) => Vec::new(),
+        Recipe::Unpack(u) => u.archive_recipe_hash.iter().copied().collect(),
+        Recipe::Process(p) => {
+            let mut deps: Vec<[u8; 32]> = p.dependencies.iter().map(|d| d.recipe_hash).collect();
+            if let Some(h) = p.workdir_hash {
+                deps.push(h);
+            }
+            if let Some(h) = p.output_scaffold_hash {
+                deps.push(h);
+            }
+            deps
+        }
+    }
+}
+
+fn recipe_blob_references(recipe: &Recipe) -> Vec<[u8; 32]> {
+    match recipe {
+        Recipe::File(f) => vec![f.content_blob_hash],
+        Recipe::Download(d) => vec![d.expected_hash],
+        Recipe::Unpack(u) => vec![u.archive_hash],
+        Recipe::Directory(_) | Recipe::Symlink(_) | Recipe::Process(_) => Vec::new(),
+    }
+}
+
+fn reachable_recipes(store: &Store, roots: &[[u8; 32]]) -> std::result::Result<HashSet<[u8; 32]>, String> {
+    let mut seen = HashSet::new();
+    let mut queue: VecDeque<[u8; 32]> = roots.iter().copied().collect();
+    while let Some(hash) = queue.pop_front() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let bytes = store
+            .get_recipe(&hash)
+            .map_err(|e| format!("error loading recipe {}: {e}", hash_to_hex(&hash)))?;
+        let recipe = Recipe::decode(&bytes)
+            .map_err(|e| format!("invalid recipe {}: {e}", hash_to_hex(&hash)))?;
+        for dep in recipe_dependencies(&recipe) {
+            queue.push_back(dep);
+        }
+    }
+    Ok(seen)
+}
+
+fn cmd_build_roots(roots_file: PathBuf, store_path: Option<PathBuf>, quiet: bool, keep_failed: bool) -> ! {
+    let roots = match read_roots_file(&roots_file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    };
+    let store = match Store::open(&StoreConfig { path: store_path }) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+    let options = BuildOptions {
+        force: false,
+        force_recursive: false,
+        quiet,
+        keep_failed,
+    };
+
+    eprintln!("[hod] building {} root recipe(s) from {}", roots.len(), roots_file.display());
+    for (idx, root) in roots.iter().enumerate() {
+        let hex = hash_to_hex(root);
+        eprintln!("[hod] root [{}/{}] {}", idx + 1, roots.len(), hex);
+        let bytes = match store.get_recipe(root) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("hod: error loading root recipe {hex}: {e}");
+                process::exit(10);
+            }
+        };
+        match build::build(&store, &bytes, &options) {
+            Ok(output) => eprintln!("[hod] root [{}/{}] {} → {}", idx + 1, roots.len(), hex, hash_to_hex(&output)),
+            Err(e) => {
+                eprintln!("hod: root [{}/{}] FAILED {}: {e}", idx + 1, roots.len(), hex);
+                process::exit(e.exit_code());
+            }
+        }
+    }
+    eprintln!("[hod] build-roots complete");
+    process::exit(0);
+}
+
+fn mark_staging_blobs(path: &Path, live_blobs: &mut HashSet<[u8; 32]>) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.is_file() {
+        let data = std::fs::read(path)?;
+        live_blobs.insert(hash_bytes(&data));
+    } else if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            mark_staging_blobs(&entry?.path(), live_blobs)?;
+        }
+    }
+    Ok(())
+}
+
+fn iter_sharded_files(root: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
+    let mut files = Vec::new();
+    if !root.exists() {
+        return Ok(files);
+    }
+    for shard in std::fs::read_dir(root)? {
+        let shard = shard?;
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(shard.path())? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            files.push((name, entry.path()));
+        }
+    }
+    Ok(files)
+}
+
+fn remove_path(path: &Path, dry_run: bool) -> std::io::Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! {
+    let roots = match read_roots_file(&roots_file) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    };
+    let store = match Store::open(&StoreConfig { path: store_path }) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+    let live_recipes = match reachable_recipes(&store, &roots) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    let mut live_outputs = HashSet::new();
+    let mut live_blobs = HashSet::new();
+
+    for recipe_hash in &live_recipes {
+        if let Ok(bytes) = store.get_recipe(recipe_hash) {
+            if let Ok(recipe) = Recipe::decode(&bytes) {
+                for blob in recipe_blob_references(&recipe) {
+                    live_blobs.insert(blob);
+                }
+            }
+        }
+        match store.get_output(recipe_hash) {
+            Ok(Some(output)) => {
+                live_outputs.insert(output);
+                let staging = build::artifact_staging_path(&store, &output);
+                if staging.exists() {
+                    if let Err(e) = mark_staging_blobs(&staging, &mut live_blobs) {
+                        eprintln!("[hod] warning: could not scan staging {}: {e}", staging.display());
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[hod] warning: could not read output for {}: {e}", hash_to_hex(recipe_hash)),
+        }
+        if let Ok(Some(log)) = store.get_build_log(recipe_hash) {
+            if let Some(h) = log.stdout_blob { live_blobs.insert(h); }
+            if let Some(h) = log.stderr_blob { live_blobs.insert(h); }
+        }
+    }
+
+    let mut removed_recipes = 0usize;
+    for (hex, hash) in store.list_recipes().unwrap_or_default() {
+        if !live_recipes.contains(&hash) {
+            let path = store.recipes_dir().join(&hex[..2]).join(&hex);
+            if path.exists() {
+                if let Err(e) = remove_path(&path, dry_run) {
+                    eprintln!("[hod] warning: could not remove recipe {}: {e}", path.display());
+                }
+            }
+            if !dry_run {
+                let _ = store.conn().execute("DELETE FROM recipes WHERE recipe_hash = ?1", rusqlite::params![hex]);
+            }
+            removed_recipes += 1;
+        }
+    }
+
+    let mut removed_outputs = 0usize;
+    if let Ok(mut stmt) = store.conn().prepare("SELECT recipe_hash FROM outputs") {
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+        if let Ok(rows) = rows {
+            for hex_recipe in rows.flatten() {
+                if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
+                    if !live_recipes.contains(&recipe_hash) {
+                        if !dry_run {
+                            let _ = store.conn().execute("DELETE FROM outputs WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                        }
+                        removed_outputs += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut removed_logs = 0usize;
+    if let Ok(mut stmt) = store.conn().prepare("SELECT recipe_hash FROM build_logs") {
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0));
+        if let Ok(rows) = rows {
+            for hex_recipe in rows.flatten() {
+                if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
+                    if !live_recipes.contains(&recipe_hash) {
+                        if !dry_run {
+                            let _ = store.conn().execute("DELETE FROM build_logs WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                        }
+                        removed_logs += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if !dry_run {
+        let live_hex: Vec<String> = live_recipes.iter().map(hash_to_hex).collect();
+        if live_hex.is_empty() {
+            let _ = store.conn().execute("DELETE FROM dependencies", []);
+        } else {
+            // Simpler and deterministic: remove dependency rows whose recipe is not live one by one.
+            if let Ok(mut stmt) = store.conn().prepare("SELECT DISTINCT recipe_hash FROM dependencies") {
+                if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                    for hex_recipe in rows.flatten() {
+                        if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
+                            if !live_recipes.contains(&recipe_hash) {
+                                let _ = store.conn().execute("DELETE FROM dependencies WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut removed_staging = 0usize;
+    match iter_sharded_files(&store.staging_dir()) {
+        Ok(entries) => {
+            for (hex, path) in entries {
+                let keep = hex_to_hash(&hex).map(|h| live_outputs.contains(&h)).unwrap_or(false);
+                if !keep {
+                    if let Err(e) = remove_path(&path, dry_run) {
+                        eprintln!("[hod] warning: could not remove staging {}: {e}", path.display());
+                    }
+                    removed_staging += 1;
+                }
+            }
+        }
+        Err(e) => eprintln!("[hod] warning: could not list staging: {e}"),
+    }
+
+    let mut removed_blobs = 0usize;
+    match iter_sharded_files(&store.blobs_dir()) {
+        Ok(entries) => {
+            for (hex, path) in entries {
+                let keep = hex_to_hash(&hex).map(|h| live_blobs.contains(&h)).unwrap_or(false);
+                if !keep {
+                    if let Err(e) = remove_path(&path, dry_run) {
+                        eprintln!("[hod] warning: could not remove blob {}: {e}", path.display());
+                    }
+                    removed_blobs += 1;
+                }
+            }
+        }
+        Err(e) => eprintln!("[hod] warning: could not list blobs: {e}"),
+    }
+
+    if !dry_run {
+        let _ = std::fs::remove_dir_all(store.tmp_dir());
+        let _ = std::fs::create_dir_all(store.tmp_dir());
+    }
+
+    eprintln!(
+        "[hod] gc{} complete: live recipes={}, live outputs={}, live blobs={}, removed recipes={}, outputs={}, logs={}, staging={}, blobs={}",
+        if dry_run { " dry-run" } else { "" },
+        live_recipes.len(),
+        live_outputs.len(),
+        live_blobs.len(),
+        removed_recipes,
+        removed_outputs,
+        removed_logs,
+        removed_staging,
+        removed_blobs,
+    );
+    process::exit(0);
+}
+
+// `hod build-remaining`
+// ---------------------------------------------------------------------------
+
+fn cmd_build_remaining(store_path: Option<PathBuf>, quiet: bool, keep_failed: bool) -> ! {
+    let config = StoreConfig { path: store_path };
+    let store = match Store::open(&config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    // 1. Load the full dependency graph from the DB
+    let all_recipes = match store.list_recipes() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: error listing recipes: {e}");
+            process::exit(10);
+        }
+    };
+
+    if all_recipes.is_empty() {
+        eprintln!("hod: no recipes in the store");
+        process::exit(0);
+    }
+
+    // 2. Topological sort using the dependency edges
+    let topo_order = match topo_sort_recipes(&store, &all_recipes) {
+        Ok(order) => order,
+        Err(msg) => {
+            eprintln!("hod: cycle in recipe graph: {msg}");
+            process::exit(3);
+        }
+    };
+
+    // 3. Filter to unbuilt recipes only
+    let mut to_build: Vec<(String, [u8; 32])> = Vec::new();
+    for (hex, hash) in &topo_order {
+        match store.get_output(hash) {
+            Ok(None) => to_build.push((hex.clone(), *hash)),
+            Ok(Some(_)) => {} // already built
+            Err(e) => {
+                eprintln!("hod: error checking output for {hex}: {e}");
+                process::exit(10);
+            }
+        }
+    }
+
+    if to_build.is_empty() {
+        eprintln!("hod: all {} recipe(s) already built", all_recipes.len());
+        process::exit(0);
+    }
+
+    eprintln!(
+        "[hod] building {}/{} recipe(s) (remaining)",
+        to_build.len(),
+        all_recipes.len(),
+    );
+
+    // 4. Build each unbuilt recipe in topological order.
+    let options = BuildOptions {
+        force: false,
+        force_recursive: false,
+        quiet,
+        keep_failed,
+    };
+
+    let mut built = 0usize;
+    let total = to_build.len();
+
+    for (i, (hex, hash)) in to_build.iter().enumerate() {
+        eprintln!("[hod] [{}/{}] building {}...", i + 1, total, hex);
+
+        let recipe_bytes = match store.get_recipe(hash) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("hod: error loading recipe {hex}: {e}");
+                process::exit(10);
+            }
+        };
+
+        let output_hash = match build::build(&store, &recipe_bytes, &options) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("hod: [{}/{}] FAILED {}: {e}", i + 1, total, hex);
+                eprintln!("[hod] built {} recipe(s) before failure", built);
+                process::exit(e.exit_code());
+            }
+        };
+
+        eprintln!(
+            "[hod] [{}/{}] built {} → {}",
+            i + 1,
+            total,
+            hex,
+            hash_to_hex(&output_hash),
+        );
+        built += 1;
+    }
+
+    eprintln!(
+        "[hod] build-remaining complete: {} built, {} already cached",
+        built,
+        all_recipes.len() - to_build.len(),
+    );
+
+    process::exit(0);
+}
+
+/// List all recipe hashes in the store.
+fn topo_sort_recipes(
+    store: &Store,
+    all_recipes: &[(String, [u8; 32])],
+) -> std::result::Result<Vec<(String, [u8; 32])>, String> {
+    // Build adjacency: recipe → [dep_recipe_hash]
+    let recipe_set: std::collections::HashSet<[u8; 32]> =
+        all_recipes.iter().map(|(_, h)| *h).collect();
+
+    let mut deps_of: std::collections::HashMap<[u8; 32], Vec<[u8; 32]>> =
+        std::collections::HashMap::new();
+    let mut in_degree: std::collections::HashMap<[u8; 32], usize> =
+        std::collections::HashMap::new();
+
+    for (_, hash) in all_recipes {
+        in_degree.entry(*hash).or_insert(0);
+        deps_of.entry(*hash).or_insert_with(Vec::new);
+
+        // Load dependency edges from the DB
+        if let Ok(dep_list) = store.get_dependencies(hash) {
+            for (_, dep_hash) in dep_list {
+                // Only count deps that are themselves recipes in the store.
+                // Skip deps that are just output hashes (not recipe hashes).
+                if recipe_set.contains(&dep_hash) {
+                    deps_of.entry(*hash).or_default().push(dep_hash);
+                    *in_degree.entry(*hash).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    // Kahn's algorithm
+    // Reverse the graph: we want "depends on" → "is depended on by"
+    // A recipe with in_degree 0 has all its deps already built (or no deps).
+    // We want to build from leaves (no deps) to roots.
+    let mut reverse: std::collections::HashMap<[u8; 32], Vec<[u8; 32]>> =
+        std::collections::HashMap::new();
+    for (_, hash) in all_recipes {
+        reverse.entry(*hash).or_default();
+    }
+
+    // Rebuild in_degree from scratch: count how many deps each recipe has
+    // that are ALSO in the recipe set (i.e., need to be built first)
+    let mut in_deg: std::collections::HashMap<[u8; 32], usize> =
+        std::collections::HashMap::new();
+    for (_, hash) in all_recipes {
+        let dep_count = deps_of.get(hash).map(|d| d.len()).unwrap_or(0);
+        in_deg.insert(*hash, dep_count);
+    }
+
+    // Build reverse adjacency: dep → [dependents]
+    for (_, hash) in all_recipes {
+        if let Some(deps) = deps_of.get(hash) {
+            for dep in deps {
+                reverse.entry(*dep).or_default().push(*hash);
+            }
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<[u8; 32]> = std::collections::VecDeque::new();
+    for (_, hash) in all_recipes {
+        if in_deg.get(hash).copied().unwrap_or(0) == 0 {
+            queue.push_back(*hash);
+        }
+    }
+
+    let hex_map: std::collections::HashMap<[u8; 32], String> = all_recipes
+        .iter()
+        .map(|(hex, hash)| (*hash, hex.clone()))
+        .collect();
+
+    let mut result = Vec::with_capacity(all_recipes.len());
+    while let Some(hash) = queue.pop_front() {
+        let hex = hex_map.get(&hash).cloned().unwrap_or_else(|| hash_to_hex(&hash));
+        result.push((hex, hash));
+
+        if let Some(dependents) = reverse.get(&hash) {
+            for dependent in dependents {
+                let deg = in_deg.get_mut(dependent).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push_back(*dependent);
+                }
+            }
+        }
+    }
+
+    if result.len() != all_recipes.len() {
+        return Err("dependency cycle detected".to_string());
+    }
+
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

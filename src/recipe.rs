@@ -162,6 +162,21 @@ pub struct RecipeUnpack {
     pub archive_hash: Hash,
     /// Archive format (tar_gz or tar_xz).
     pub format: ArchiveFormat,
+    /// Optional: recipe hash of a Download recipe that produces the archive blob.
+    /// When set, the build system will build the Download first (ensuring the
+    /// blob is in the store) before extracting. This is a backward-compatible
+    /// tail field: absent in older recipes.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        with = "option_hash_serde"
+    )]
+    pub archive_recipe_hash: Option<Hash>,
+    /// Number of leading path components to strip during extraction.
+    /// Equivalent to `tar --strip-components=N`. Default is 0 (no stripping).
+    /// Backward-compatible tail field: absent in older recipes means 0.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub strip_components: Option<u8>,
 }
 
 /// A named dependency in a Process recipe.
@@ -296,6 +311,27 @@ impl Recipe {
             Recipe::Unpack(u) => {
                 enc.hash(&u.archive_hash);
                 enc.u8(u.format as u8);
+                // Backward-compatible tail extension: only written when present.
+                let has_archive_recipe = u.archive_recipe_hash.is_some();
+                let has_strip = u.strip_components.is_some();
+                if has_archive_recipe || has_strip {
+                    // archive_recipe_hash: presence byte + optional hash
+                    match &u.archive_recipe_hash {
+                        Some(h) => {
+                            enc.u8(0x01);
+                            enc.hash(h);
+                        }
+                        None => enc.u8(0x00),
+                    }
+                    // strip_components: presence byte + optional u8
+                    match u.strip_components {
+                        Some(n) => {
+                            enc.u8(0x01);
+                            enc.u8(n);
+                        }
+                        None => enc.u8(0x00),
+                    }
+                }
             }
             Recipe::Process(p) => {
                 enc.str_u16(&p.platform);
@@ -452,9 +488,41 @@ impl Recipe {
             field: "archive format".into(),
             value: format!("0x{format_tag:02x}"),
         })?;
+        // Backward-compatible tail fields: absent in older recipes.
+        let (archive_recipe_hash, strip_components) = if dec.remaining() == 0 {
+            (None, None)
+        } else {
+            let arh = match dec.u8()? {
+                0x00 => None,
+                0x01 => Some(dec.hash()?),
+                v => {
+                    return Err(EncodeError::InvalidValue {
+                        field: "unpack archive_recipe_hash presence byte".into(),
+                        value: format!("expected 0x00 or 0x01, got 0x{v:02x}"),
+                    });
+                }
+            };
+            let strip = if dec.remaining() == 0 {
+                None
+            } else {
+                match dec.u8()? {
+                    0x00 => None,
+                    0x01 => Some(dec.u8()?),
+                    v => {
+                        return Err(EncodeError::InvalidValue {
+                            field: "unpack strip_components presence byte".into(),
+                            value: format!("expected 0x00 or 0x01, got 0x{v:02x}"),
+                        });
+                    }
+                }
+            };
+            (arh, strip)
+        };
         Ok(Recipe::Unpack(RecipeUnpack {
             archive_hash,
             format,
+            archive_recipe_hash,
+            strip_components,
         }))
     }
 

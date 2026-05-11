@@ -137,7 +137,7 @@ cp /tmp/build/hello-cpp $OUT/hello-cpp
 echo 'gcc-stage2 validation passed' > $OUT/result.txt`,
   ],
   env: [
-    // Override auto-env C_INCLUDE_PATH to prevent musl header contamination
+    // Set C_INCLUDE_PATH explicitly to prevent musl header contamination
     { key: "C_INCLUDE_PATH", value: "" },
   ],
   dependencies: [

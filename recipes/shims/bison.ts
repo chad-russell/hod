@@ -17,23 +17,44 @@ const recipe = await process({
 
 ${preamble}
 
-export PATH=/deps/make/bin:/deps/seed/bin:$PATH
+export PATH=/tmp/gcc-wrapper:/deps/m4/bin:/deps/make/bin:/deps/seed/bin
+MAKE=/deps/make/bin/make
+
+# The seed musl gcc has hardcoded paths from the host staging directory.
+# In the sandbox those don't exist. We create a wrapper that uses -B
+# flags to point gcc at the right subprogram/library directories.
+mkdir -p /tmp/gcc-wrapper
+cat > /tmp/gcc-wrapper/gcc << 'WRAPPER'
+#!/bin/sh
+exec /deps/seed/bin/gcc \\
+  -B/deps/seed/libexec/gcc/x86_64-linux-musl/11.2.1/ \\
+  -B/deps/seed/lib/gcc/x86_64-linux-musl/11.2.1/ \\
+  -B/deps/seed/x86_64-linux-musl/lib/ \\
+  "$@"
+WRAPPER
+chmod +x /tmp/gcc-wrapper/gcc
+
+# Verify the wrapper works
+/tmp/gcc-wrapper/gcc --version | head -1
 
 tar xf /deps/source/source -C /tmp
 cd /tmp/bison-*
 
-CC=/deps/seed/bin/gcc \\
+CC=/tmp/gcc-wrapper/gcc \\
 AR=/deps/seed/bin/ar \\
 RANLIB=/deps/seed/bin/ranlib \\
 CFLAGS="-O2" \\
 LDFLAGS="-static" \\
 ./configure --prefix=/ --disable-dependency-tracking
 
-make -j$(nproc)
-make install DESTDIR=$OUT
+$MAKE -j$(nproc)
+$MAKE install DESTDIR=$OUT
 
 # Remove unnecessary files
-rm -rf $OUT/share/info $OUT/share/man $Out/share/doc`,
+rm -rf $OUT/share/info $OUT/share/man $OUT/share/doc
+
+# Verify bison works
+$OUT/bin/bison --version | head -1`,
   ],
   dependencies: [
     dep("m4", m4Recipe),

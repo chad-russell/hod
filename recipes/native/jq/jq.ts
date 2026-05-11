@@ -15,14 +15,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { jqSourceRecipe } from "./jq-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/jq-1.8.1
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Pre-seed autoconf cache for the bundled oniguruma configure.
 # It can't run test programs in the hermetic sandbox to determine type sizes.

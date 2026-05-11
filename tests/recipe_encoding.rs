@@ -573,3 +573,72 @@ fn recipe_type_tag_matches_encode() {
     });
     assert_eq!(proc.encode()[4], 0x05);
 }
+
+// ===========================================================================
+// Unpack recipe backward compatibility
+// ===========================================================================
+
+#[test]
+fn unpack_without_archive_recipe_hash_decodes() {
+    // Build an Unpack recipe without tail fields, encode it,
+    // then decode it. The fields should be None/None.
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash(),
+        format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: None,
+    });
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    match decoded {
+        Recipe::Unpack(u) => {
+            assert_eq!(u.archive_hash, test_hash());
+            assert_eq!(u.format, ArchiveFormat::TarGz);
+            assert_eq!(u.archive_recipe_hash, None);
+            assert_eq!(u.strip_components, None);
+        }
+        _ => panic!("expected Unpack recipe"),
+    }
+}
+
+#[test]
+fn unpack_with_archive_recipe_hash_roundtrips() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash(),
+        format: ArchiveFormat::TarXz,
+        archive_recipe_hash: Some(test_hash_b()),
+        strip_components: None,
+    });
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    match decoded {
+        Recipe::Unpack(u) => {
+            assert_eq!(u.archive_hash, test_hash());
+            assert_eq!(u.format, ArchiveFormat::TarXz);
+            assert_eq!(u.archive_recipe_hash, Some(test_hash_b()));
+            assert_eq!(u.strip_components, None);
+        }
+        _ => panic!("expected Unpack recipe"),
+    }
+}
+
+#[test]
+fn unpack_with_strip_components_roundtrips() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash(),
+        format: ArchiveFormat::TarGz,
+        archive_recipe_hash: None,
+        strip_components: Some(1),
+    });
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    match decoded {
+        Recipe::Unpack(u) => {
+            assert_eq!(u.archive_hash, test_hash());
+            assert_eq!(u.format, ArchiveFormat::TarGz);
+            assert_eq!(u.archive_recipe_hash, None);
+            assert_eq!(u.strip_components, Some(1));
+        }
+        _ => panic!("expected Unpack recipe"),
+    }
+}

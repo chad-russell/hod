@@ -30,7 +30,6 @@
 //! toolchain at runtime.
 
 import {
-  cargoBuild,
   dep,
   importToStore,
 } from "../../../../js/src/index.js";
@@ -39,16 +38,15 @@ import { rustRecipe } from "../rust.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { justSourceRecipe } from "./just-source.js";
+import { cargoBuild } from "../../../helpers/rust.js";
 
 const recipe = await cargoBuild({
   name: "just",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   source: "source",
   deps: [
     dep("source", justSourceRecipe),
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],

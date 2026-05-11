@@ -4,7 +4,7 @@ import { seedRootRecipe } from "../bootstrap/seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { gmpSourceRecipe } from "./gmp-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
 const recipe = await process({
   platform: "x86_64-linux",

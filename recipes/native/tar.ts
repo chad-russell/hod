@@ -8,6 +8,7 @@ import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { tarSourceRecipe } from "./tar-source.js";
 
 const preamble = hermeticPreamble({
+  shims: "shims",
   shell: "seed",
   muslLinker: "seed",
   glibcLinker: "glibc",
@@ -24,9 +25,9 @@ const recipe = await process({
 
 ${preamble}
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/tar-1.35
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+cd /tmp/build
 
 # Configure tar as cross-compile
 CC="/deps/gcc-stage1/bin/x86_64-linux-gnu-gcc --sysroot=/tmp/sysroot -B/deps/seed/bin/" \\
@@ -42,7 +43,7 @@ LDFLAGS="-L/deps/gcc-stage1/lib -L/deps/gcc-stage1/lib/gcc/x86_64-linux-gnu/13.2
   gl_cv_func_working_futimes=yes
 
 make -j$(nproc)
-make install DESTDIR=$OUT
+make install DESTDIR=$OUT MAKEINFO=true
 
 # Strip binaries
 /deps/seed/bin/strip $OUT/bin/tar 2>/dev/null || true

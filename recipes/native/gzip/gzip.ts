@@ -8,14 +8,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { gzipSourceRecipe } from "./gzip-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/gzip-1.14
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Configure: no NLS, no docs, no dependency tracking
 ./configure \\

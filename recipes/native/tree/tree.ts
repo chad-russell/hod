@@ -9,14 +9,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { treeSourceRecipe } from "./tree-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/tree-2.3.2
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Build using upstream Makefile. CC, CFLAGS, LDFLAGS are auto-injected by
 # shellBuild. Override PREFIX and DESTDIR for staging install.

@@ -34,7 +34,6 @@
 //! Rust toolchain at runtime.
 
 import {
-  cargoBuild,
   dep,
   importToStore,
 } from "../../../../js/src/index.js";
@@ -43,16 +42,15 @@ import { rustRecipe } from "../rust.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { tealdeerSourceRecipe } from "./tealdeer-source.js";
+import { cargoBuild } from "../../../helpers/rust.js";
 
 const recipe = await cargoBuild({
   name: "tldr",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   source: "source",
   deps: [
     dep("source", tealdeerSourceRecipe),
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],

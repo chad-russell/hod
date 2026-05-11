@@ -10,14 +10,14 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libffiSourceRecipe } from "./libffi-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile(),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/libffi-3.4.8
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # libffi's configure checks for a C++ compiler and preprocessor.
 # The toolchain has g++ but it's not fully functional. Use gcc -E as the

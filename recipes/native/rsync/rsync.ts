@@ -18,14 +18,18 @@ import { rsyncSourceRecipe } from "./rsync-source.js";
 import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { zstdRecipe } from "../zstd/zstd.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["openssl", "zlib", "zstd"],
+    libDeps: ["openssl", "zlib", "zstd"],
+    pkgConfigDeps: ["openssl", "zlib", "zstd"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/rsync-3.3.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Point to dependencies
 export CPPFLAGS="-I/deps/openssl/include -I/deps/zlib/include -I/deps/zstd/include"

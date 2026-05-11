@@ -40,4 +40,7 @@ echo done > $OUT/test.txt`,
 });
 
 await importToStore(recipe);
-export const debugRecipe = recipe;
+// NOTE: Not exported as a root. This diagnostic recipe is broken by the
+// fetchTarball source migration (uses old tar xzf extraction). Fix or
+// remove in a future cleanup pass.
+// export const debugRecipe = recipe;

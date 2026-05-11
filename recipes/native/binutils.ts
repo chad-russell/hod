@@ -4,7 +4,7 @@ import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { binutilsSourceRecipe } from "./binutils-source.js";
 
-const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed" });
+const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
 const recipe = await process({
   platform: "x86_64-linux",
@@ -27,9 +27,7 @@ FEOF
 chmod +x /tmp/fake-bin/file
 export PATH=/tmp/fake-bin:$PATH
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/binutils-2.42
+cp -a /deps/source/. /tmp/build
 
 # Build in a separate directory
 mkdir -p /tmp/binutils-build && cd /tmp/binutils-build
@@ -55,7 +53,7 @@ STRIP=/deps/seed/bin/strip \\
 MAKEINFO=/tmp/fake-bin/makeinfo \\
 CFLAGS="-O2" \\
 CXXFLAGS="-O2" \\
-/tmp/binutils-2.42/configure \\
+/tmp/build/configure \\
   --prefix=/ \\
   --disable-werror \\
   --disable-nls \\

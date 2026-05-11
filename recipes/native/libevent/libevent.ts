@@ -12,14 +12,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libeventSourceRecipe } from "./libevent-source.js";
 import { opensslRecipe } from "../openssl/openssl.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["openssl"],
+    libDeps: ["openssl"],
+    pkgConfigDeps: ["openssl"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/libevent-2.1.12-stable
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Make openssl discoverable
 export CPPFLAGS="-I/deps/openssl/include"

@@ -105,7 +105,7 @@ The builder also auto-populates environment variables from dependency outputs:
 - `C_INCLUDE_PATH` from dependency `include/` directories
 - `OUT=/out`, `DEPS=/deps`, `TMPDIR=/tmp`, `HOME=/homeless-shelter`
 
-Recipe env vars override the auto-env values, except the standard builder vars above are set last.
+Recipe env vars are set first, then the standard builder vars above are set last (always winning).
 
 ## Keeping Iteration Fast
 

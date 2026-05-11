@@ -13,14 +13,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { readlineSourceRecipe } from "./readline-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses"],
+    libDeps: ["ncurses"],
+    pkgConfigDeps: ["ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/readline-8.3
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # pkg-config provides ncurses -I/-L/-l flags from the relocatable .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"

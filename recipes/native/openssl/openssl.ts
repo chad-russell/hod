@@ -12,14 +12,14 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { perlRecipe } from "../perl/perl.js";
 import { opensslSourceRecipe } from "./openssl-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["perl"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/openssl-3.5.0
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 export PATH=/deps/toolchain/bin:/deps/perl/bin
 export PERL5LIB=/deps/perl/lib/perl5/5.40.0:/deps/perl/lib/perl5/5.40.0/x86_64-linux

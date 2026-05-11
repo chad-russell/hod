@@ -19,14 +19,18 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { vimSourceRecipe } from "./vim-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({
+    includeDeps: ["ncurses"],
+    libDeps: ["ncurses"],
+    pkgConfigDeps: ["ncurses"],
+  }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/vim-9.2.0000/src
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Point at shared ncursesw via relocatable .pc files.
 export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
@@ -36,11 +40,12 @@ export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
 # Force cross-compilation mode to skip all AC_TRY_RUN checks.
 # The hermetic sandbox can't run configure's test programs due to the
 # dynamic linker setup, but we know the answers for x86_64-linux-gnu.
-sed -i 's/if test "$cross_compiling" = yes/if test "yes" = yes/' auto/configure
+sed -i 's/if test "$cross_compiling" = yes/if test "yes" = yes/' src/auto/configure
 
-# Vim's real configure is in auto/configure; the wrapper needs autoconf.
-# Run it directly with --srcdir so it finds vim.h in the current directory.
+# Vim's real configure is in src/auto/configure; the wrapper needs autoconf.
+# Run it from src/ with --srcdir=. so it finds vim.h in the current directory.
 # Provide cache variables for all AC_TRY_RUN checks that are now skipped.
+cd src
 bash auto/configure \\
   --srcdir=. \\
   ac_cv_sizeof_int=4 \\

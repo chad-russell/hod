@@ -53,7 +53,7 @@ make headers_install \\
   HOSTCFLAGS="-O2 -static"
 
 # The kernel installs directly to $OUT/ (e.g., $OUT/linux/, $OUT/asm/).
-# Wrap in include/ so auto-PATH detects it as a header dep.
+# Wrap in include/ so downstream deps find headers at the standard location.
 mkdir -p /tmp/hdr_tmp
 cp -a $OUT/* /tmp/hdr_tmp/
 rm -rf $OUT/*

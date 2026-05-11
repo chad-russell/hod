@@ -33,7 +33,6 @@
 //! toolchain at runtime.
 
 import {
-  cargoBuild,
   dep,
   importToStore,
 } from "../../../../js/src/index.js";
@@ -42,16 +41,15 @@ import { rustRecipe } from "../rust.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { batSourceRecipe } from "./bat-source.js";
+import { cargoBuild } from "../../../helpers/rust.js";
 
 const recipe = await cargoBuild({
   name: "bat",
-  toolchain: "toolchain",
-  rustToolchain: "rust",
+  toolchain: nativeToolchainRecipe,
+  rustToolchain: rustRecipe,
   source: "source",
   deps: [
     dep("source", batSourceRecipe),
-    dep("toolchain", nativeToolchainRecipe),
-    dep("rust", rustRecipe),
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],

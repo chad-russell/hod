@@ -17,14 +17,14 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { flexRecipe } from "../flex/flex.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { bcSourceRecipe } from "./bc-source.js";
+import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
-  toolchain: "toolchain",
+  ...cProfile({ binDeps: ["bison", "flex"] }),
   script: `
 
-# Extract source
-tar xf /deps/source/source -C /tmp
-cd /tmp/bc-1.08.2
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # Point configure to flex and bison
 export PATH="/deps/flex/bin:/deps/bison/bin:$PATH"

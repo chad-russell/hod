@@ -1045,20 +1045,27 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
 }
 
 /// Convert a filesystem path to an Artifact, storing blobs as needed.
+///
+/// Also stages each artifact to its individual staging path so that
+/// `stage_artifact` for Directory can find children later.
 fn path_to_artifact(path: &Path, store: &Store) -> Result<Artifact> {
     if path.is_symlink() {
         let target = std::fs::read_link(path)?
             .to_string_lossy()
             .to_string();
-        Ok(Artifact::Symlink { target })
+        let artifact = Artifact::Symlink { target };
+        stage_artifact(store, &artifact, &artifact_to_hash(&artifact))?;
+        Ok(artifact)
     } else if path.is_file() {
         let data = std::fs::read(path)?;
         let content_hash = store.write_blob(&data)?;
         let executable = is_executable(path);
-        Ok(Artifact::File {
+        let artifact = Artifact::File {
             content_hash,
             executable,
-        })
+        };
+        stage_artifact(store, &artifact, &artifact_to_hash(&artifact))?;
+        Ok(artifact)
     } else if path.is_dir() {
         let mut entries: Vec<(String, Hash)> = Vec::new();
         for entry in std::fs::read_dir(path)? {
@@ -1187,7 +1194,20 @@ fn stage_artifact(store: &Store, artifact: &Artifact, output_hash: &Hash) -> Res
         }
         Artifact::Symlink { target } => {
             let target_path = PathBuf::from(target);
-            std::os::unix::fs::symlink(&target_path, &staging_path)?;
+            if staging_path.exists() {
+                // Already staged — nothing to do
+            } else {
+                if let Some(parent) = staging_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if let Err(e) = std::os::unix::fs::symlink(&target_path, &staging_path) {
+                    // If something already exists at the path (e.g. from a concurrent
+                    // stage), treat it as success.
+                    if e.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err(BuildError::Io(e));
+                    }
+                }
+            }
         }
     }
 

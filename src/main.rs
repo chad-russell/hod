@@ -215,6 +215,60 @@ enum Commands {
         keep_failed: bool,
     },
 
+    /// Run a command from a built package.
+    ///
+    /// Accepts a recipe specifier (64-char hex hash or path to a .ts file).
+    /// If no command is given, auto-detects the binary in the package's bin/.
+    /// If the first argument starts with `-`, it is treated as a flag to the
+    /// auto-detected binary.
+    ///
+    /// Examples:
+    ///   hod run ./recipes/native/jq/jq.ts
+    ///   hod run ./recipes/native/jq/jq.ts --version
+    ///   hod run ./recipes/native/jq/jq.ts -- jq --version
+    ///   hod run 47301f... -- jq --version
+    Run {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
+        /// Command and arguments to run.
+        ///
+        /// If omitted, auto-detects the binary in the package's bin/.
+        /// If the first arg starts with `-`, it is passed as a flag to the
+        /// auto-detected binary.
+        #[arg(last = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
+    /// Enter a shell environment with packages on PATH.
+    ///
+    /// Accepts a recipe specifier (64-char hex hash or path to a .ts file)
+    /// and spawns $SHELL with PATH, LD_LIBRARY_PATH, etc. set.
+    ///
+    /// Example:
+    ///   hod shell ./recipes/native/jq/jq.ts
+    ///   hod shell <hash> --command 'rg pattern'
+    Shell {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Run a command in the shell instead of spawning interactive.
+        #[arg(short, long)]
+        command: Option<String>,
+
+        /// Additional args to pass to $SHELL (with --command).
+        #[arg(short, long)]
+        arg: Vec<String>,
+    },
+
     /// Garbage-collect store objects unreachable from an explicit roots file.
     #[command(name = "gc")]
     Gc {
@@ -229,6 +283,35 @@ enum Commands {
         /// Print what would be removed without deleting anything.
         #[arg(long)]
         dry_run: bool,
+    },
+
+    /// Manage package profiles.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+
+        /// Override store location.
+        #[arg(long, global = true)]
+        store: Option<PathBuf>,
+
+        /// Suppress build output.
+        #[arg(long, global = true, short)]
+        quiet: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileAction {
+    /// Activate a profile: build, create symlink farm, write env.sh.
+    Activate {
+        /// Path to the profile .ts file.
+        profile_file: PathBuf,
+    },
+
+    /// Build all packages in a profile without activating.
+    Build {
+        /// Path to the profile .ts file.
+        profile_file: PathBuf,
     },
 }
 
@@ -269,7 +352,14 @@ fn main() {
         Commands::BuildRoots { roots_file, store, quiet, keep_failed } => {
             cmd_build_roots(roots_file, store, quiet, keep_failed)
         }
+        Commands::Run { specifier, command, store } => {
+            cmd_run(specifier, command, store)
+        }
+        Commands::Shell { specifier, store, command, arg } => {
+            cmd_shell(specifier, store, command, arg)
+        }
         Commands::Gc { roots_file, store, dry_run } => cmd_gc(roots_file, store, dry_run),
+        Commands::Profile { action, store, quiet } => cmd_profile(action, store, quiet),
     }
 }
 
@@ -729,6 +819,106 @@ fn cmd_reset(store_path: Option<PathBuf>) -> ! {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// `hod run`
+// ---------------------------------------------------------------------------
+
+fn cmd_run(
+    specifier: String,
+    command: Vec<String>,
+    store_path: Option<PathBuf>,
+) -> ! {
+    let store_config = StoreConfig { path: store_path.clone() };
+
+    // Resolve specifier to recipe hash
+    let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    // Open store and resolve staging paths
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let staging_path = match hod::run::resolve_staging_path(&store, &recipe_hash) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    let env = hod::run::build_env(&[staging_path.clone()]);
+
+    // Resolve the command: either explicit or auto-detected from bin/
+    let (cmd, args) = hod::run::resolve_run_command(&staging_path, &command);
+
+    match hod::run::exec_command(env, &cmd, &args) {
+        Ok(()) => process::exit(0),
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `hod shell`
+// ---------------------------------------------------------------------------
+
+fn cmd_shell(
+    specifier: String,
+    store_path: Option<PathBuf>,
+    command: Option<String>,
+    args: Vec<String>,
+) -> ! {
+    let store_config = StoreConfig { path: store_path.clone() };
+
+    // Resolve specifier to recipe hash
+    let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    // Open store and resolve staging path
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let staging_path = match hod::run::resolve_staging_path(&store, &recipe_hash) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    let env = hod::run::build_env(&[staging_path]);
+
+    match hod::run::exec_shell(env, command.as_deref(), &args) {
+        Ok(()) => process::exit(0),
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Root-set helpers, `hod build-roots`, and `hod gc`
 // ---------------------------------------------------------------------------
 
@@ -1075,6 +1265,72 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
         removed_staging,
         removed_blobs,
     );
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod profile`
+// ---------------------------------------------------------------------------
+
+fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) -> ! {
+    let store_config = StoreConfig { path: store_path };
+
+    let (profile_file, activate) = match action {
+        ProfileAction::Activate { profile_file } => (profile_file, true),
+        ProfileAction::Build { profile_file } => (profile_file, false),
+    };
+
+    // Evaluate the profile module via Bun
+    eprintln!("[hod] evaluating profile {}", profile_file.display());
+    let (name, hashes) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    eprintln!("[hod] profile '{}': {} package(s)", name, hashes.len());
+
+    // Open store and build unbuilt packages
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    match hod::profile::build_profile(&store, &hashes, quiet) {
+        Ok(built) => {
+            if built > 0 {
+                eprintln!("[hod] built {} package(s)", built);
+            }
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+
+    if activate {
+        // Create symlink farm
+        let farm_dir = match hod::profile::create_farm(&store, &name, &hashes) {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(10);
+            }
+        };
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
+        let env_path = format!("{home}/.hod/profiles/{name}/env.sh");
+
+        eprintln!("[hod] symlink farm: {}/", farm_dir.display());
+        eprintln!("[hod] activated. Add to your shell config:");
+        eprintln!("    source {env_path}");
+    }
+
     process::exit(0);
 }
 

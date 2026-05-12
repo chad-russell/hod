@@ -627,11 +627,8 @@ fn build_symlink(s: &RecipeSymlink) -> Artifact {
 /// Build an Unpack recipe: fetch the archive blob from the store and extract
 /// it into a directory artifact.
 ///
-/// Note: The actual tar extraction logic is not yet implemented. This stub
-/// returns an error indicating the feature is not yet available. The Unpack
-/// recipe type exists in the binary format and encode/decode path so that
-/// recipes can be constructed and hashed, but building them requires the
-/// full extraction pipeline.
+/// Reads the archive blob, writes it to a temp file, extracts with the system
+/// `tar` binary, captures the result as an Artifact, and stages it.
 fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
     use std::io::Write;
 

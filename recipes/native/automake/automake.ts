@@ -51,7 +51,7 @@ make install DESTDIR=$OUT
 # //share/aclocal-1.18, //bin/automake, etc.
 # Replace all //share/ and //bin/ with /deps/automake/ paths.
 sed -i 's|//share/|/deps/automake/share/|g; s|//bin/|/deps/automake/bin/|g' \
-  $OUT/bin/*
+  $OUT/bin/* $OUT/share/automake-1.18/Automake/Config.pm
 
 # Clean up — remove docs, man, info. Keep share/automake-1.18 (M4 macros)
 # and share/aclocal-1.18 (aclocal macros) for downstream builds.

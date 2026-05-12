@@ -2,7 +2,7 @@
 
 This document describes debugging workflows that match the current CLI in this checkout.
 
-> Status note: older versions of this doc described `hod shell` and `hod import-file`. Those commands are not implemented in `src/main.rs` right now. The current debugging tools are `hod build --keep-failed`, `hod inspect`, and `hod export-recipe`.
+> Status note: `hod shell` and `hod run` are implemented. The current debugging tools are `hod build --keep-failed`, `hod inspect`, `hod export-recipe`, and `hod run`.
 
 ## Quick Reference
 

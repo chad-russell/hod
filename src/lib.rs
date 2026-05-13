@@ -15,6 +15,7 @@
 //! - `packed` — packed executables (ELF RPATH patching for relocatable outputs)
 
 pub mod build;
+pub mod closure;
 pub mod download;
 pub mod encoding;
 pub mod hash;

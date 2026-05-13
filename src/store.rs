@@ -224,6 +224,17 @@ impl Store {
         }
     }
 
+    /// Flush SQLite WAL content into the main `hod.db` file.
+    ///
+    /// Copy/archive operations that treat `hod.db` as a regular file need a
+    /// checkpoint first; otherwise the on-disk database may lag behind the
+    /// latest committed metadata still resident in `hod.db-wal`.
+    pub fn checkpoint_metadata(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
     /// Record a build log.
     pub fn store_build_log(
         &self,
@@ -387,9 +398,7 @@ fn now_iso8601() -> String {
     let hour = time_of_day / 3600;
     let minute = (time_of_day % 3600) / 60;
     let second = time_of_day % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 /// Convert days since Unix epoch to (year, month, day).

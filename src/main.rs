@@ -13,7 +13,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 use hod::build::{self, BuildOptions};
-use hod::hash::{hash_bytes, hex_to_hash, hash_to_hex};
+use hod::hash::{hash_bytes, hash_to_hex, hex_to_hash};
 use hod::recipe::Recipe;
 use hod::store::{Store, StoreConfig};
 
@@ -285,6 +285,89 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Inspect the runtime closure of a recipe.
+    ///
+    /// Resolves and displays all runtime dependencies transitively,
+    /// showing sizes and key files for each entry.
+    ///
+    /// Examples:
+    ///   hod closure ./recipes/native/yad/yad.ts
+    ///   hod closure 76930b...
+    Closure {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
+    /// Copy a recipe's runtime closure to another store.
+    ///
+    /// Transfers staging directories, recipe files, and the database
+    /// for all entries in the closure. Uses rsync for SSH destinations
+    /// and cp for local targets.
+    ///
+    /// Without --to, produces a tar.zst archive.
+    ///
+    /// Examples:
+    ///   hod copy-closure 76930b... --to user@thinkpad
+    ///   hod copy-closure 76930b... --to /mnt/cache/hod
+    ///   hod copy-closure 76930b... --list
+    ///   hod copy-closure 76930b... --archive -o yad-closure.tar.zst
+    #[command(name = "copy-closure")]
+    CopyClosure {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
+        /// Copy TO this destination. Formats:
+        ///   user@host         (remote via SSH, default store path)
+        ///   user@host:path    (remote via SSH, custom store path)
+        ///   /absolute/path    (local directory)
+        ///   ./relative/path   (local directory, relative to CWD)
+        /// Default without --to: produce a tar.zst archive.
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Copy FROM this source. Same format as --to.
+        /// Default: the local store.
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Override the SOURCE store path.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Override the DESTINATION store path on the remote
+        /// (default: ~/.local/share/hod). Only applies with SSH --to.
+        #[arg(long)]
+        remote_store: Option<PathBuf>,
+
+        /// Show what would be copied without copying.
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// List all output hashes + sizes in the closure (machine-readable).
+        #[arg(short = 'l', long)]
+        list: bool,
+
+        /// Produce a self-contained tar.zst archive (default when no --to).
+        #[arg(long)]
+        archive: bool,
+
+        /// Write archive to this file (for --archive).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Overwrite existing files on the destination.
+        #[arg(long)]
+        force: bool,
+
+        /// Suppress progress output.
+        #[arg(short, long)]
+        quiet: bool,
+    },
+
     /// Manage package profiles.
     Profile {
         #[command(subcommand)]
@@ -332,7 +415,16 @@ fn main() {
             keep_failed,
             quiet,
             verbose,
-        } => cmd_build(recipe_file, hash, store, force, force_recursive, keep_failed, quiet, verbose),
+        } => cmd_build(
+            recipe_file,
+            hash,
+            store,
+            force,
+            force_recursive,
+            keep_failed,
+            quiet,
+            verbose,
+        ),
         Commands::LsOutput {
             hash,
             store,
@@ -346,20 +438,70 @@ fn main() {
         Commands::ImportFromJson { store } => cmd_import_from_json(store),
         Commands::Inspect { hash, store } => cmd_inspect(hash, store),
         Commands::ImportBlob { file, store } => cmd_import_blob(file, store),
-        Commands::ExportRecipe { hash, output, store } => cmd_export_recipe(hash, output, store),
+        Commands::ExportRecipe {
+            hash,
+            output,
+            store,
+        } => cmd_export_recipe(hash, output, store),
         Commands::Reset { store } => cmd_reset(store),
-        Commands::BuildRemaining { store, quiet, keep_failed } => cmd_build_remaining(store, quiet, keep_failed),
-        Commands::BuildRoots { roots_file, store, quiet, keep_failed } => {
-            cmd_build_roots(roots_file, store, quiet, keep_failed)
-        }
-        Commands::Run { specifier, command, store } => {
-            cmd_run(specifier, command, store)
-        }
-        Commands::Shell { specifier, store, command, arg } => {
-            cmd_shell(specifier, store, command, arg)
-        }
-        Commands::Gc { roots_file, store, dry_run } => cmd_gc(roots_file, store, dry_run),
-        Commands::Profile { action, store, quiet } => cmd_profile(action, store, quiet),
+        Commands::BuildRemaining {
+            store,
+            quiet,
+            keep_failed,
+        } => cmd_build_remaining(store, quiet, keep_failed),
+        Commands::BuildRoots {
+            roots_file,
+            store,
+            quiet,
+            keep_failed,
+        } => cmd_build_roots(roots_file, store, quiet, keep_failed),
+        Commands::Run {
+            specifier,
+            command,
+            store,
+        } => cmd_run(specifier, command, store),
+        Commands::Shell {
+            specifier,
+            store,
+            command,
+            arg,
+        } => cmd_shell(specifier, store, command, arg),
+        Commands::Gc {
+            roots_file,
+            store,
+            dry_run,
+        } => cmd_gc(roots_file, store, dry_run),
+        Commands::Profile {
+            action,
+            store,
+            quiet,
+        } => cmd_profile(action, store, quiet),
+        Commands::Closure { specifier, store } => cmd_closure(specifier, store),
+        Commands::CopyClosure {
+            specifier,
+            to,
+            from,
+            store,
+            remote_store,
+            dry_run,
+            list,
+            archive,
+            output,
+            force,
+            quiet,
+        } => cmd_copy_closure(
+            specifier,
+            to,
+            from,
+            store,
+            remote_store,
+            dry_run,
+            list,
+            archive,
+            output,
+            force,
+            quiet,
+        ),
     }
 }
 
@@ -431,10 +573,7 @@ fn cmd_build(
     };
 
     if verbose {
-        eprintln!(
-            "[hod] store: {}",
-            store.root().display(),
-        );
+        eprintln!("[hod] store: {}", store.root().display(),);
         if let Some(ref path) = recipe_file {
             eprintln!(
                 "[hod] recipe file: {} ({} bytes)",
@@ -474,12 +613,7 @@ fn cmd_build(
 // `hod ls-output`
 // ---------------------------------------------------------------------------
 
-fn cmd_ls_output(
-    hash_str: String,
-    store_path: Option<PathBuf>,
-    long: bool,
-    recursive: bool,
-) -> ! {
+fn cmd_ls_output(hash_str: String, store_path: Option<PathBuf>, long: bool, recursive: bool) -> ! {
     // Parse the hash
     let hash = match hex_to_hash(&hash_str) {
         Some(h) => h,
@@ -822,12 +956,10 @@ fn cmd_reset(store_path: Option<PathBuf>) -> ! {
 // `hod run`
 // ---------------------------------------------------------------------------
 
-fn cmd_run(
-    specifier: String,
-    command: Vec<String>,
-    store_path: Option<PathBuf>,
-) -> ! {
-    let store_config = StoreConfig { path: store_path.clone() };
+fn cmd_run(specifier: String, command: Vec<String>, store_path: Option<PathBuf>) -> ! {
+    let store_config = StoreConfig {
+        path: store_path.clone(),
+    };
 
     // Resolve specifier to recipe hash
     let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
@@ -879,7 +1011,9 @@ fn cmd_shell(
     command: Option<String>,
     args: Vec<String>,
 ) -> ! {
-    let store_config = StoreConfig { path: store_path.clone() };
+    let store_config = StoreConfig {
+        path: store_path.clone(),
+    };
 
     // Resolve specifier to recipe hash
     let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
@@ -982,7 +1116,10 @@ fn recipe_blob_references(recipe: &Recipe) -> Vec<[u8; 32]> {
     }
 }
 
-fn reachable_recipes(store: &Store, roots: &[[u8; 32]]) -> std::result::Result<HashSet<[u8; 32]>, String> {
+fn reachable_recipes(
+    store: &Store,
+    roots: &[[u8; 32]],
+) -> std::result::Result<HashSet<[u8; 32]>, String> {
     let mut seen = HashSet::new();
     let mut queue: VecDeque<[u8; 32]> = roots.iter().copied().collect();
     while let Some(hash) = queue.pop_front() {
@@ -1001,7 +1138,12 @@ fn reachable_recipes(store: &Store, roots: &[[u8; 32]]) -> std::result::Result<H
     Ok(seen)
 }
 
-fn cmd_build_roots(roots_file: PathBuf, store_path: Option<PathBuf>, quiet: bool, keep_failed: bool) -> ! {
+fn cmd_build_roots(
+    roots_file: PathBuf,
+    store_path: Option<PathBuf>,
+    quiet: bool,
+    keep_failed: bool,
+) -> ! {
     let roots = match read_roots_file(&roots_file) {
         Ok(r) => r,
         Err(e) => {
@@ -1023,7 +1165,11 @@ fn cmd_build_roots(roots_file: PathBuf, store_path: Option<PathBuf>, quiet: bool
         keep_failed,
     };
 
-    eprintln!("[hod] building {} root recipe(s) from {}", roots.len(), roots_file.display());
+    eprintln!(
+        "[hod] building {} root recipe(s) from {}",
+        roots.len(),
+        roots_file.display()
+    );
     for (idx, root) in roots.iter().enumerate() {
         let hex = hash_to_hex(root);
         eprintln!("[hod] root [{}/{}] {}", idx + 1, roots.len(), hex);
@@ -1035,9 +1181,20 @@ fn cmd_build_roots(roots_file: PathBuf, store_path: Option<PathBuf>, quiet: bool
             }
         };
         match build::build(&store, &bytes, &options) {
-            Ok(output) => eprintln!("[hod] root [{}/{}] {} → {}", idx + 1, roots.len(), hex, hash_to_hex(&output)),
+            Ok(output) => eprintln!(
+                "[hod] root [{}/{}] {} → {}",
+                idx + 1,
+                roots.len(),
+                hex,
+                hash_to_hex(&output)
+            ),
             Err(e) => {
-                eprintln!("hod: root [{}/{}] FAILED {}: {e}", idx + 1, roots.len(), hex);
+                eprintln!(
+                    "hod: root [{}/{}] FAILED {}: {e}",
+                    idx + 1,
+                    roots.len(),
+                    hex
+                );
                 process::exit(e.exit_code());
             }
         }
@@ -1133,16 +1290,26 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
                 let staging = build::artifact_staging_path(&store, &output);
                 if staging.exists() {
                     if let Err(e) = mark_staging_blobs(&staging, &mut live_blobs) {
-                        eprintln!("[hod] warning: could not scan staging {}: {e}", staging.display());
+                        eprintln!(
+                            "[hod] warning: could not scan staging {}: {e}",
+                            staging.display()
+                        );
                     }
                 }
             }
             Ok(None) => {}
-            Err(e) => eprintln!("[hod] warning: could not read output for {}: {e}", hash_to_hex(recipe_hash)),
+            Err(e) => eprintln!(
+                "[hod] warning: could not read output for {}: {e}",
+                hash_to_hex(recipe_hash)
+            ),
         }
         if let Ok(Some(log)) = store.get_build_log(recipe_hash) {
-            if let Some(h) = log.stdout_blob { live_blobs.insert(h); }
-            if let Some(h) = log.stderr_blob { live_blobs.insert(h); }
+            if let Some(h) = log.stdout_blob {
+                live_blobs.insert(h);
+            }
+            if let Some(h) = log.stderr_blob {
+                live_blobs.insert(h);
+            }
         }
     }
 
@@ -1152,11 +1319,17 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
             let path = store.recipes_dir().join(&hex[..2]).join(&hex);
             if path.exists() {
                 if let Err(e) = remove_path(&path, dry_run) {
-                    eprintln!("[hod] warning: could not remove recipe {}: {e}", path.display());
+                    eprintln!(
+                        "[hod] warning: could not remove recipe {}: {e}",
+                        path.display()
+                    );
                 }
             }
             if !dry_run {
-                let _ = store.conn().execute("DELETE FROM recipes WHERE recipe_hash = ?1", rusqlite::params![hex]);
+                let _ = store.conn().execute(
+                    "DELETE FROM recipes WHERE recipe_hash = ?1",
+                    rusqlite::params![hex],
+                );
             }
             removed_recipes += 1;
         }
@@ -1170,7 +1343,10 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
                 if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
                     if !live_recipes.contains(&recipe_hash) {
                         if !dry_run {
-                            let _ = store.conn().execute("DELETE FROM outputs WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                            let _ = store.conn().execute(
+                                "DELETE FROM outputs WHERE recipe_hash = ?1",
+                                rusqlite::params![hex_recipe],
+                            );
                         }
                         removed_outputs += 1;
                     }
@@ -1187,7 +1363,10 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
                 if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
                     if !live_recipes.contains(&recipe_hash) {
                         if !dry_run {
-                            let _ = store.conn().execute("DELETE FROM build_logs WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                            let _ = store.conn().execute(
+                                "DELETE FROM build_logs WHERE recipe_hash = ?1",
+                                rusqlite::params![hex_recipe],
+                            );
                         }
                         removed_logs += 1;
                     }
@@ -1202,12 +1381,18 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
             let _ = store.conn().execute("DELETE FROM dependencies", []);
         } else {
             // Simpler and deterministic: remove dependency rows whose recipe is not live one by one.
-            if let Ok(mut stmt) = store.conn().prepare("SELECT DISTINCT recipe_hash FROM dependencies") {
+            if let Ok(mut stmt) = store
+                .conn()
+                .prepare("SELECT DISTINCT recipe_hash FROM dependencies")
+            {
                 if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
                     for hex_recipe in rows.flatten() {
                         if let Some(recipe_hash) = hex_to_hash(&hex_recipe) {
                             if !live_recipes.contains(&recipe_hash) {
-                                let _ = store.conn().execute("DELETE FROM dependencies WHERE recipe_hash = ?1", rusqlite::params![hex_recipe]);
+                                let _ = store.conn().execute(
+                                    "DELETE FROM dependencies WHERE recipe_hash = ?1",
+                                    rusqlite::params![hex_recipe],
+                                );
                             }
                         }
                     }
@@ -1220,10 +1405,15 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
     match iter_sharded_files(&store.staging_dir()) {
         Ok(entries) => {
             for (hex, path) in entries {
-                let keep = hex_to_hash(&hex).map(|h| live_outputs.contains(&h)).unwrap_or(false);
+                let keep = hex_to_hash(&hex)
+                    .map(|h| live_outputs.contains(&h))
+                    .unwrap_or(false);
                 if !keep {
                     if let Err(e) = remove_path(&path, dry_run) {
-                        eprintln!("[hod] warning: could not remove staging {}: {e}", path.display());
+                        eprintln!(
+                            "[hod] warning: could not remove staging {}: {e}",
+                            path.display()
+                        );
                     }
                     removed_staging += 1;
                 }
@@ -1236,10 +1426,15 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
     match iter_sharded_files(&store.blobs_dir()) {
         Ok(entries) => {
             for (hex, path) in entries {
-                let keep = hex_to_hash(&hex).map(|h| live_blobs.contains(&h)).unwrap_or(false);
+                let keep = hex_to_hash(&hex)
+                    .map(|h| live_blobs.contains(&h))
+                    .unwrap_or(false);
                 if !keep {
                     if let Err(e) = remove_path(&path, dry_run) {
-                        eprintln!("[hod] warning: could not remove blob {}: {e}", path.display());
+                        eprintln!(
+                            "[hod] warning: could not remove blob {}: {e}",
+                            path.display()
+                        );
                     }
                     removed_blobs += 1;
                 }
@@ -1487,8 +1682,7 @@ fn topo_sort_recipes(
 
     // Rebuild in_degree from scratch: count how many deps each recipe has
     // that are ALSO in the recipe set (i.e., need to be built first)
-    let mut in_deg: std::collections::HashMap<[u8; 32], usize> =
-        std::collections::HashMap::new();
+    let mut in_deg: std::collections::HashMap<[u8; 32], usize> = std::collections::HashMap::new();
     for (_, hash) in all_recipes {
         let dep_count = deps_of.get(hash).map(|d| d.len()).unwrap_or(0);
         in_deg.insert(*hash, dep_count);
@@ -1517,7 +1711,10 @@ fn topo_sort_recipes(
 
     let mut result = Vec::with_capacity(all_recipes.len());
     while let Some(hash) = queue.pop_front() {
-        let hex = hex_map.get(&hash).cloned().unwrap_or_else(|| hash_to_hex(&hash));
+        let hex = hex_map
+            .get(&hash)
+            .cloned()
+            .unwrap_or_else(|| hash_to_hex(&hash));
         result.push((hex, hash));
 
         if let Some(dependents) = reverse.get(&hash) {
@@ -1599,9 +1796,7 @@ fn list_output(
     }
 
     if path.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let mut entries: Vec<_> = std::fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
         entries.sort_by_key(|e| e.file_name());
 
         for entry in &entries {
@@ -1653,8 +1848,154 @@ fn list_output(
     Ok(())
 }
 
-/// Format file permissions as a Unix-like string (e.g., "drwxr-xr-x").
-#[cfg(unix)]
+// ---------------------------------------------------------------------------
+// `hod closure`
+// ---------------------------------------------------------------------------
+
+fn cmd_closure(specifier: String, store_path: Option<PathBuf>) -> ! {
+    let store_config = StoreConfig { path: store_path };
+
+    // Resolve specifier to recipe hash
+    let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    // Open store and resolve closure
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let closure = match hod::closure::resolve_closure(&store, &recipe_hash) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    hod::closure::print_closure(&recipe_hash, &closure);
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod copy-closure`
+// ---------------------------------------------------------------------------
+
+fn cmd_copy_closure(
+    specifier: String,
+    to: Option<String>,
+    from: Option<String>,
+    store_path: Option<PathBuf>,
+    remote_store: Option<PathBuf>,
+    dry_run: bool,
+    list: bool,
+    archive: bool,
+    output: Option<PathBuf>,
+    force: bool,
+    quiet: bool,
+) -> ! {
+    if from.is_some() {
+        eprintln!("hod: --from is not yet implemented for copy-closure");
+        eprintln!("    hint: mount the remote store locally or use rsync directly");
+        process::exit(3);
+    }
+
+    let store_config = StoreConfig { path: store_path };
+
+    // Resolve specifier to recipe hash
+    let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    // Open store and resolve closure
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let closure = match hod::closure::resolve_closure(&store, &recipe_hash) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    // Check that all outputs are built
+    let unbuilt: Vec<_> = closure
+        .entries
+        .iter()
+        .filter(|e| e.output_hash.is_none())
+        .collect();
+    if !unbuilt.is_empty() {
+        eprintln!(
+            "hod: {} recipe(s) in the closure have not been built:",
+            unbuilt.len()
+        );
+        for entry in unbuilt {
+            let name = entry.dep_name.as_deref().unwrap_or("(root)");
+            eprintln!("  {} ({})", name, hash_to_hex(&entry.recipe_hash));
+        }
+        eprintln!("Build the recipe first with: hod build --hash <hash>");
+        process::exit(4);
+    }
+
+    // --list: print machine-readable closure info
+    if list {
+        hod::closure::print_closure_list(&closure);
+        process::exit(0);
+    }
+
+    // --archive or no --to: produce a tar.zst archive
+    if archive || to.is_none() {
+        match hod::closure::archive_closure(&store, &closure, &output, quiet) {
+            Ok(()) => process::exit(0),
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(10);
+            }
+        }
+    }
+
+    // Parse destination
+    let dest =
+        match hod::closure::parse_destination(to.as_deref().unwrap(), remote_store.as_deref()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(3);
+            }
+        };
+
+    // Transfer
+    match hod::closure::copy_closure(&store, &closure, &dest, dry_run, force, quiet) {
+        Ok(()) => process::exit(0),
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `hod profile`
+// ---------------------------------------------------------------------------
+
 fn format_permissions(meta: &std::fs::Metadata) -> String {
     use std::os::unix::fs::PermissionsExt;
     let mode = meta.permissions().mode();

@@ -10,7 +10,7 @@ Hod is a deterministic, content-addressed build system written in Rust. This fil
 
 ```
 src/
-  main.rs          CLI entry point (`build`, `build --hash`, `ls-output`, `encode`, `decode`, `hash-file`, `import-recipe`, `import-from-json`, `inspect`, `export-recipe`, `run`, `shell`, `profile`)
+  main.rs          CLI entry point (`build`, `build --hash`, `ls-output`, `encode`, `decode`, `hash-file`, `import-recipe`, `import-from-json`, `inspect`, `export-recipe`, `run`, `shell`, `profile`, `closure`, `copy-closure`)
   lib.rs           crate module exports
   recipe.rs        recipe types, deterministic binary encoding/decoding, JSON serde
   encoding.rs      binary encoding helpers
@@ -22,6 +22,7 @@ src/
   download.rs      Download builder using external `curl`
   packed.rs        packed-output support for `File.resources_hash` (RUNPATH patching + AT_EXECFN bootstrap)
   relocate.rs      store-relative ELF relocation pass used for Process `runtime_deps`
+  closure.rs       runtime closure resolution, display, transfer, and archiving (`hod closure`, `hod copy-closure`)
   run.rs           `hod run` / `hod shell` - recipe resolution, env construction, exec
   profile.rs       `hod profile` - profile evaluation, symlink farm, env snippet generation
 ```
@@ -54,6 +55,7 @@ plans/             planning notes, not necessarily current implementation
 - `docs/relocatable-binaries-guide.md` - current packed executable behavior and store-relative/AT_EXECFN relocation design/status.
 - `docs/profiles.md` - profile system for declaring named package sets, activating them via symlink farms, and persistent shell activation. Read this when working on `hod profile` or adding packages to profiles.
 - `docs/evaluator-resolver-prd.md` - deferred resolver/path-reference design. Not implemented; current recipes use concrete BLAKE3 dependency hashes.
+- `docs/closure-transfer.md` - runtime closure inspection (`hod closure`) and transfer (`hod copy-closure`): resolution algorithm, destination formats, incremental transfer, archive creation. Design document at `plans/copy-closure-design.md`.
 
 ## Core Concepts and Contracts
 

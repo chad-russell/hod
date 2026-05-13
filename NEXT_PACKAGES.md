@@ -33,20 +33,10 @@ Five Rust packages (using `cargoBuild`) and five C/Go packages (using `shellBuil
 
 - [x] **bottom** — `bottom` 0.12.3 (github.com/ClementTsang/bottom). Cross-platform graphical process/system monitor for the terminal — a modern `htop` alternative with CPU, memory, disk, network, and process widgets. Pure Rust. cargoBuild with `source` (binary name: `btm`). `runtime_deps: ["toolchain"]`.
 
-- [ ] **eza** — `eza` 0.23.4 (github.com/eza-community/eza). Modern replacement for `ls` — colored output, git status, tree view, file type icons. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+- [x] **eza** — `eza` 0.23.4 (github.com/eza-community/eza). Modern replacement for `ls` — colored output, git status, tree view, file type icons. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
 
-- [ ] **delta** — `delta` 0.19.2 (github.com/dandavison/delta). Syntax-highlighting pager for git, diff, and grep output — side-by-side diffs, line numbers, commit navigation. Rust, uses `git2` crate (vendored libgit2 + openssl). cargoBuild with `source`. Deps: toolchain + zlib + openssl + ca-certificates. `runtime_deps: ["toolchain", "openssl", "zlib"]`.
+- [x] **zellij** — `zellij` 0.44.3 (github.com/zellij-org/zellij). Modern terminal multiplexer — a `tmux` alternative with WASM plugin support, layouts, and floating panes. Rust with vendored curl/openssl (isahc). cargoBuild with `source`. Deps: toolchain + rust + zlib + ca-certs + perl (for openssl-sys vendored build). `runtime_deps: ["toolchain"]`.
 
-- [ ] **zellij** — `zellij` 0.42.0 (github.com/zellij-org/zellij). Modern terminal multiplexer — a `tmux` alternative with WASM plugin support, layouts, and floating panes. Pure Rust. cargoBuild with `source`. `runtime_deps: ["toolchain"]`.
+- [x] **lazygit** — `lazygit` 0.51.0 (github.com/jesseduffield/lazygit). Simple terminal UI for git — staging, committing, branching, diffing, and log browsing. Go, goBuild with `source`. Deps: toolchain + go + ca-certificates. `runtime_deps: ["toolchain"]`.
 
-- [ ] **starship** — `starship` 1.23.0 (github.com/starship/starship). Minimal, blazing-fast shell prompt — shows git status, language version, command duration, etc. Rust, uses `git2` crate. cargoBuild with `source`. Deps: toolchain + zlib + openssl + ca-certificates. `runtime_deps: ["toolchain", "openssl", "zlib"]`.
-
-- [ ] **lazygit** — `lazygit` 0.51.0 (github.com/jesseduffield/lazygit). Simple terminal UI for git — staging, committing, branching, diffing, and log browsing. Go, goBuild with `source`. Deps: toolchain + go + ca-certificates. `runtime_deps: ["toolchain"]`.
-
-- [ ] **gdu** — `gdu` 5.30.1 (github.com/dundee/gdu). Fast disk usage analyzer — written in Go with parallel traversal. Go, goBuild with `source`. Deps: toolchain + go + ca-certificates. `runtime_deps: ["toolchain"]`.
-
-- [ ] **gdb** — `gdb` 16.2 (ftp.gnu.org/gnu/gdb). GNU Debugger — essential C/C++/Rust debugging tool. C/autotools build. Deps: toolchain + ncurses + readline + python (all built). `shellBuild` with autotools. `runtime_deps: ["toolchain", "ncurses", "readline", "python"]`.
-
-- [ ] **chafa** — `chafa` 1.16.0 (github.com/hpjansson/chafa). Image-to-text converter — renders images in the terminal using Unicode/ASCII art. C/autotools build. Deps: toolchain only (optional: librsvg, cairo — can be disabled). `shellBuild` with autotools. `runtime_deps: ["toolchain"]`.
-
-- [ ] **cmake** — `cmake` 4.0.3 (github.com/Kitware/CMake). Cross-platform build system generator — essential for building many C/C++ projects. C++ bootstrap build (`./bootstrap && make`). Deps: toolchain only. `shellBuild`. `runtime_deps: ["toolchain"]`.
+- [x] **gdb** — `gdb` 17.2 (ftp.gnu.org/gnu/gdb). GNU Debugger — essential C/C++/Rust debugging tool with Python scripting, TUI, expat XML, zlib/xz compressed debug. C++/autotools build from binutils-gdb combined source tree. Deps: toolchain + GMP + MPFR + Python + ncurses + readline + expat + zlib + xz (all built). `shellBuild` with autotools (CXX needed for C++17). `runtime_deps: ["toolchain", "gmp", "mpfr", "ncurses", "readline", "python", "expat", "zlib", "xz"]`. Note: Python scripting works inside sandbox; at runtime needs PYTHONHOME set in wrapper (future wrap.rs enhancement).

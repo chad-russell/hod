@@ -96,14 +96,67 @@ The advantage is direct execution without a wrapper process, while avoiding a fi
 
 ### 5.0.1 New PT_LOAD Segment Strategy for RUNPATH/PT_INTERP Patching
 
-For prebuilt binaries (like the Rust toolchain) that have short or absent RUNPATHs and BSS sections that prevent simple in-place patching, a **new PT_LOAD segment** strategy was implemented in `src/packed.rs`:
+When the new RUNPATH is longer than the dummy RUNPATH slot (580 characters),
+the relocation pass cannot patch in-place. For executables and shared
+libraries with many runtime dependencies (e.g., GTK3 with 37 deps needs
+~3300 characters), a **new PT_LOAD segment** strategy is used instead.
 
-1. A new PT_LOAD segment is placed beyond all existing segments (including BSS).
-2. The segment contains an updated `.dynstr` with the new RUNPATH and PT_INTERP strings.
-3. The phdr slot is acquired by repurposing `PT_GNU_STACK` (purely advisory, always present with zero-size) or by filling a gap after the phdr table.
-4. `DT_STRTAB`, `DT_STRSZ`, `DT_RUNPATH`, and `PT_INTERP` are updated to reference the new segment.
+The strategy is implemented in `patch_elf_with_new_segment()` in
+`src/packed.rs`, which proceeds in eight phases:
 
-This replaced the old append-extension approach that corrupted BSS in large binaries like `librustc_driver.so` (83 MB BSS). See `docs/relocation-redesign.md` for full details.
+**Phase 1 — Parse.** Parse the ELF and extract all needed metadata
+(highest `PT_LOAD` vaddr, `PT_INTERP` phdr offset, dynamic section entries
+for `DT_STRTAB`/`DT_STRSZ`/`DT_RUNPATH`, old dynstr content range,
+`.dynstr` section header offset).
+
+**Phase 2 — Build new segment content.** Copy the old dynstr content into
+a buffer, append the new RUNPATH string (NUL-terminated), optionally
+append the new interp path (if `PT_INTERP` is being patched), and pad
+to 8-byte alignment.
+
+**Phase 3 — Find a program header slot.** Acquire a `PT_LOAD` slot by
+repurposing `PT_GNU_STACK` (purely advisory, zero content) or by filling
+a zero-padded gap after the phdr table. If neither is available, the
+patching fails — a "shift-file" fallback is deferred for future
+implementation.
+
+**Phase 4 — Compute new segment location.** Place the new segment at
+a virtual address beyond all existing segments (including BSS), aligned
+to the page size (4096 bytes). Append the segment content to the end of
+the file.
+
+**Phase 5 — Write the `PT_LOAD` phdr entry.** Overwrite the acquired
+slot with a `PT_LOAD` entry pointing at the new file offset, virtual
+address, and content size.
+
+**Phase 6 — Update dynamic section.** Update `DT_STRTAB` to point at
+the new dynstr location, `DT_STRSZ` to reflect the new dynstr size,
+and `DT_RUNPATH` to point at the offset of the new RUNPATH within
+the new dynstr. Null out the old RUNPATH string in the original dynstr.
+
+**Phase 7 — Update PT_INTERP.** If the ELF has `PT_INTERP` (executables),
+update its phdr to point at the new interp string within the new segment.
+Shared libraries (no `PT_INTERP`) skip this phase.
+
+**Phase 8 — Update `.dynstr` section header.** This is **critical** for
+downstream linking. GNU `ld` validates string offsets against the `.dynstr`
+section header's `sh_size`. If the section header still points to the old
+(now-truncated) dynstr, downstream linkers reject the library with
+`invalid string offset N >= N`. Phase 8 updates `sh_addr`, `sh_offset`,
+and `sh_size` to match the new segment.
+
+**Why Phase 8 matters.** Without updating the section header, the linker
+sees the old dynstr (with the RUNPATH nulled out) and validates all
+`DT_NEEDED`/`DT_RUNPATH` string offsets against the old `sh_size`.
+Strings in the *new* dynstr have offsets that exceed the old `sh_size`,
+causing link failures. The `.dynstr` section is identified by finding
+the first `SHT_STRTAB` (type 3) section in the section header table —
+no matching against `sh_addr` is needed, since `DT_STRTAB` may already
+point to a different address from a prior patching pass.
+
+This new-segment strategy replaced the old append-extension approach
+that corrupted BSS in large binaries like `librustc_driver.so` (83 MB
+BSS).
 
 ### 5.1 Motivation
 
@@ -346,7 +399,9 @@ For non-ELF paths (Python, Rust, GTK, etc.), Hod will need declarative runtime m
 
 ## 9. Test Coverage
 
-The future AT_EXECFN bootstrap needs testing across:
+### Existing coverage
+
+The AT_EXECFN bootstrap needs testing across:
 - PIE and non-PIE executables
 - C and C++ binaries (libstdc++, libgcc_s)
 - Binaries with sibling shared libraries
@@ -354,9 +409,27 @@ The future AT_EXECFN bootstrap needs testing across:
 - Binaries with and without existing RUNPATH
 - Other architectures if Hod supports them
 
-Current caveat: `tests/at_execfn_validation.rs` is intentionally ignored by default because it builds the heavyweight GCC/glibc chain, but it now compiles against the restored bootstrap APIs.
+Current caveat: `tests/at_execfn_validation.rs` is intentionally ignored by
+default because it builds the heavyweight GCC/glibc chain, but it now
+compiles against the restored bootstrap APIs.
 
 Store-relative additionally needs:
 - Multi-dependency RUNPATH (binary depending on libs from multiple store outputs)
 - Long hash paths (64-char directory names don't break RUNPATH length limits)
 - Moving the store to a different root and verifying binaries still run
+
+### Known test gap: new-segment patching + downstream linking
+
+A specific critical path is not yet covered by tests: a shared library with
+many `runtime_deps` (so its RUNPATH overflows the 580-char dummy slot and
+triggers the new-PT_LOAD-segment strategy), consumed by a *downstream build*
+that uses the host toolchain's `ld` to link against it. This is the scenario
+that revealed both the missing section-header update (Phase 8) and the
+`dynstr_shdr_offset` matching bug. A regression test for this path should:
+
+1. Build a library recipe with 15+ `runtime_deps` (to overflow the dummy RUNPATH).
+2. Build a second recipe that links a binary against that library using the
+   toolchain's `ld`.
+3. Verify the binary links successfully and runs.
+4. Verify that `readelf -S` on the library shows `.dynstr` pointing at the
+   same vaddr as `DT_STRTAB`.

@@ -410,16 +410,19 @@ fn patch_runpath_padding_extension(
 
             if is_strtab_ref {
                 let str_off = entry.d_val as usize;
-                    // Find the length of this string in the data
-                    let file_off = dynstr_file_off + str_off;
-                    if file_off < data.len() {
-                        let remaining = &data[file_off..];
-                        let nul_pos = remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
-                        let str_end = str_off + nul_pos + 1; // +1 for NUL
-                        if str_end > actual_str_end {
-                            actual_str_end = str_end;
-                        }
+                // Find the length of this string in the data
+                let file_off = dynstr_file_off + str_off;
+                if file_off < data.len() {
+                    let remaining = &data[file_off..];
+                    let nul_pos = remaining
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(remaining.len());
+                    let str_end = str_off + nul_pos + 1; // +1 for NUL
+                    if str_end > actual_str_end {
+                        actual_str_end = str_end;
                     }
+                }
             }
         }
 
@@ -511,8 +514,7 @@ fn patch_runpath_padding_extension(
     // Update DT_STRSZ to reflect the new .dynstr size
     let dyn_entsize: usize = 16; // sizeof(Elf64_Dyn) = 8 (tag) + 8 (value)
     let strsz_val_off = info.dyn_base + info.strsz_idx * dyn_entsize + 8;
-    data[strsz_val_off..strsz_val_off + 8]
-        .copy_from_slice(&(info.new_strsz as u64).to_le_bytes());
+    data[strsz_val_off..strsz_val_off + 8].copy_from_slice(&(info.new_strsz as u64).to_le_bytes());
 
     // Update the DT_RUNPATH (or DT_RPATH) entry's d_val to point to the
     // new string offset within .dynstr.
@@ -556,10 +558,7 @@ fn find_phdr_slot(data: &mut [u8]) -> std::result::Result<PhdrSlot, PackedError>
 
     // Strategy 1: Repurpose PT_GNU_STACK
     for (i, ph) in elf.program_headers.iter().enumerate() {
-        if ph.p_type == program_header::PT_GNU_STACK
-            && ph.p_filesz == 0
-            && ph.p_memsz == 0
-        {
+        if ph.p_type == program_header::PT_GNU_STACK && ph.p_filesz == 0 && ph.p_memsz == 0 {
             let phdr_offset = e_phoff + i * e_phentsize;
             return Ok(PhdrSlot::RepurposedGnuStack { phdr_offset });
         }
@@ -639,6 +638,7 @@ fn patch_elf_with_new_segment(
         old_rpath_len: usize,
         interp_phdr_offset: Option<usize>,
         highest_vend: u64,
+        dynstr_shdr_offset: Option<usize>,
     }
 
     let info = {
@@ -714,8 +714,7 @@ fn patch_elf_with_new_segment(
                         st_sz = entry.d_val;
                         sz_idx = Some(i);
                     }
-                    goblin::elf::dynamic::DT_RUNPATH
-                    | goblin::elf::dynamic::DT_RPATH => {
+                    goblin::elf::dynamic::DT_RUNPATH | goblin::elf::dynamic::DT_RPATH => {
                         rp_idx = Some(i);
                     }
                     _ => {}
@@ -743,8 +742,10 @@ fn patch_elf_with_new_segment(
                         let f_off = off + str_off;
                         if f_off < data.len() {
                             let remaining = &data[f_off..];
-                            let nul_pos =
-                                remaining.iter().position(|&b| b == 0).unwrap_or(remaining.len());
+                            let nul_pos = remaining
+                                .iter()
+                                .position(|&b| b == 0)
+                                .unwrap_or(remaining.len());
                             let s_end = str_off + nul_pos + 1;
                             if s_end > end {
                                 end = s_end;
@@ -758,13 +759,7 @@ fn patch_elf_with_new_segment(
             };
 
             (
-                dyn_base,
-                st_idx,
-                sz_idx,
-                rp_idx,
-                st_vaddr,
-                file_off,
-                str_end,
+                dyn_base, st_idx, sz_idx, rp_idx, st_vaddr, file_off, str_end,
             )
         } else {
             (0, None, None, None, 0, 0, 0)
@@ -776,6 +771,32 @@ fn patch_elf_with_new_segment(
                 (offset as usize, len)
             }
             RpathInfo::Absent => (0, 0),
+        };
+
+        // Find the .dynstr section header byte offset for later update.
+        // The section with sh_type == SHT_STRTAB (3) whose sh_addr matches
+        // the ORIGINAL DT_STRTAB uniquely identifies .dynstr.
+        // NOTE: We match using the original sh_addr from the section headers,
+        // since DT_STRTAB may differ if the ELF was previously patched.
+        let dynstr_shdr_offset = {
+            let e_shoff = elf.header.e_shoff as usize;
+            let e_shentsize = elf.header.e_shentsize as usize;
+            let e_shnum = elf.header.e_shnum as usize;
+            // First, find the original dynstr section's sh_addr from section headers.
+            let mut found_shdr: Option<usize> = None;
+            for i in 0..e_shnum {
+                let sh_off = e_shoff + i * e_shentsize;
+                if sh_off + e_shentsize > data.len() {
+                    break;
+                }
+                let sh_type =
+                    u32::from_le_bytes(data[sh_off + 4..sh_off + 8].try_into().unwrap_or([0; 4]));
+                if sh_type == 3 && found_shdr.is_none() {
+                    found_shdr = Some(sh_off);
+                }
+            }
+            // Found the .dynstr section header offset.
+            found_shdr
         };
 
         PatchInfo {
@@ -790,6 +811,7 @@ fn patch_elf_with_new_segment(
             old_rpath_len,
             interp_phdr_offset,
             highest_vend,
+            dynstr_shdr_offset,
         }
     }; // elf borrow dropped
 
@@ -800,8 +822,8 @@ fn patch_elf_with_new_segment(
 
     // If we have a RUNPATH entry, build new dynstr
     if info.runpath_idx.is_some() && info.strtab_vaddr != 0 {
-        let old_dynstr = data[info.dynstr_file_off..info.dynstr_file_off + info.actual_str_end]
-            .to_vec();
+        let old_dynstr =
+            data[info.dynstr_file_off..info.dynstr_file_off + info.actual_str_end].to_vec();
         segment_content.extend_from_slice(&old_dynstr);
         new_rpath_offset_in_dynstr = segment_content.len();
         segment_content.extend_from_slice(new_rpath);
@@ -865,8 +887,7 @@ fn patch_elf_with_new_segment(
     data[phdr_write_offset + 8..phdr_write_offset + 16]
         .copy_from_slice(&new_segment_file_offset.to_le_bytes());
     data[phdr_write_offset + 16..phdr_write_offset + 24].copy_from_slice(&new_vaddr.to_le_bytes());
-    data[phdr_write_offset + 24..phdr_write_offset + 32]
-        .copy_from_slice(&new_vaddr.to_le_bytes()); // p_paddr
+    data[phdr_write_offset + 24..phdr_write_offset + 32].copy_from_slice(&new_vaddr.to_le_bytes()); // p_paddr
     data[phdr_write_offset + 32..phdr_write_offset + 40]
         .copy_from_slice(&(segment_content_len as u64).to_le_bytes());
     data[phdr_write_offset + 40..phdr_write_offset + 48]
@@ -915,8 +936,27 @@ fn patch_elf_with_new_segment(
             .copy_from_slice(&interp_vaddr.to_le_bytes());
         data[interp_phdr_off + 24..interp_phdr_off + 32]
             .copy_from_slice(&interp_vaddr.to_le_bytes()); // p_paddr
-        data[interp_phdr_off + 32..interp_phdr_off + 40]
-            .copy_from_slice(&interp_len.to_le_bytes());
+        data[interp_phdr_off + 32..interp_phdr_off + 40].copy_from_slice(&interp_len.to_le_bytes());
+    }
+
+    // === Phase 8: Update .dynstr section header (if RUNPATH was patched) ===
+    // Linkers like GNU ld validate string offsets against the .dynstr section
+    // header's sh_size. If we don't update it, ld sees the old size and rejects
+    // string offsets that are valid in the new dynstr but exceed the old size.
+    if let (Some(shdr_off), Some(_)) = (info.dynstr_shdr_offset, info.runpath_idx) {
+        // Elf64_Shdr layout: sh_name(4) sh_type(4) sh_flags(8) sh_addr(8)
+        //                     sh_offset(8) sh_size(8) sh_link(4) sh_info(4)
+        //                     sh_addralign(8) sh_entsize(8)
+        // sh_offset is at +24, sh_size at +32, sh_addr at +16
+
+        // Update sh_addr → new dynstr virtual address
+        data[shdr_off + 16..shdr_off + 24].copy_from_slice(&new_vaddr.to_le_bytes());
+
+        // Update sh_offset → new dynstr file offset
+        data[shdr_off + 24..shdr_off + 32].copy_from_slice(&new_segment_file_offset.to_le_bytes());
+
+        // Update sh_size → new dynstr content size
+        data[shdr_off + 32..shdr_off + 40].copy_from_slice(&(new_dynstr_size as u64).to_le_bytes());
     }
 
     Ok(true)
@@ -1638,7 +1678,7 @@ mod tests {
             &mut elf,
             gnu_stack_idx,
             0x6474e551, // PT_GNU_STACK
-            6,           // PF_R|PF_W
+            6,          // PF_R|PF_W
             0,
             0,
             0,
@@ -2003,7 +2043,11 @@ mod tests {
         let mut elf = build_minimal_elf_with_interp(Some("/short"));
         let result = patch_runpath_in_place(&mut elf);
         // The append fallback should succeed
-        assert!(result.is_ok(), "should succeed via append fallback: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "should succeed via append fallback: {:?}",
+            result
+        );
         assert!(result.unwrap(), "should have patched");
     }
 
@@ -2113,32 +2157,57 @@ mod tests {
         phdr_write(
             &mut elf,
             0,
-            6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8,
+            6,
+            4,
+            e_phoff,
+            e_phoff,
+            e_phoff,
+            phdr_filesz,
+            phdr_filesz,
+            8,
         ); // PT_PHDR
         phdr_write(
             &mut elf,
             1,
-            3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1,
+            3,
+            4,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_len as u64,
+            interp_len as u64,
+            1,
         ); // PT_INTERP
         phdr_write(
             &mut elf,
             2,
-            1, 5, 0, 0, 0, total_size as u64, total_size as u64, 0x1000,
+            1,
+            5,
+            0,
+            0,
+            0,
+            total_size as u64,
+            total_size as u64,
+            0x1000,
         ); // PT_LOAD
         phdr_write(
             &mut elf,
             3,
-            2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8,
+            2,
+            6,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_size as u64,
+            dyn_size as u64,
+            8,
         ); // PT_DYNAMIC
 
         // PT_GNU_STACK — empty, advisory only (repurposed by new PT_LOAD strategy)
         phdr_write(
-            &mut elf,
-            4,
-            0x6474e551, // PT_GNU_STACK
-            6,           // PF_R|PF_W
-            0, 0, 0, 0, 0,
-            0x10,
+            &mut elf, 4, 0x6474e551, // PT_GNU_STACK
+            6,          // PF_R|PF_W
+            0, 0, 0, 0, 0, 0x10,
         );
 
         // .interp string
@@ -2198,7 +2267,10 @@ mod tests {
 
         // Also verify the ELF is still parseable
         let parsed = Elf::parse(&elf).expect("should parse modified ELF");
-        assert!(parsed.dynamic.is_some(), "should still have dynamic section");
+        assert!(
+            parsed.dynamic.is_some(),
+            "should still have dynamic section"
+        );
     }
 
     #[test]
@@ -2270,7 +2342,8 @@ mod tests {
             .expect("should have DT_RUNPATH");
 
         // Resolve the string
-        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let strtab_off =
+            vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
         let runpath_off = strtab_off + runpath_idx as usize;
         let runpath_str = std::str::from_utf8(&elf[runpath_off..runpath_off + new_runpath.len()])
             .expect("valid utf8");
@@ -2284,9 +2357,7 @@ mod tests {
     fn test_patch_runpath_fast_path_unchanged() {
         // Verify that the fast path (in-place replacement) still works
         // when the existing RUNPATH is long enough.
-        let mut elf = build_minimal_elf_with_interp(Some(
-            "/this/is/a/long/runpath/that/is/enough",
-        ));
+        let mut elf = build_minimal_elf_with_interp(Some("/this/is/a/long/runpath/that/is/enough"));
         let new_path = b"$ORIGIN/../lib";
         let result = patch_runpath_to(&mut elf, new_path).expect("should patch");
         assert!(result);
@@ -2295,8 +2366,9 @@ mod tests {
         let info = find_rpath(&elf).expect("should find");
         match info {
             RpathInfo::Runpath { offset, len } => {
-                let s = std::str::from_utf8(&elf[offset as usize..offset as usize + new_path.len()])
-                    .expect("utf8");
+                let s =
+                    std::str::from_utf8(&elf[offset as usize..offset as usize + new_path.len()])
+                        .expect("utf8");
                 assert_eq!(s, std::str::from_utf8(new_path).unwrap());
                 for i in new_path.len()..len {
                     assert_eq!(elf[offset as usize + i], 0);
@@ -2447,7 +2519,8 @@ mod tests {
             .map(|e| e.d_val)
             .expect("should have DT_RUNPATH");
 
-        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let strtab_off =
+            vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
         let rp_off = strtab_off + runpath_idx as usize;
         let rp_str = std::str::from_utf8(&elf[rp_off..rp_off + new_rpath.len()]).expect("utf8");
         assert_eq!(rp_str, std::str::from_utf8(new_rpath).unwrap());
@@ -2474,8 +2547,8 @@ mod tests {
 
         let interp_off = interp_phdr.p_offset as usize;
         let interp_len = interp_phdr.p_filesz as usize;
-        let interp_str = std::str::from_utf8(&elf[interp_off..interp_off + interp_len - 1])
-            .expect("utf8");
+        let interp_str =
+            std::str::from_utf8(&elf[interp_off..interp_off + interp_len - 1]).expect("utf8");
         assert_eq!(
             interp_str,
             std::str::from_utf8(new_interp).unwrap(),
@@ -2491,7 +2564,8 @@ mod tests {
             .find(|e| e.d_tag == goblin::elf::dynamic::DT_RUNPATH)
             .map(|e| e.d_val)
             .expect("should have DT_RUNPATH");
-        let strtab_off = vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
+        let strtab_off =
+            vaddr_to_file_offset(&parsed, strtab_vaddr).expect("strtab offset") as usize;
         let rp_off = strtab_off + runpath_idx as usize;
         let rp_str = std::str::from_utf8(&elf[rp_off..rp_off + new_rpath.len()]).expect("utf8");
         assert_eq!(rp_str, std::str::from_utf8(new_rpath).unwrap());
@@ -2504,11 +2578,7 @@ mod tests {
         let new_rpath = b"$ORIGIN/../lib";
         let new_interp = b"../lib/ld-linux-x86-64.so.2";
 
-        let result = patch_elf_for_relocation(
-            &mut elf,
-            new_rpath,
-            Some(new_interp),
-        );
+        let result = patch_elf_for_relocation(&mut elf, new_rpath, Some(new_interp));
         assert!(result.is_ok(), "should succeed: {:?}", result);
         assert!(result.unwrap());
 
@@ -2520,17 +2590,15 @@ mod tests {
             .find(|p| p.p_type == program_header::PT_INTERP)
             .expect("should have PT_INTERP");
         let interp_off = interp_phdr.p_offset as usize;
-        let interp_str = std::str::from_utf8(&elf[interp_off..interp_off + new_interp.len()])
-            .expect("utf8");
+        let interp_str =
+            std::str::from_utf8(&elf[interp_off..interp_off + new_interp.len()]).expect("utf8");
         assert_eq!(interp_str, std::str::from_utf8(new_interp).unwrap());
     }
 
     #[test]
     fn test_patch_elf_for_relocation_without_interp() {
         // Without interp, should use standard strategy chain
-        let mut elf = build_minimal_elf_with_interp(Some(
-            "/this/is/a/long/runpath/that/is/enough",
-        ));
+        let mut elf = build_minimal_elf_with_interp(Some("/this/is/a/long/runpath/that/is/enough"));
         let new_rpath = b"$ORIGIN/../lib";
 
         let result = patch_elf_for_relocation(&mut elf, new_rpath, None);
@@ -2541,8 +2609,9 @@ mod tests {
         let info = find_rpath(&elf).expect("should find");
         match info {
             RpathInfo::Runpath { offset, len } => {
-                let s = std::str::from_utf8(&elf[offset as usize..offset as usize + new_rpath.len()])
-                    .expect("utf8");
+                let s =
+                    std::str::from_utf8(&elf[offset as usize..offset as usize + new_rpath.len()])
+                        .expect("utf8");
                 assert_eq!(s, std::str::from_utf8(new_rpath).unwrap());
                 let _ = len;
             }
@@ -2559,7 +2628,8 @@ mod tests {
         match slot {
             PhdrSlot::RepurposedGnuStack { phdr_offset } => {
                 // Verify the slot was a PT_GNU_STACK
-                let p_type = u32::from_le_bytes(data[phdr_offset..phdr_offset + 4].try_into().unwrap());
+                let p_type =
+                    u32::from_le_bytes(data[phdr_offset..phdr_offset + 4].try_into().unwrap());
                 assert_eq!(p_type, 0x6474e551, "should be PT_GNU_STACK");
             }
             PhdrSlot::FillGap { .. } => {
@@ -2584,7 +2654,11 @@ mod tests {
             PhdrSlot::FillGap { phdr_offset } => {
                 // e_phnum should have been incremented
                 let new_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap());
-                assert_eq!(new_phnum, original_phnum + 1, "e_phnum should be incremented");
+                assert_eq!(
+                    new_phnum,
+                    original_phnum + 1,
+                    "e_phnum should be incremented"
+                );
 
                 // The new phdr should be at the gap location
                 let expected_offset = 64 + original_phnum as usize * 56;
@@ -2656,11 +2730,55 @@ mod tests {
         elf[56..58].copy_from_slice(&e_phnum.to_le_bytes());
 
         let phdr_filesz = (e_phnum as u64) * (phentsize as u64);
-        phdr_write(&mut elf, 0, 6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8);
-        phdr_write(&mut elf, 1, 3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1);
+        phdr_write(
+            &mut elf,
+            0,
+            6,
+            4,
+            e_phoff,
+            e_phoff,
+            e_phoff,
+            phdr_filesz,
+            phdr_filesz,
+            8,
+        );
+        phdr_write(
+            &mut elf,
+            1,
+            3,
+            4,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_len as u64,
+            interp_len as u64,
+            1,
+        );
         // PT_LOAD with BSS: p_filesz < p_memsz
-        phdr_write(&mut elf, 2, 1, 5, 0, 0, 0, file_data_end as u64, total_memsz as u64, 0x1000);
-        phdr_write(&mut elf, 3, 2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8);
+        phdr_write(
+            &mut elf,
+            2,
+            1,
+            5,
+            0,
+            0,
+            0,
+            file_data_end as u64,
+            total_memsz as u64,
+            0x1000,
+        );
+        phdr_write(
+            &mut elf,
+            3,
+            2,
+            6,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_size as u64,
+            dyn_size as u64,
+            8,
+        );
         // PT_GNU_STACK
         phdr_write(&mut elf, 4, 0x6474e551, 6, 0, 0, 0, 0, 0, 0x10);
 
@@ -2747,10 +2865,54 @@ mod tests {
         elf[56..58].copy_from_slice(&e_phnum.to_le_bytes());
 
         let phdr_filesz = (e_phnum as u64) * (phentsize as u64);
-        phdr_write(&mut elf, 0, 6, 4, e_phoff, e_phoff, e_phoff, phdr_filesz, phdr_filesz, 8);
-        phdr_write(&mut elf, 1, 3, 4, interp_offset as u64, interp_offset as u64, interp_offset as u64, interp_len as u64, interp_len as u64, 1);
-        phdr_write(&mut elf, 2, 1, 5, 0, 0, 0, total_size as u64, total_size as u64, 0x1000);
-        phdr_write(&mut elf, 3, 2, 6, dyn_offset as u64, dyn_offset as u64, dyn_offset as u64, dyn_size as u64, dyn_size as u64, 8);
+        phdr_write(
+            &mut elf,
+            0,
+            6,
+            4,
+            e_phoff,
+            e_phoff,
+            e_phoff,
+            phdr_filesz,
+            phdr_filesz,
+            8,
+        );
+        phdr_write(
+            &mut elf,
+            1,
+            3,
+            4,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_offset as u64,
+            interp_len as u64,
+            interp_len as u64,
+            1,
+        );
+        phdr_write(
+            &mut elf,
+            2,
+            1,
+            5,
+            0,
+            0,
+            0,
+            total_size as u64,
+            total_size as u64,
+            0x1000,
+        );
+        phdr_write(
+            &mut elf,
+            3,
+            2,
+            6,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_offset as u64,
+            dyn_size as u64,
+            dyn_size as u64,
+            8,
+        );
 
         // .interp (with gap before it)
         elf[interp_offset..interp_offset + interp_len].copy_from_slice(interp_str);

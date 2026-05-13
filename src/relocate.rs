@@ -190,30 +190,33 @@ fn relocate_single_elf(
     };
 
     let mut runpath_parts: Vec<String> = vec![self_lib_path];
-    runpath_parts.extend(
-        dep_lib_dirs
-            .iter()
-            .map(|(_name, hash)| {
-                let shard = hash_shard(hash);
-                let hex = hash_to_hex(hash);
-                format!("{prefix}{shard}/{hex}/lib")
-            }),
-    );
+    runpath_parts.extend(dep_lib_dirs.iter().map(|(_name, hash)| {
+        let shard = hash_shard(hash);
+        let hex = hash_to_hex(hash);
+        format!("{prefix}{shard}/{hex}/lib")
+    }));
     let runpath = runpath_parts.join(":");
 
     // Step 6: Compute PT_INTERP path (store-relative, no $ORIGIN)
-    let new_interp: Option<String> = ld_linux_info.as_ref().map(|(_dep_name, dep_hash, ld_relpath)| {
-        let shard = hash_shard(dep_hash);
-        let hex = hash_to_hex(dep_hash);
-        let up = "../".repeat(up_steps);
-        format!("{}{}/{}/{}", up, shard, hex, ld_relpath)
-    });
+    let new_interp: Option<String> =
+        ld_linux_info
+            .as_ref()
+            .map(|(_dep_name, dep_hash, ld_relpath)| {
+                let shard = hash_shard(dep_hash);
+                let hex = hash_to_hex(dep_hash);
+                let up = "../".repeat(up_steps);
+                format!("{}{}/{}/{}", up, shard, hex, ld_relpath)
+            });
 
     // Step 7: Patch RUNPATH.
     // Shared libraries only need RUNPATH. Executables also need the bootstrap
     // in Step 8 so they can locate ld-linux from their own invocation path on
     // both the host store and in sandboxes.
-    match patch_elf_for_relocation(&mut data, runpath.as_bytes(), None) {
+    match patch_elf_for_relocation(
+        &mut data,
+        runpath.as_bytes(),
+        new_interp.as_deref().map(|s| s.as_bytes()),
+    ) {
         Ok(true) => {}
         Ok(false) => {
             eprintln!(

@@ -17,8 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::encoding::EncodeError;
 use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
 use crate::recipe::{
-    ArchiveFormat, Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink,
-    RecipeType, RecipeUnpack,
+    ArchiveFormat, Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink, RecipeType,
+    RecipeUnpack,
 };
 use crate::store::Store;
 
@@ -62,10 +62,7 @@ pub enum BuildError {
     /// The recipe binary is malformed (exit code 3).
     InvalidRecipe(EncodeError),
     /// A referenced dependency recipe hash is not in the store (exit code 4).
-    DependencyNotFound {
-        recipe_hash: Hash,
-        dep_hash: Hash,
-    },
+    DependencyNotFound { recipe_hash: Hash, dep_hash: Hash },
     /// A build process exited with a non-zero status (exit code 1).
     ProcessFailed {
         recipe_hash: Hash,
@@ -74,15 +71,9 @@ pub enum BuildError {
         stderr: Vec<u8>,
     },
     /// Hash verification failed — downloaded content didn't match (exit code 2).
-    HashMismatch {
-        expected: Hash,
-        got: Hash,
-    },
+    HashMismatch { expected: Hash, got: Hash },
     /// The recipe targets a different platform (exit code 5).
-    PlatformMismatch {
-        expected: String,
-        actual: String,
-    },
+    PlatformMismatch { expected: String, actual: String },
     /// A store-level error (exit code 10).
     Store(crate::store::StoreError),
     /// An IO error during build (exit code 10).
@@ -103,9 +94,7 @@ impl std::fmt::Display for BuildError {
                 hash_to_hex(dep_hash),
             ),
             Self::ProcessFailed {
-                exit_code,
-                stderr,
-                ..
+                exit_code, stderr, ..
             } => {
                 write!(f, "build process failed with exit code {exit_code}")?;
                 if !stderr.is_empty() {
@@ -219,7 +208,12 @@ pub enum Artifact {
 ///
 /// Returns the output hash on success.
 pub fn build(store: &Store, recipe_bytes: &[u8], options: &BuildOptions) -> Result<Hash> {
-    do_build(store, recipe_bytes, options, &mut std::collections::HashSet::new())
+    do_build(
+        store,
+        recipe_bytes,
+        options,
+        &mut std::collections::HashSet::new(),
+    )
 }
 
 /// Internal recursive build with cycle detection.
@@ -240,7 +234,10 @@ fn do_build(
     if building.contains(&recipe_hash) {
         return Err(BuildError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("build cycle detected at recipe {}", hash_to_hex(&recipe_hash)),
+            format!(
+                "build cycle detected at recipe {}",
+                hash_to_hex(&recipe_hash)
+            ),
         )));
     }
     building.insert(recipe_hash);
@@ -338,6 +335,31 @@ fn do_build(
                     eprintln!("[hod] warning: runtime fixup failed: {e}");
                 }
             }
+
+            // Generate wrapper scripts for executables in bin/.
+            // This runs after relocation so that the wrappers replace the
+            // already-relocated ELF binaries.
+            if !runtime_dep_outputs.is_empty() {
+                let wrap_dir = artifact_staging_path(store, &output_hash);
+                match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
+                    Ok(count) if count > 0 => {
+                        eprintln!("[hod] generated {} wrapper script(s)", count,);
+
+                        let wrapped_artifact = capture_output(&wrap_dir, store)?;
+                        let wrapped_hash = artifact_to_hash(&wrapped_artifact);
+                        stage_artifact(store, &wrapped_artifact, &wrapped_hash)?;
+
+                        if wrapped_hash != output_hash {
+                            let _ = std::fs::remove_dir_all(&wrap_dir);
+                        }
+                        output_hash = wrapped_hash;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("[hod] warning: wrapper generation failed: {e}");
+                    }
+                }
+            }
         }
     }
 
@@ -388,35 +410,30 @@ fn build_dependencies(
     match recipe {
         Recipe::Directory(d) => {
             for entry in &d.entries {
-                let output_hash =
-                    build_dependency(store, entry.entry_hash, options, building)?;
+                let output_hash = build_dependency(store, entry.entry_hash, options, building)?;
                 outputs.unnamed.push(output_hash);
             }
         }
         Recipe::Process(p) => {
             for dep in &p.dependencies {
-                let output_hash =
-                    build_dependency(store, dep.recipe_hash, options, building)?;
+                let output_hash = build_dependency(store, dep.recipe_hash, options, building)?;
                 outputs.named.push((dep.name.clone(), output_hash));
             }
             // Build workdir if present
             if let Some(wd_hash) = p.workdir_hash {
-                let output_hash =
-                    build_dependency(store, wd_hash, options, building)?;
+                let output_hash = build_dependency(store, wd_hash, options, building)?;
                 outputs.named.push(("<workdir>".to_string(), output_hash));
             }
             // Build output scaffold if present
             if let Some(scaffold_hash) = p.output_scaffold_hash {
-                let output_hash =
-                    build_dependency(store, scaffold_hash, options, building)?;
+                let output_hash = build_dependency(store, scaffold_hash, options, building)?;
                 outputs.named.push(("<scaffold>".to_string(), output_hash));
             }
         }
         Recipe::File(f) => {
             // File may have a resources dependency
             if let Some(res_hash) = f.resources_hash {
-                let output_hash =
-                    build_dependency(store, res_hash, options, building)?;
+                let output_hash = build_dependency(store, res_hash, options, building)?;
                 outputs.named.push(("<resources>".to_string(), output_hash));
             }
         }
@@ -424,8 +441,7 @@ fn build_dependencies(
             // Unpack may have a download dependency that must be built first
             // to ensure the archive blob is in the store.
             if let Some(archive_recipe_hash) = u.archive_recipe_hash {
-                let output_hash =
-                    build_dependency(store, archive_recipe_hash, options, building)?;
+                let output_hash = build_dependency(store, archive_recipe_hash, options, building)?;
                 outputs.named.push(("<archive>".to_string(), output_hash));
             }
         }
@@ -665,9 +681,7 @@ fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
     if let Some(n) = u.strip_components {
         tar_args.push(format!("--strip-components={}", n));
     }
-    let tar_output = std::process::Command::new("tar")
-        .args(&tar_args)
-        .output()?;
+    let tar_output = std::process::Command::new("tar").args(&tar_args).output()?;
 
     if !tar_output.status.success() {
         let stderr = String::from_utf8_lossy(&tar_output.stderr);
@@ -729,10 +743,9 @@ fn build_process(
     };
 
     // Create sandbox working directory in store/tmp/
-    let sandbox_root = store.tmp_dir().join(format!(
-        "sandbox-{}",
-        &hash_to_hex(&recipe_hash)[..16],
-    ));
+    let sandbox_root = store
+        .tmp_dir()
+        .join(format!("sandbox-{}", &hash_to_hex(&recipe_hash)[..16],));
     if sandbox_root.exists() {
         let _ = std::fs::remove_dir_all(&sandbox_root);
     }
@@ -820,14 +833,15 @@ fn build_process(
     // --- Layer 2: Standard builder env vars (always win) ---
     env.insert("OUT".to_string(), guest_out.to_string_lossy().to_string());
     env.insert("DEPS".to_string(), guest_deps.to_string_lossy().to_string());
-    env.insert("TMPDIR".to_string(), guest_tmp.to_string_lossy().to_string());
+    env.insert(
+        "TMPDIR".to_string(),
+        guest_tmp.to_string_lossy().to_string(),
+    );
     env.insert("HOME".to_string(), guest_home.to_string_lossy().to_string());
     env.insert(
         "HOD_STORE".to_string(),
         store.root().to_string_lossy().to_string(),
     );
-
-
 
     // Build command args (argv[0] is the command itself)
     let mut cmd_args = vec![p.command.clone()];
@@ -1047,9 +1061,7 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
 /// `stage_artifact` for Directory can find children later.
 fn path_to_artifact(path: &Path, store: &Store) -> Result<Artifact> {
     if path.is_symlink() {
-        let target = std::fs::read_link(path)?
-            .to_string_lossy()
-            .to_string();
+        let target = std::fs::read_link(path)?.to_string_lossy().to_string();
         let artifact = Artifact::Symlink { target };
         stage_artifact(store, &artifact, &artifact_to_hash(&artifact))?;
         Ok(artifact)

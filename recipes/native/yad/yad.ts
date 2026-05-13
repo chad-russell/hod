@@ -1,0 +1,181 @@
+//! yad build recipe — Yet Another Dialog.
+//!
+//! Builds yad 14.2, a GTK3 dialog tool for displaying graphical dialogs
+//! from shell scripts. Uses autotools (configure + make).
+//!
+//! All transitive deps from GTK3 must be listed since `shellBuild` only
+//! mounts explicitly declared deps, and yad needs them all for linking.
+
+import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
+import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
+import { yadSourceRecipe } from "./yad-source.js";
+import { gtk3Recipe, gtk3RuntimeDeps } from "../gtk3/gtk3.js";
+import { glibRecipe } from "../glib/glib.js";
+import { pangoRecipe } from "../pango/pango.js";
+import { cairoRecipe } from "../cairo/cairo.js";
+import { gdkPixbufRecipe } from "../gdk-pixbuf/gdk-pixbuf.js";
+import { libepoxyRecipe } from "../libepoxy/libepoxy.js";
+import { atSpi2CoreRecipe } from "../at-spi2-core/at-spi2-core.js";
+import { harfbuzzRecipe } from "../harfbuzz/harfbuzz.js";
+import { fontconfigRecipe } from "../fontconfig/fontconfig.js";
+import { freetypeRecipe } from "../freetype/freetype.js";
+import { fribidiRecipe } from "../fribidi/fribidi.js";
+import { libpngRecipe } from "../libpng/libpng.js";
+import { pixmanRecipe } from "../pixman/pixman.js";
+import { zlibRecipe } from "../zlib/zlib.js";
+import { expatRecipe } from "../expat/expat.js";
+import { bzip2Recipe } from "../bzip2/bzip2.js";
+import { libffiRecipe } from "../libffi/libffi.js";
+import { pcre2Recipe } from "../pcre2/pcre2.js";
+import { libX11Recipe } from "../libX11/libX11.js";
+import { libXextRecipe } from "../libXext/libXext.js";
+import { libXrenderRecipe } from "../libXrender/libXrender.js";
+import { libXiRecipe } from "../libXi/libXi.js";
+import { libXrandrRecipe } from "../libXrandr/libXrandr.js";
+import { libXcursorRecipe } from "../libXcursor/libXcursor.js";
+import { libXineramaRecipe } from "../libXinerama/libXinerama.js";
+import { libXdamageRecipe } from "../libXdamage/libXdamage.js";
+import { libXcompositeRecipe } from "../libXcomposite/libXcomposite.js";
+import { libXfixesRecipe } from "../libXfixes/libXfixes.js";
+import { libXauRecipe } from "../libXau/libXau.js";
+import { libXcbRecipe } from "../libxcb/libxcb.js";
+import { libXdmcpRecipe } from "../libXdmcp/libXdmcp.js";
+import { dbusRecipe } from "../dbus/dbus.js";
+import { libxml2Recipe } from "../libxml2/libxml2.js";
+import { libiconvRecipe } from "../libiconv/libiconv.js";
+import { xzRecipe } from "../xz/xz.js";
+import { libXtstRecipe } from "../libXtst/libXtst.js";
+import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
+import { sharedMimeInfoRecipe } from "../shared-mime-info/shared-mime-info.js";
+import { cProfile } from "../../helpers/c.js";
+
+export const yadRuntimeDeps = [...gtk3RuntimeDeps, "gtk3"].sort();
+
+const recipe = await shellBuild({
+  ...cProfile({
+    // GTK3's .pc files reference all transitive deps, so pkg-config
+    // needs to find them all.
+    pkgConfigDeps: [
+      "gtk3",
+      "glib", "pango", "cairo", "gdk-pixbuf", "libepoxy",
+      "at-spi2-core", "dbus",
+      "harfbuzz", "fontconfig", "freetype", "fribidi", "libpng", "pixman",
+      "zlib", "expat", "bzip2", "libffi", "pcre2",
+      "libX11", "libXext", "libXrender", "libXi", "libXrandr",
+      "libXcursor", "libXinerama", "libXdamage", "libXcomposite",
+      "libXfixes", "libXau", "libXcb", "libXdmcp",
+      "libxml2", "libXtst", "xz",
+    ],
+    pkgConfigPaths: [
+      "/deps/xorgproto/share/pkgconfig",
+      "/deps/shared-mime-info/share/pkgconfig",
+    ],
+  }),
+  script: `
+
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
+
+# Set up LD_LIBRARY_PATH and LDFLAGS for the full transitive dep chain
+# so configure test compilations and the final link succeed.
+export LD_LIBRARY_PATH="/deps/gtk3/lib:/deps/glib/lib:/deps/pango/lib:/deps/cairo/lib:/deps/gdk-pixbuf/lib:/deps/at-spi2-core/lib:/deps/libepoxy/lib:/deps/harfbuzz/lib:/deps/fontconfig/lib:/deps/freetype/lib:/deps/fribidi/lib:/deps/libpng/lib:/deps/pixman/lib:/deps/zlib/lib:/deps/expat/lib:/deps/bzip2/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/libX11/lib:/deps/libXext/lib:/deps/libXrender/lib:/deps/libXi/lib:/deps/libXrandr/lib:/deps/libXcursor/lib:/deps/libXinerama/lib:/deps/libXdamage/lib:/deps/libXcomposite/lib:/deps/libXfixes/lib:/deps/libXau/lib:/deps/libXcb/lib:/deps/libXdmcp/lib:/deps/dbus/lib:/deps/libxml2/lib:/deps/libiconv/lib:/deps/xz/lib:/deps/libXtst/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+export LDFLAGS="$HOD_DUMMY_RPATH \
+  -L/deps/gtk3/lib \
+  -L/deps/glib/lib -L/deps/pango/lib -L/deps/cairo/lib -L/deps/gdk-pixbuf/lib \
+  -L/deps/at-spi2-core/lib -L/deps/libepoxy/lib -L/deps/harfbuzz/lib -L/deps/fontconfig/lib \
+  -L/deps/freetype/lib -L/deps/fribidi/lib -L/deps/libpng/lib -L/deps/pixman/lib \
+  -L/deps/zlib/lib -L/deps/expat/lib -L/deps/bzip2/lib -L/deps/libffi/lib -L/deps/pcre2/lib \
+  -L/deps/libX11/lib -L/deps/libXext/lib -L/deps/libXrender/lib -L/deps/libXi/lib \
+  -L/deps/libXrandr/lib -L/deps/libXcursor/lib -L/deps/libXinerama/lib \
+  -L/deps/libXdamage/lib -L/deps/libXcomposite/lib -L/deps/libXfixes/lib \
+  -L/deps/libXau/lib -L/deps/libXcb/lib -L/deps/libXdmcp/lib \
+  -L/deps/dbus/lib -L/deps/libxml2/lib -L/deps/libiconv/lib -L/deps/xz/lib \
+  -L/deps/libXtst/lib \
+  -Wl,-rpath-link,/deps/gtk3/lib \
+  -Wl,-rpath-link,/deps/glib/lib -Wl,-rpath-link,/deps/pango/lib \
+  -Wl,-rpath-link,/deps/cairo/lib -Wl,-rpath-link,/deps/gdk-pixbuf/lib \
+  -Wl,-rpath-link,/deps/at-spi2-core/lib -Wl,-rpath-link,/deps/libepoxy/lib \
+  -Wl,-rpath-link,/deps/harfbuzz/lib -Wl,-rpath-link,/deps/fontconfig/lib \
+  -Wl,-rpath-link,/deps/freetype/lib -Wl,-rpath-link,/deps/fribidi/lib \
+  -Wl,-rpath-link,/deps/libpng/lib -Wl,-rpath-link,/deps/pixman/lib \
+  -Wl,-rpath-link,/deps/zlib/lib -Wl,-rpath-link,/deps/expat/lib \
+  -Wl,-rpath-link,/deps/bzip2/lib -Wl,-rpath-link,/deps/libffi/lib \
+  -Wl,-rpath-link,/deps/pcre2/lib -Wl,-rpath-link,/deps/libX11/lib \
+  -Wl,-rpath-link,/deps/libXext/lib -Wl,-rpath-link,/deps/libXrender/lib \
+  -Wl,-rpath-link,/deps/libXi/lib -Wl,-rpath-link,/deps/libXrandr/lib \
+  -Wl,-rpath-link,/deps/libXcursor/lib -Wl,-rpath-link,/deps/libXinerama/lib \
+  -Wl,-rpath-link,/deps/libXdamage/lib -Wl,-rpath-link,/deps/libXcomposite/lib \
+  -Wl,-rpath-link,/deps/libXfixes/lib -Wl,-rpath-link,/deps/libXau/lib \
+  -Wl,-rpath-link,/deps/libXcb/lib -Wl,-rpath-link,/deps/libXdmcp/lib \
+  -Wl,-rpath-link,/deps/dbus/lib -Wl,-rpath-link,/deps/libxml2/lib \
+  -Wl,-rpath-link,/deps/libiconv/lib -Wl,-rpath-link,/deps/xz/lib \
+  -Wl,-rpath-link,/deps/libXtst/lib"
+
+# Build standalone (without gsettings) to avoid schema compilation requirement.
+# Disable NLS to avoid needing gettext/intltool.
+./configure \\
+  --prefix=/ \\
+  --enable-standalone \\
+  --disable-nls \\
+  --disable-schemas-compile \\
+  --disable-spell \\
+  --disable-sourceview \\
+  --disable-html \\
+  --disable-icon-browser \\
+  --disable-tools
+
+make -j$(nproc)
+DESTDIR=$OUT make install
+
+# Strip the binary
+find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true
+`,
+  deps: [
+    dep("source", yadSourceRecipe),
+    dep("toolchain", nativeToolchainRecipe),
+    dep("gtk3", gtk3Recipe),
+    dep("glib", glibRecipe),
+    dep("pango", pangoRecipe),
+    dep("cairo", cairoRecipe),
+    dep("gdk-pixbuf", gdkPixbufRecipe),
+    dep("libepoxy", libepoxyRecipe),
+    dep("at-spi2-core", atSpi2CoreRecipe),
+    dep("harfbuzz", harfbuzzRecipe),
+    dep("fontconfig", fontconfigRecipe),
+    dep("freetype", freetypeRecipe),
+    dep("fribidi", fribidiRecipe),
+    dep("libpng", libpngRecipe),
+    dep("pixman", pixmanRecipe),
+    dep("zlib", zlibRecipe),
+    dep("expat", expatRecipe),
+    dep("bzip2", bzip2Recipe),
+    dep("libffi", libffiRecipe),
+    dep("pcre2", pcre2Recipe),
+    dep("libX11", libX11Recipe),
+    dep("libXext", libXextRecipe),
+    dep("libXrender", libXrenderRecipe),
+    dep("libXi", libXiRecipe),
+    dep("libXrandr", libXrandrRecipe),
+    dep("libXcursor", libXcursorRecipe),
+    dep("libXinerama", libXineramaRecipe),
+    dep("libXdamage", libXdamageRecipe),
+    dep("libXcomposite", libXcompositeRecipe),
+    dep("libXfixes", libXfixesRecipe),
+    dep("libXau", libXauRecipe),
+    dep("libXcb", libXcbRecipe),
+    dep("libXdmcp", libXdmcpRecipe),
+    dep("dbus", dbusRecipe),
+    dep("libxml2", libxml2Recipe),
+    dep("libiconv", libiconvRecipe),
+    dep("xz", xzRecipe),
+    dep("libXtst", libXtstRecipe),
+    dep("xorgproto", xorgprotoRecipe),
+    dep("shared-mime-info", sharedMimeInfoRecipe),
+  ],
+  runtime_deps: yadRuntimeDeps,
+});
+
+await importToStore(recipe);
+export const yadRecipe = recipe;

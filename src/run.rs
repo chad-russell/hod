@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::build::{self, BuildOptions};
-use crate::hash::{hex_to_hash, hash_to_hex, Hash};
+use crate::hash::{hash_to_hex, hex_to_hash, Hash};
 use crate::store::{Store, StoreConfig};
 
 // ---------------------------------------------------------------------------
@@ -36,9 +36,8 @@ pub fn resolve_specifier(
 ) -> Result<ResolvedRecipe, String> {
     // Try as a hex hash first
     if specifier.len() == 64 && specifier.chars().all(|c| c.is_ascii_hexdigit()) {
-        let hash = hex_to_hash(specifier).ok_or_else(|| {
-            format!("invalid hash: '{specifier}' (expected 64 hex characters)")
-        })?;
+        let hash = hex_to_hash(specifier)
+            .ok_or_else(|| format!("invalid hash: '{specifier}' (expected 64 hex characters)"))?;
         return Ok(ResolvedRecipe { recipe_hash: hash });
     }
 
@@ -56,10 +55,7 @@ pub fn resolve_specifier(
 
 /// Resolve a `.ts` file by evaluating it with `bun run` and capturing the
 /// last imported recipe hash.
-fn resolve_file(
-    path: &Path,
-    store_config: &StoreConfig,
-) -> Result<ResolvedRecipe, String> {
+fn resolve_file(path: &Path, store_config: &StoreConfig) -> Result<ResolvedRecipe, String> {
     let file_str = path.to_string_lossy();
 
     // Run `bun run <file>` and capture stdout+stderr
@@ -92,13 +88,11 @@ fn resolve_file(
         }
     };
 
-    let recipe_hash = hex_to_hash(&hash_hex).ok_or_else(|| {
-        format!("corrupt hash from bun output: '{hash_hex}'")
-    })?;
+    let recipe_hash = hex_to_hash(&hash_hex)
+        .ok_or_else(|| format!("corrupt hash from bun output: '{hash_hex}'"))?;
 
     // Now build any remaining unbuilt recipes in the store
-    let store = Store::open(store_config)
-        .map_err(|e| format!("store error: {e}"))?;
+    let store = Store::open(store_config).map_err(|e| format!("store error: {e}"))?;
     build_remaining_for(&store, &recipe_hash)?;
 
     Ok(ResolvedRecipe { recipe_hash })
@@ -123,7 +117,8 @@ fn find_last_imported_hash(stdout: &str, stderr: &str) -> Option<String> {
 /// Build the target recipe and any of its unbuilt transitive dependencies.
 fn build_remaining_for(store: &Store, recipe_hash: &Hash) -> Result<(), String> {
     // First, try building just this recipe (handles transitive deps internally)
-    let recipe_bytes = store.get_recipe(recipe_hash)
+    let recipe_bytes = store
+        .get_recipe(recipe_hash)
         .map_err(|e| format!("recipe {} not in store: {e}", hash_to_hex(recipe_hash)))?;
 
     let options = BuildOptions {
@@ -135,7 +130,10 @@ fn build_remaining_for(store: &Store, recipe_hash: &Hash) -> Result<(), String> 
 
     match build::build(store, &recipe_bytes, &options) {
         Ok(_) => Ok(()),
-        Err(e) => Err(format!("build failed for {}: {e}", hash_to_hex(recipe_hash))),
+        Err(e) => Err(format!(
+            "build failed for {}: {e}",
+            hash_to_hex(recipe_hash)
+        )),
     }
 }
 
@@ -144,16 +142,11 @@ fn build_remaining_for(store: &Store, recipe_hash: &Hash) -> Result<(), String> 
 // ---------------------------------------------------------------------------
 
 /// Resolve a recipe hash to its staging path, building if necessary.
-pub fn resolve_staging_path(
-    store: &Store,
-    recipe_hash: &Hash,
-) -> Result<PathBuf, String> {
-    let output_hash = store.get_output(recipe_hash)
+pub fn resolve_staging_path(store: &Store, recipe_hash: &Hash) -> Result<PathBuf, String> {
+    let output_hash = store
+        .get_output(recipe_hash)
         .map_err(|e| format!("store error: {e}"))?
-        .ok_or_else(|| format!(
-            "recipe {} has not been built yet",
-            hash_to_hex(recipe_hash)
-        ))?;
+        .ok_or_else(|| format!("recipe {} has not been built yet", hash_to_hex(recipe_hash)))?;
     Ok(build::artifact_staging_path(store, &output_hash))
 }
 
@@ -188,7 +181,10 @@ pub fn build_env(staging_paths: &[PathBuf]) -> HashMap<String, String> {
         }
         if staging.join("share/pkgconfig").is_dir() {
             pkgconfig_parts.push(
-                staging.join("share/pkgconfig").to_string_lossy().to_string(),
+                staging
+                    .join("share/pkgconfig")
+                    .to_string_lossy()
+                    .to_string(),
             );
         }
         if staging.join("include").is_dir() {
@@ -233,21 +229,17 @@ fn prepend_env(env: &mut HashMap<String, String>, key: &str, parts: &[String]) {
 /// - If command[0] matches a file in `bin/` → use that binary, rest are args
 /// - Otherwise (starts with `-`, or name not in bin/) → auto-detect main binary,
 ///   pass all args as flags
-pub fn resolve_run_command(
-    staging_path: &Path,
-    command: &[String],
-) -> (String, Vec<String>) {
+pub fn resolve_run_command(staging_path: &Path, command: &[String]) -> (String, Vec<String>) {
     let bin_dir = staging_path.join("bin");
     let available_binaries = list_binaries(&bin_dir);
 
     // Check if the first arg explicitly names a binary in bin/
     if !command.is_empty() {
         let first = &command[0];
-        if let Some(matched) = available_binaries.iter().find(|p| {
-            p.file_name()
-                .map(|n| n == first.as_str())
-                .unwrap_or(false)
-        }) {
+        if let Some(matched) = available_binaries
+            .iter()
+            .find(|p| p.file_name().map(|n| n == first.as_str()).unwrap_or(false))
+        {
             let bin = matched.to_string_lossy().to_string();
             return (bin, command[1..].to_vec());
         }
@@ -276,8 +268,12 @@ fn list_binaries(bin_dir: &Path) -> Vec<PathBuf> {
             dir.filter_map(|e| e.ok())
                 .filter(|e| {
                     let path = e.path();
-                    path.is_file()
-                        || (path.is_symlink() && !path.is_dir())
+                    let hidden = e
+                        .file_name()
+                        .to_str()
+                        .map(|name| name.starts_with('.'))
+                        .unwrap_or(false);
+                    !hidden && (path.is_file() || (path.is_symlink() && !path.is_dir()))
                 })
                 .map(|e| e.path())
                 .collect()
@@ -303,7 +299,10 @@ fn pick_main_binary(binaries: &[PathBuf]) -> Option<PathBuf> {
                 .iter()
                 .filter(|p| {
                     let name = p.file_name().map(|n| n.to_string_lossy().to_string());
-                    !name.as_ref().map(|n| n.ends_with("-config")).unwrap_or(false)
+                    !name
+                        .as_ref()
+                        .map(|n| n.ends_with("-config"))
+                        .unwrap_or(false)
                 })
                 .collect();
             match candidates.len() {

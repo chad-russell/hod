@@ -91,6 +91,10 @@ export interface CargoBuildOptions {
   /** Additional source files: { "src/lib.rs": "..." }. Paths relative to project root. */
   extraFiles?: Record<string, string>;
 
+  /** Additional binaries to copy from the release directory (beyond `name`).
+   *  Useful for Cargo workspaces that produce multiple executables. */
+  extraBinaries?: string[];
+
   /** Named dependencies mounted under `/deps/<name>/` (excluding toolchain and rust, which are auto-injected). */
   deps: ProcessDependency[];
 
@@ -252,14 +256,20 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     }
   }
 
+  // All binaries to copy from the release directory.
+  const binaries = [opts.name, ...(opts.extraBinaries ?? [])];
+  const copyCmds = binaries.map(b =>
+    `cp /tmp/build/target/x86_64-unknown-linux-gnu/release/${b} $OUT/bin/${b}\n` +
+    `/deps/${tc}/bin/strip $OUT/bin/${b} 2>/dev/null || true`
+  ).join("\n");
+
   const buildCmd = [
     "cd /tmp/build",
     `export LD_LIBRARY_PATH=${libPathParts.join(":")}`,
     `cargo build --release --target x86_64-unknown-linux-gnu${cargoFlags}`,
     "",
     "mkdir -p $OUT/bin",
-    `cp /tmp/build/target/x86_64-unknown-linux-gnu/release/${opts.name} $OUT/bin/${opts.name}`,
-    `/deps/${tc}/bin/strip $OUT/bin/${opts.name} 2>/dev/null || true`,
+    copyCmds,
   ].join("\n");
 
   // shellBuild handles set -e, the preamble, and sets env vars from rustProfile.

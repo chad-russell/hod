@@ -22,6 +22,7 @@ export const sharedMimeInfoRuntimeDeps = ["glib", "libffi", "libiconv", "libxml2
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     binDeps: ["glib", "libxml2"],
     includeDeps: ["glib", "libxml2", "zlib", "libffi", "pcre2", "libiconv", "xz"],
     libDeps: ["glib", "libxml2", "zlib", "libffi", "pcre2", "libiconv", "xz"],
@@ -31,8 +32,6 @@ const recipe = await shellBuild({
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 
 # Avoid requiring gettext/msgfmt during this bootstrap pass. Install the
 # untranslated MIME XML template directly as freedesktop.org.xml.

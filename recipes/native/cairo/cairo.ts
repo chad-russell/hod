@@ -37,18 +37,20 @@ export const cairoRuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["pixman", "freetype", "fontconfig", "libpng", "glib", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp", "zlib", "expat", "bzip2", "libffi", "pcre2"],
     includePaths: ["/deps/freetype/include/freetype2"],
     libDeps: ["pixman", "freetype", "fontconfig", "libpng", "glib", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp", "zlib", "expat", "bzip2", "libffi", "pcre2"],
     pkgConfigDeps: ["pixman", "freetype", "fontconfig", "libpng", "glib", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp", "zlib", "expat", "bzip2", "libffi", "pcre2"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
   script: `
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export CPPFLAGS="-I/deps/freetype/include/freetype2"

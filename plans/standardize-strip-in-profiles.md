@@ -1,5 +1,8 @@
 # Plan: Standardize Shared Library Stripping in Build Profiles
 
+**Status:** Active cleanup candidate  
+**Current authority:** this plan plus `recipes/helpers/strip.ts` and current package recipes
+
 ## Motivation
 
 30 recipe files manually strip `.so` files with bare `strip` (no flags),

@@ -1,7 +1,8 @@
 # Plan: TypeScript Profiles
 
-**Status:** Ready for implementation
+**Status:** Implemented; historical design note
 **Date:** 2026-05-11
+**Current authority:** `docs/profiles.md`, `src/profile.rs`, `profiles/default.ts`
 **Replaces:** `plans/end-user-runtime.md`
 
 ## Overview

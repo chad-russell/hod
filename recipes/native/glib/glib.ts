@@ -20,6 +20,7 @@ export const glibRuntimeDeps = ["libffi", "pcre2", "toolchain", "zlib"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["libffi", "pcre2", "zlib"],
     libDeps: ["libffi", "pcre2", "zlib"],
     pkgConfigDeps: ["libffi", "pcre2", "zlib"],
@@ -31,9 +32,6 @@ cd /tmp/build
 
 export LD_LIBRARY_PATH="/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/pcre2/lib -L/deps/libffi/lib -L/deps/zlib/lib -Wl,-rpath-link,/deps/pcre2/lib -Wl,-rpath-link,/deps/libffi/lib -Wl,-rpath-link,/deps/zlib/lib"
-
-# Some GLib helper scripts use /usr/bin/env in shebangs.
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 
 meson setup build \
   --prefix=/ \

@@ -1,7 +1,7 @@
 //! gdk-pixbuf build recipe — image loading library for GTK.
 //!
-//! Builds gdk-pixbuf 2.42.12 with PNG/GIF support, without introspection,
-//! documentation, tests, JPEG, or TIFF for the first GTK3 stack pass.
+//! Builds gdk-pixbuf 2.42.12 with PNG/GIF/JPEG/TIFF support.
+//! Required by GTK4 which needs JPEG/TIFF loaders.
 
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
@@ -12,65 +12,64 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { libffiRecipe } from "../libffi/libffi.js";
 import { pcre2Recipe } from "../pcre2/pcre2.js";
 import { expatRecipe } from "../expat/expat.js";
+import { libjpegRecipe } from "../libjpeg/libjpeg.js";
+import { libtiffRecipe } from "../libtiff/libtiff.js";
+import { xzRecipe } from "../xz/xz.js";
+import { zstdRecipe } from "../zstd/zstd.js";
 import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
-export const gdkPixbufRuntimeDeps = ["glib", "libffi", "libpng", "pcre2", "toolchain", "zlib"];
+export const gdkPixbufRuntimeDeps = ["glib", "libffi", "libjpeg", "libpng", "libtiff", "pcre2", "toolchain", "xz", "zlib", "zstd"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     binDeps: ["glib"],
-    includeDeps: ["glib", "libpng", "zlib", "libffi", "pcre2"],
-    libDeps: ["glib", "libpng", "zlib", "libffi", "pcre2"],
-    pkgConfigDeps: ["glib", "libpng", "zlib", "libffi", "pcre2"],
+    includeDeps: ["glib", "libpng", "zlib", "libffi", "pcre2", "libjpeg", "libtiff", "xz", "zstd"],
+    libDeps: ["glib", "libpng", "zlib", "libffi", "pcre2", "libjpeg", "libtiff", "xz", "zstd"],
+    pkgConfigDeps: ["glib", "libpng", "zlib", "libffi", "pcre2", "libjpeg", "libtiff", "xz", "zstd"],
   }),
   script: `
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
 
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
+export LD_LIBRARY_PATH="/tmp/build/build/gdk-pixbuf:/deps/glib/lib:/deps/libpng/lib:/deps/zlib/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/libjpeg/lib:/deps/libtiff/lib:/deps/xz/lib:/deps/zstd/lib"
 
-export LD_LIBRARY_PATH="/tmp/build/build/gdk-pixbuf:/deps/glib/lib:/deps/libpng/lib:/deps/zlib/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export LDFLAGS="$HOD_DUMMY_RPATH \
-  -Wl,-rpath-link,/deps/glib/lib -Wl,-rpath-link,/deps/libpng/lib -Wl,-rpath-link,/deps/zlib/lib \
-  -Wl,-rpath-link,/deps/libffi/lib -Wl,-rpath-link,/deps/pcre2/lib"
-
-meson setup build \
-  --prefix=/ \
-  --libdir=lib \
-  --buildtype=release \
-  -Ddefault_library=shared \
-  -Dpng=enabled \
-  -Djpeg=disabled \
-  -Dtiff=disabled \
-  -Dgif=enabled \
-  -Dothers=disabled \
-  -Dbuiltin_loaders=png,gif \
-  -Dintrospection=disabled \
-  -Dgtk_doc=false \
-  -Ddocs=false \
-  -Dman=false \
-  -Dtests=false \
-  -Dinstalled_tests=false \
+meson setup build \\
+  --prefix=/ \\
+  --libdir=lib \\
+  --buildtype=release \\
+  -Ddefault_library=shared \\
+  -Dpng=enabled \\
+  -Djpeg=enabled \\
+  -Dtiff=enabled \\
+  -Dgif=enabled \\
+  -Dothers=disabled \\
+  -Dintrospection=disabled \\
+  -Dgtk_doc=false \\
+  -Ddocs=false \\
+  -Dman=false \\
+  -Dtests=false \\
+  -Dinstalled_tests=false \\
   -Dgio_sniffing=false
 
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
+# Make pkg-config files relocatable.
 for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
   case "$pc" in
     */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
   esac
 done
 
-find $OUT/bin $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/gtk-doc $OUT/share/man 2>/dev/null || true
+${STRIP_ALL}
 `,
   deps: [
     dep("source", gdkPixbufSourceRecipe),
@@ -81,6 +80,10 @@ rm -rf $OUT/share/doc $OUT/share/gtk-doc $OUT/share/man 2>/dev/null || true
     dep("libffi", libffiRecipe),
     dep("pcre2", pcre2Recipe),
     dep("expat", expatRecipe),
+    dep("libjpeg", libjpegRecipe),
+    dep("libtiff", libtiffRecipe),
+    dep("xz", xzRecipe),
+    dep("zstd", zstdRecipe),
     dep("meson", mesonRecipe),
     dep("ninja", ninjaRecipe),
     dep("python", pythonRecipe),

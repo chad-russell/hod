@@ -9,8 +9,6 @@
 //! The recipe hash is computed externally as `blake3(envelope + body)` — it is
 //! never stored in the file. There is exactly one valid binary encoding for
 //! each recipe (deterministic by construction).
-//!
-//! See PRD §4 for the full format specification.
 
 use serde::{Deserialize, Serialize};
 

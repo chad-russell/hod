@@ -29,6 +29,24 @@ export interface HermeticPreambleOptions {
    * Sets up /share/bison symlink so bison can find its data files.
    */
   shims?: string;
+
+  /**
+   * Dep name providing Python 3 (`bin/python3`). When set, creates:
+   *
+   * - `/usr/bin/env` → busybox (so `#!/usr/bin/env python3` shebangs work)
+   * - `/usr/bin/python3` → shell wrapper that exec's `/deps/<python>/bin/python3`
+   *
+   * This is necessary because when the kernel processes a shebang script,
+   * it sets AT_EXECFN to the *script* path, not the interpreter. The Python
+   * binary's AT_EXECFN bootstrap then computes the wrong ld-linux path when
+   * the script is more than 2 directories deep. The wrapper avoids this by
+   * ensuring AT_EXECFN is always `/usr/bin/python3` (which is shallow enough
+   * for the relative path to resolve correctly).
+   *
+   * **Do not** sed-change shebangs to `#!/deps/python/bin/python3` — that
+   * triggers the same AT_EXECFN bug for scripts deeper than 2 levels.
+   */
+  python?: string;
 }
 
 /**
@@ -62,6 +80,27 @@ export function hermeticPreamble(opts: HermeticPreambleOptions = {}): string {
     lines.push(`export PATH="/deps/${opts.shell}/bin:$PATH"`);
     lines.push(`export HOD_SHELL_BUSYBOX="/deps/${opts.shell}/bin/busybox"`);
     lines.push(`${lnCmd} -sf /deps/${opts.shell}/bin/busybox /bin/sh || true`);
+  }
+
+  // --- Python wrapper setup ---
+  //
+  // When the kernel processes a shebang like `#!/usr/bin/env python3`,
+  // AT_EXECFN is set to the script path (not the interpreter). Python's
+  // AT_EXECFN bootstrap computes dirname(AT_EXECFN) + rel_path to find
+  // ld-linux. If the script is deeper than 2 directory levels, this
+  // resolves incorrectly. The wrapper at /usr/bin/python3 (only 2 levels
+  // deep) ensures the bootstrap always works.
+  if (opts.python) {
+    const busyboxBin = `"$HOD_SHELL_BUSYBOX"`;
+    lines.push(``);
+    lines.push(`# Python: /usr/bin/env + /usr/bin/python3 wrapper for correct AT_EXECFN bootstrap`);
+    lines.push(`${mkdirCmd} -p /usr/bin`);
+    if (!opts.shell) {
+      throw new Error("hermeticPreamble: 'python' requires 'shell' (busybox provides /usr/bin/env)");
+    }
+    lines.push(`${lnCmd} -sf /deps/${opts.shell}/bin/busybox /usr/bin/env`);
+    lines.push(`printf '#!/bin/sh\\nexec /deps/${opts.python}/bin/python3 "$@"\\n' > /usr/bin/python3`);
+    lines.push(`${busyboxBin} chmod +x /usr/bin/python3`);
   }
 
   // --- Dynamic linker + runtime library setup ---

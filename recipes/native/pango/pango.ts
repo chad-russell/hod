@@ -35,10 +35,14 @@ export const pangoRuntimeDeps = ["bzip2", "cairo", "expat", "fontconfig", "freet
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["cairo", "fribidi", "glib", "harfbuzz", "fontconfig", "freetype", "libpng", "pixman", "zlib", "expat", "bzip2", "libffi", "pcre2", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp"],
     includePaths: ["/deps/freetype/include/freetype2"],
     libDeps: ["cairo", "fribidi", "glib", "harfbuzz", "fontconfig", "freetype", "libpng", "pixman", "zlib", "expat", "bzip2", "libffi", "pcre2", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp"],
     pkgConfigDeps: ["cairo", "fribidi", "glib", "harfbuzz", "fontconfig", "freetype", "libpng", "pixman", "zlib", "expat", "bzip2", "libffi", "pcre2", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
   script: `
@@ -46,7 +50,6 @@ const recipe = await shellBuild({
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
 
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 # Cairo was built with CAIRO_HAS_FC_FONT=1, but Pango's Meson probe can fail
 # because cairo-ft.pc under-describes Fontconfig on this Cairo release.
 sed -i "/does not have the required FontConfig support/s|error.*|message('Skipping cairo-ft FontConfig probe; Cairo has CAIRO_HAS_FC_FONT')|" meson.build

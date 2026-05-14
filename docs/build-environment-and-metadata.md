@@ -1,6 +1,6 @@
 # Build Environment and Metadata Design
 
-Status: design direction accepted; implementation in progress.
+Status: core build-environment cleanup implemented; deterministic declared metadata remains future work.
 
 ## Goals
 
@@ -69,7 +69,7 @@ Examples:
 ```ts
 depPath("zlib")                    // /deps/zlib
 depSubpath("zlib", "include")     // /deps/zlib/include
-depPathList(["/a", "/b"])         // /a:/b
+pathList(["/a", "/b"])            // /a:/b
 depSubpathList(["zlib", "ssl"], "lib")
 ```
 

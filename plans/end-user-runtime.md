@@ -1,7 +1,10 @@
 # Plan: End-User Runtime — `hod shell`, `hod run`, Profiles
 
-**Status:** ready for implementation  
-**Goal:** Turn Hod from a build system into something a human can use as their
+**Status:** Superseded / historical  
+**Current authority:** `src/run.rs`, `src/profile.rs`, `docs/profiles.md`, CLI help  
+**Note:** `hod run`, `hod shell`, and TypeScript-backed profiles are implemented in the current tree. This file captures an older design, including a TOML-profile direction that is no longer current.
+
+**Original goal:** Turn Hod from a build system into something a human can use as their
 daily-driver package manager — `brew install` / `pacman -S` with
 content-addressed store semantics.
 

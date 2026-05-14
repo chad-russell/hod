@@ -424,8 +424,9 @@ timestamps, and using the same compiler version for both stages.
 `seed-root.ts` still bundles the opaque busybox. It's used as the shell
 executor for bootstrap ladder builds. `busybox-from-source.ts` depends on
 `seed-root.ts` (to avoid circular deps), so the opaque busybox is
-technically on the dependency path of the source-built one. See
-`plans/bootstrap-roadmap.md` "Future Considerations" for discussion.
+technically on the dependency path of the source-built one. That is an
+intentional current tradeoff; the next step is seed minimization rather than
+pretending the bootstrap ladder is already reduced to source-only inputs.
 
 ### 5. Seed minimization (Phase D)
 

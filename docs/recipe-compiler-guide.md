@@ -31,7 +31,8 @@ The SDK is intentionally **single-phase**:
 - Dependencies are concrete BLAKE3 recipe hashes by the time a Process recipe is encoded.
 - TS module imports provide normal DAG ordering: imported modules run before importers.
 
-For the deferred path-ref resolver design, see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md). It is not implemented.
+Path-ref / resolver support is still deferred. In the current tree, recipes
+must encode concrete dependency hashes directly.
 
 ## Debugging Tools
 
@@ -364,11 +365,11 @@ Implemented:
 - TS `dep()`
 - TS `fromHod()`
 - TS `importToStore()`
-- TS `importFromJson()`
+- internal TS CLI helper `importFromJson()` (used by `importToStore()`)
 - Rust `Unpack` encode/decode support
 
 Deferred / caveats:
 
 - Directory and Symlink TS constructors are not implemented.
-- `hod resolve` / path refs are deferred; see [`evaluator-resolver-prd.md`](evaluator-resolver-prd.md).
+- `hod resolve` / path refs are deferred; there is no checked-in standalone resolver design doc in this tree.
 - Some E2E process tests are ignored because their fixtures still assume `/bin/bash`; they need hermetic shell fixtures to run inside Hod's sandbox.

@@ -235,15 +235,30 @@ import { cProfile } from "../../helpers/c.js";
 // Import any additional dep recipes as needed
 
 const recipe = await shellBuild({
-  ...cProfile(),
+  ...cProfile({
+    // Declare deps so cProfile() sets up PKG_CONFIG_PATH, C_INCLUDE_PATH,
+    // and LIBRARY_PATH automatically:
+    pkgConfigDeps: ["zlib", "openssl"],
+    libDeps: ["zlib", "openssl"],
+    includeDeps: ["zlib", "openssl"],
+  }),
   script: `
 
-cd /deps/source
+# Source deps are mounted read-only in the sandbox. Always copy to a
+# writable directory first — autotools needs to write config.log, and
+# meson needs to create its build directory.
+cp -a /deps/source/. /tmp/build
+cd /tmp/build
 
 # CC, AR, RANLIB, STRIP, CFLAGS, PATH are set by cProfile() as process env vars.
 # For deps with .pc files, use PKG_CONFIG_PATH (no manual -I/-L needed):
 # export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig"
 export LDFLAGS="$HOD_DUMMY_RPATH"
+
+# Autotools configure compiles and RUNS test programs. These programs
+# need to find shared libraries at runtime, so set LD_LIBRARY_PATH to
+# include all dep lib/ directories that provide .so files:
+export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/openssl/lib"
 
 ./configure \\
   --prefix=/ \\
@@ -291,29 +306,55 @@ export const <package>Recipe = recipe;
 
 2. **`cProfile()` provides `CC`, `AR`, `RANLIB`, `STRIP`, `CFLAGS`, and `PATH`** via the process environment, pointing at the toolchain. You do not need to set these yourself unless the package's build system ignores environment variables (e.g., git's `config.mak` overrides `CC = cc` — in that case, write the values directly into the config file).
 
+   **C++ packages:** `cProfile()` does not set `CXX` or `CPP`. If the package contains C++ code (check for `.cpp`, `.cc` files, or a `project(..., 'cpp')` in `meson.build`), you must set these explicitly in the script:
+   ```bash
+   export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
+   export CXXFLAGS="-O2"
+   ```
+   Without this, configure will find `g++` via `/lib/cpp` or fail entirely.
+
 3. **Always include `$HOD_DUMMY_RPATH`** in `LDFLAGS`. This reserves space in the ELF for store-relative RUNPATH patching. The default `LDFLAGS` is set to the dummy RPATH flag by `cProfile()` — if you override `LDFLAGS` in your script, you must include `$HOD_DUMMY_RPATH` yourself.
 
-4. **Prefer shared libraries**: for reusable libraries, use `--enable-shared` and keep downstream-facing metadata (`.so`, pkg-config, headers). Static-only builds should be justified by bootstrap constraints, intentionally standalone binaries, or broken upstream shared support.
-
-5. **For dependencies that provide pkg-config files**, set `PKG_CONFIG_PATH` to include their `lib/pkgconfig` directories. The library recipes use `pcfiledir` to make `.pc` files relocatable, so `pkg-config` returns the correct paths in both sandbox (`/deps/<name>/`) and store contexts:
+4. **Always copy source to a writable directory first.** Source deps are mounted read-only in the sandbox. Every recipe must start with:
    ```bash
-   export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig:/deps/openssl/lib/pkgconfig"
+   cp -a /deps/source/. /tmp/build
+   cd /tmp/build
    ```
-   This replaces manual `-I` and `-L` flags for autotools-based packages. For packages with custom build systems that don't use pkg-config, you may still need explicit `CPPFLAGS`/`LDFLAGS`.
+   Without this, autotools cannot write `config.log`, and meson cannot create its build directory.
 
-6. **For dependencies whose binaries should be found at configure time**, add their `bin/` to `PATH`.
+5. **Autotools packages with shared library deps need `LD_LIBRARY_PATH`.** Autotools `./configure` compiles and **runs** test programs to detect library features. These programs need to find `.so` files at runtime, but the sandbox has no system library path. Add:
+   ```bash
+   export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/openssl/lib"
+   ```
+   Include the `lib/` directory of every dep that provides shared libraries.
 
-7. **Install to `--prefix=/`** with `DESTDIR=$OUT`.
+   **Meson builds that spawn Python subprocesses also need `LD_LIBRARY_PATH`.** Meson's `capture: true` custom targets and some `gnome.generate_gir()` calls invoke Python via meson's internal executor. Python itself links shared libraries (zlib, expat, libffi, etc.) which must be findable at runtime. If you see `ImportError: libz.so.1: cannot open shared object file` during a meson build, add Python's runtime deps to `LD_LIBRARY_PATH` and include those deps in the recipe's `deps` array so they're mounted in the sandbox.
 
-8. **Strip binaries** using the toolchain's strip. Use `find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} +` to strip all binaries.
+6. **Meson packages with shared library deps need `LDFLAGS` with `-Wl,-rpath-link`.** Meson discovers libraries via pkg-config, but the linker still needs hints to resolve transitive shared library dependencies (e.g., your dep links libxml2, which links libiconv). When overriding `LDFLAGS`, add rpath-link entries:
+   ```bash
+   export LDFLAGS="$HOD_DUMMY_RPATH -Wl,-rpath-link,/deps/glib/lib -Wl,-rpath-link,/deps/libxml2/lib"
+   ```
+   The `mesonProfile()` helper does not do this automatically — you must add these yourself when linking fails with `undefined reference` errors for symbols that should come from transitive deps.
 
-9. **Fix absolute symlinks** — some packages create absolute symlinks during `make install`. Replace them with relative ones:
+   **Meson requires all transitive `.pc` files on `PKG_CONFIG_PATH`.** Even if your package only directly uses glib, if glib's `.pc` file requires zlib, then zlib's `.pc` must also be on `PKG_CONFIG_PATH`. Meson resolves each `dependency()` call independently via pkg-config — it does not use the transitive closure. If a required `.pc` file is missing, meson will try to fetch the dependency as a subproject and fail with a misleading "could not download" error. When you see this pattern, check the `.pc` file's `Requires:` and `Requires.private:` lines, then add the missing packages to `pkgConfigDeps`.
+
+7. **Prefer shared libraries**: for reusable libraries, use `--enable-shared` and keep downstream-facing metadata (`.so`, pkg-config, headers). Static-only builds should be justified by bootstrap constraints, intentionally standalone binaries, or broken upstream shared support.
+
+8. **For dependencies that provide pkg-config files**, add them to `pkgConfigDeps` in `cProfile()` / `mesonProfile()`. This adds both `lib/pkgconfig` and `share/pkgconfig` directories to `PKG_CONFIG_PATH` automatically. The library recipes use `pcfiledir` to make `.pc` files relocatable, so `pkg-config` returns the correct paths in both sandbox (`/deps/<name>/`) and store contexts. For rare cases where a `.pc` file is in a non-standard location, use `pkgConfigPaths` for explicit entries.
+
+9. **For dependencies whose binaries should be found at configure time**, add their `bin/` to `PATH`.
+
+10. **Install to `--prefix=/`** with `DESTDIR=$OUT`.
+
+11. **Strip binaries** using the toolchain's strip. Use `find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} +` to strip all binaries.
+
+12. **Fix absolute symlinks** — some packages create absolute symlinks during `make install`. Replace them with relative ones:
    ```bash
    cd $OUT/bin
    ln -sf <target> <link>
    ```
 
-10. **Clean up** — remove docs, man pages, info pages, `.la` files:
+13. **Clean up** — remove docs, man pages, info pages, `.la` files:
     ```bash
     rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
     # Remove share/ entirely ONLY if it contains nothing useful (no aclocal, no pkgconfig)
@@ -327,7 +368,7 @@ export const <package>Recipe = recipe;
     # Then check if share/ has anything useful left before removing
     ```
 
-11. **Make pkg-config files relocatable** when building library packages that produce `.pc` files. The standard install prefix of `/` produces `.pc` files with `prefix=/`, which is wrong in the sandbox (where deps are at `/deps/<name>/`) and in the store. Add this snippet after `make install` and before cleanup:
+14. **Make pkg-config files relocatable** when building library packages that produce `.pc` files. The standard install prefix of `/` produces `.pc` files with `prefix=/`, which is wrong in the sandbox (where deps are at `/deps/<name>/`) and in the store. Add this snippet after `make install` and before cleanup:
     ```bash
     # Make pkg-config files relocatable via pcfiledir (pkgconf extension).
     for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
@@ -341,9 +382,9 @@ export const <package>Recipe = recipe;
     ```
     This rewrites `prefix=` in all `.pc` files to use `${pcfiledir}` — a pkgconf extension that resolves to the directory containing the `.pc` file. Wherever the `.pc` file lives, `prefix` points to the output root. The snippet is safe to run even if no `.pc` files exist.
 
-12. **Include `runtime_deps`** for any dep whose shared libraries your package links against at runtime. At minimum `["toolchain"]` for glibc. Add additional dep names if your package links their shared libs. If your package now provides shared libraries that downstream executables will use, preserve the `.so` files, soname symlinks, and pkg-config metadata so future recipes can link against them normally.
+15. **Include `runtime_deps`** for any dep whose shared libraries your package links against at runtime. At minimum `["toolchain"]` for glibc. Add additional dep names if your package links their shared libs. If your package now provides shared libraries that downstream executables will use, preserve the `.so` files, soname symlinks, and pkg-config metadata so future recipes can link against them normally.
 
-13. **Do not** access anything outside the sandbox. No `/usr`, no `/nix`, no host tools. If a build fails because it can't find something, fix the recipe — don't mount host paths.
+16. **Do not** access anything outside the sandbox. No `/usr`, no `/nix`, no host tools. If a build fails because it can't find something, fix the recipe — don't mount host paths.
 
 #### 3.6 Import and Build
 
@@ -402,6 +443,12 @@ Only after a successful build and verification:
   - `nproc` not found → toolchain busybox provides it; check `PATH` includes `/deps/toolchain/bin`.
   - Hardcoded `/usr/bin/env` or `/bin/sh` → patch the source or use a wrapper.
   - Test failures → add `--disable-tests` or skip the test phase.
+  - **`undefined reference` for symbols from transitive deps** (meson) → add `-Wl,-rpath-link,/deps/<dep>/lib` to `LDFLAGS` for each dep that provides shared libs.
+  - **Meson tries to download a dependency as subproject** (e.g., "Downloading glib source") → a transitive `.pc` file is missing from `PKG_CONFIG_PATH`. Check the failing dependency's `.pc` file `Requires:` lines and add missing packages to `pkgConfigDeps`.
+  - **`cc.run()` or `run_command` fails** (meson) → meson compiles and runs test programs that can't execute in the sandbox. Patch out the `cc.run()` block and hardcode the result. For `cc.run()` checks, use `sed` or a Python script to replace the block with a static assignment.
+  - **`ImportError: libz.so.1: cannot open shared object file`** during meson build → Python subprocesses need runtime libs. Add `LD_LIBRARY_PATH` for Python's deps (rule 5).
+  - **`can't create config.log: Read-only file system`** → you forgot to copy the source to `/tmp/build` first (rule 4).
+  - **`cannot compute sizeof (wchar_t)` or similar runtime test failures** (autotools) → configure test programs can't find shared libs at runtime; add `LD_LIBRARY_PATH` (rule 5).
 
 - **Try to self-unblock** using standard approaches:
   - Add missing flags or env vars.

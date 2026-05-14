@@ -62,6 +62,7 @@ export const gtk3RuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     binDeps: ["glib", "gdk-pixbuf", "shared-mime-info"],
     includeDeps: [
       "glib", "pango", "cairo", "gdk-pixbuf", "libepoxy",
@@ -94,6 +95,9 @@ const recipe = await shellBuild({
       "libXfixes", "libXau", "libXcb", "libXdmcp",
       "libxml2", "libXtst", "xz",
     ],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto", "shared-mime-info" to pkgConfigDeps and remove this block.
     pkgConfigPaths: [
       "/deps/xorgproto/share/pkgconfig",
       "/deps/shared-mime-info/share/pkgconfig",
@@ -103,8 +107,6 @@ const recipe = await shellBuild({
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} + 2>/dev/null || true
 
 # Ensure glib tools (glib-mkenums, glib-compile-resources, gio-querymodules)
 # and gdk-pixbuf tools (gdk-pixbuf-query-loaders) are findable.

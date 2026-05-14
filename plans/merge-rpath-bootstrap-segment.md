@@ -1,5 +1,8 @@
 # Plan: Merge RUNPATH + Bootstrap Into Single PT_LOAD Segment
 
+**Status:** Implemented; historical design note  
+**Current authority:** `src/packed.rs`, `src/relocate.rs`, `docs/relocatable-binaries-guide.md`
+
 ## Motivation
 
 Currently, when a binary has both a RUNPATH overflow (new RUNPATH longer

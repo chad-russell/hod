@@ -1,5 +1,9 @@
 # hod copy-closure — Feature Design
 
+**Status:** Implemented; historical design record  
+**Current authority:** `docs/closure-transfer.md`, `src/closure.rs`, `src/main.rs`  
+**Note:** `hod closure`, `hod copy-closure --to`, `--archive`, `--list`, and `--dry-run` are implemented on this tree. `--from` remains unimplemented.
+
 ## Goal
 
 Copy a recipe's runtime closure from one store to another (local → remote,

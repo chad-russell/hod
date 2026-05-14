@@ -103,6 +103,9 @@ export interface GoBuildOptions {
   /** Inline Go source code for main.go (for test recipes). */
   mainGo?: string;
 
+  /** Subdirectory within the source to build from (e.g. "src"). */
+  sourceSubdir?: string;
+
   /** Additional source files: { "pkg/foo/foo.go": "..." }. */
   extraFiles?: Record<string, string>;
 
@@ -134,7 +137,7 @@ export interface GoBuildOptions {
  *
  * Uses shellBuild with goProfile defaults.  The profile provides:
  *   - shell: /deps/toolchain/bin/busybox
- *   - preamble: (none for cgo: false, hermetic setup for cgo: true)
+ *   - preamble: hermetic setup (always, even for cgo: false — busybox needs glibc linker)
  *   - env: PATH, GOROOT, GOCACHE, GOPATH, CGO_ENABLED, plus CC/CGO_LDFLAGS when cgo
  *
  * Source is prepared either from a named dependency or from inline Go code.
@@ -188,6 +191,9 @@ export async function goBuild(opts: GoBuildOptions): Promise<BuiltRecipe> {
   if (opts.source) {
     const srcDep = opts.source;
     sourceSetupParts.push(`cp -a /deps/${srcDep}/. /tmp/build`);
+    if (opts.sourceSubdir) {
+      sourceSetupParts.push(`cd /tmp/build/${opts.sourceSubdir}`);
+    }
   } else {
     // Inline Go source — create a minimal module
     sourceSetupParts.push("mkdir -p /tmp/build");
@@ -224,7 +230,7 @@ export async function goBuild(opts: GoBuildOptions): Promise<BuiltRecipe> {
     : "";
 
   const buildCmd = [
-    "cd /tmp/build",
+    !opts.sourceSubdir ? "cd /tmp/build" : "# already cd'd into sourceSubdir during source setup",
     `go build -trimpath${ldflagsPart}${buildFlagsPart} -o $OUT/bin/${opts.name} .`,
     "",
     // Strip the binary

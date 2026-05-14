@@ -6,6 +6,10 @@ A **closure** is the set of all runtime dependencies needed to execute a recipe'
 
 Hod provides two CLI commands for working with closures:
 
+> Recent proof point: this path is now strong enough to build Geany, copy its
+> closure to another NixOS/KDE machine, and run it there from the transferred
+> store.
+
 - **`hod closure`** — inspect the closure (sizes, files, dependency tree)
 - **`hod copy-closure`** — transfer the closure to another store or archive it
 
@@ -16,7 +20,7 @@ src/closure.rs    Closure resolution, display, transfer, and archive logic
 src/main.rs       CLI subcommands: `closure` and `copy-closure`
 ```
 
-The design document is at `plans/copy-closure-design.md`.
+The historical design document is at `plans/copy-closure-design.md`.
 
 ## `hod closure` — Inspect a Closure
 

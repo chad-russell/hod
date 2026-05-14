@@ -1,6 +1,7 @@
 # Agent Instructions: Evaluate and Rebuild After shellBuild Redesign
 
-**Status:** in progress — auto-env removal validated; post-GC 201/201 root-set build now succeeds after explicit raw-process bootstrap/cross PATH fixes.
+**Status:** Historical investigation; the rebuild/GC validation succeeded on this tree.
+**Current authority:** current source, tests, and `docs/build-environment-and-metadata.md`
 **Prerequisite:** The shellBuild redesign (plans/shellbuild-redesign.md) has been
 implemented. ~60 recipe .ts files were modified. SDK files were changed. Two
 obsolete packed-test recipes were removed because they referenced a missing

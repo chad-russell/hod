@@ -1,10 +1,10 @@
 # Relocatable Binaries in Hod
 
-**Date:** 2026-05-03, updated 2026-05-04
+**Date:** 2026-05-03, updated 2026-05-13
 
 Hod’s goal is to produce binaries that run regardless of where the store lives on disk. This guide explains how, why, and what the constraints are.
 
-> Current status: `File.resources_hash` packed outputs use the restored AT_EXECFN bootstrap path when possible, patch RUNPATH/RPATH to `$ORIGIN/../lib`, and assemble `bin/binary` plus `lib/`. Process recipes with encoded `runtime_deps` run the store-relative relocation pass in `src/relocate.rs` after output staging, patch RUNPATH into the store, and inject the bootstrap for executable ELFs so they work both from the host store and inside sandboxes.
+> Current status: `File.resources_hash` packed outputs use the restored AT_EXECFN bootstrap path when possible, patch RUNPATH/RPATH to `$ORIGIN/../lib`, and assemble `bin/binary` plus `lib/`. Process recipes with encoded `runtime_deps` run the store-relative relocation pass in `src/relocate.rs` after output staging, patch RUNPATH into the store, inject the bootstrap for executable ELFs, and generate post-build wrapper scripts for runtime env such as `XDG_DATA_DIRS` / `GSETTINGS_SCHEMA_PATH` when needed.
 
 ---
 
@@ -46,7 +46,7 @@ Example: `$ORIGIN/../lib`
 
 ### 2.4 Non-ELF Runtime Paths
 
-Python sysconfig paths, GTK schemas, Rust sysroots, Firefox resources, etc. ELF patching doesn't solve these — Hod will need declarative runtime metadata eventually.
+Python sysconfig paths, GTK schemas, Rust sysroots, Firefox resources, etc. ELF patching alone doesn't solve these. Hod now has a generic wrapper layer for some runtime env setup, but broader declarative runtime metadata is still a future direction.
 
 ---
 
@@ -92,7 +92,7 @@ The advantage is direct execution without a wrapper process, while avoiding a fi
 
 ## 5. Store-Relative Relocation (New Design)
 
-**Status:** Implemented and in production. `src/relocate.rs` is exported and called by the Process builder when `runtime_deps` is present in the decoded recipe. See `docs/relocation-redesign.md` for full design details.
+**Status:** Implemented and in production. `src/relocate.rs` is exported and called by the Process builder when `runtime_deps` is present in the decoded recipe. This document is the current high-level design reference for relocation on this tree.
 
 ### 5.0.1 New PT_LOAD Segment Strategy for RUNPATH/PT_INTERP Patching
 
@@ -365,7 +365,9 @@ When Hod has an evaluator, it can automatically:
 - The user writes `build_relocatable_binary("bash", deps=[...])` and gets a store-relative relocatable binary
 
 ### Layer 6: Runtime metadata and wrappers
-For non-ELF paths (Python, Rust, GTK, etc.), Hod will need declarative runtime metadata:
+Current behavior: after relocation, Hod can generate wrapper scripts for ELF executables in `bin/` that construct runtime env such as `XDG_DATA_DIRS` and `GSETTINGS_SCHEMA_PATH` from runtime dependency outputs. This is enough for real apps like Geany, but it is still only a partial solution.
+
+Longer-term, Hod will likely want declarative runtime metadata for non-ELF paths and richer env needs:
 
 ```json
 {
@@ -393,7 +395,7 @@ For non-ELF paths (Python, Rust, GTK, etc.), Hod will need declarative runtime m
 
 ### Runtime namespace / overlay
 
-`hod run` creates an FHS-like namespace with `/lib`, `/usr`, `/etc`. Useful for GUI/browser stacks as a fallback, not core foundation.
+`hod run` currently does **host-side environment composition**, not namespace construction. A future namespace/overlay mode could still be useful for especially FHS-heavy stacks, but it is not the current design.
 
 ---
 

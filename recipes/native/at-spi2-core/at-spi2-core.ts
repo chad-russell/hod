@@ -37,18 +37,20 @@ export const atSpi2CoreRuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     binDeps: ["glib"],
     includeDeps: ["glib", "dbus", "libxml2", "libX11", "libXext", "libXi", "libXfixes", "libXtst", "libffi", "pcre2", "zlib", "libiconv", "xz", "libXau", "libXcb", "libXdmcp"],
     libDeps: ["glib", "dbus", "libxml2", "libX11", "libXext", "libXi", "libXfixes", "libXtst", "libffi", "pcre2", "zlib", "libiconv", "xz", "libXau", "libXcb", "libXdmcp"],
     pkgConfigDeps: ["glib", "dbus", "libxml2", "libX11", "libXext", "libXi", "libXfixes", "libXtst", "libffi", "pcre2", "zlib", "xz", "libXau", "libXcb", "libXdmcp"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
   script: `
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} + 2>/dev/null || true
 
 export LD_LIBRARY_PATH="/deps/glib/lib:/deps/dbus/lib:/deps/libxml2/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/zlib/lib:/deps/libiconv/lib:/deps/xz/lib:/deps/expat/lib:/deps/libX11/lib:/deps/libXext/lib:/deps/libXi/lib:/deps/libXtst/lib:/deps/libXau/lib:/deps/libXcb/lib:/deps/libXdmcp/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 

@@ -1,8 +1,10 @@
 # GTK GUI App Roadmap
 
-**Goal:** Build and run a GTK3 graphical application (`yad`) entirely from source
-using Hod's hermetic build system, with all dependencies in the content-addressed
-store.
+**Status:** Active, but partially historical  
+**Current milestone:** Hod has now built and transferred Geany successfully to another machine.  
+**Current authority:** `recipes/native/geany/geany.ts`, `plans/geany-wrapper-handoff.md`, `docs/closure-transfer.md`, `docs/relocatable-binaries-guide.md`
+
+**Goal:** Build and run GTK graphical applications entirely from source using Hod's hermetic build system, with all dependencies in the content-addressed store.
 
 **First milestone:** A minimal X11 "Hello Hod" window (Phase 1A).
 

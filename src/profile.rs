@@ -10,15 +10,16 @@
 //! Instead of merging individual files into shared `bin/`, `lib/`, etc.
 //! directories (which fights Hod's store-relocation design), each package's
 //! entire staging output is linked as a directory symlink under `pkgs/`.
-//! The env.sh script composes PATH, LD_LIBRARY_PATH, etc. from those linked
+//! The env scripts compose PATH/MANPATH/XDG_DATA_DIRS from those linked
 //! directories.
 //!
 //! This works with store-relocation because binaries are invoked through the
 //! symlink chain, the kernel resolves to the store staging path, and the
 //! bootstrap + RPATH relative paths resolve correctly from there.
 //!
-//! Runtime deps (toolchain libc, ld-linux) are linked under `runtime/` so
-//! they appear on LD_LIBRARY_PATH as a fallback.
+//! Runtime deps (toolchain libc, ld-linux, shared assets) are linked under
+//! `runtime/` for inspection and debugging; the profile env scripts do not use
+//! them via `LD_LIBRARY_PATH`.
 
 use std::path::{Path, PathBuf};
 
@@ -239,8 +240,8 @@ struct ResolvedPackage {
 ///
 /// Each package's entire staging output is symlinked as a directory. This
 /// preserves the store-relative paths that the bootstrap and RPATH rely on.
-/// Runtime deps are linked separately under `runtime/` so their libs can be
-/// added to LD_LIBRARY_PATH as a fallback.
+/// Runtime deps are linked separately under `runtime/` for inspection and for
+/// wrapper/runtime logic outside the profile env scripts.
 pub fn create_farm(
     store: &Store,
     name: &str,

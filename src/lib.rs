@@ -1,6 +1,6 @@
 //! Hod — a deterministic, content-addressed build system.
 //!
-//! See PRD.md for the full product specification.
+//! For project-level context, prefer `README.md`, `AGENTS.md`, and `docs/README.md`.
 //!
 //! The crate is organized into modules for each concern:
 //!

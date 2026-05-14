@@ -17,6 +17,7 @@ export const dbusRuntimeDeps = ["expat", "toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["expat"],
     libDeps: ["expat"],
     pkgConfigDeps: ["expat"],
@@ -25,8 +26,6 @@ const recipe = await shellBuild({
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} + 2>/dev/null || true
 
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \

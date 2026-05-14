@@ -21,6 +21,9 @@ const recipe = await shellBuild({
     includeDeps: ["xorgproto", "libXau", "libXcb"],
     libDeps: ["libXcb", "libXau"],
     pkgConfigDeps: ["libXcb", "libXau", "libXdmcp"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto", "xtrans" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig", "/deps/xtrans/share/pkgconfig"],
   }),
   script: `

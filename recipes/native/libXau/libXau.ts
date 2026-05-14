@@ -14,6 +14,9 @@ export const libXauRuntimeDeps = ["toolchain"];
 const recipe = await shellBuild({
   ...cProfile({
     includeDeps: ["xorgproto"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
   script: `

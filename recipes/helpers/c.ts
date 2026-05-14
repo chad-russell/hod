@@ -31,10 +31,20 @@ export interface CProfileOptions {
   libDeps?: string[];
   /** Additional explicit library paths. */
   libPaths?: string[];
-  /** Dependencies whose lib/pkgconfig directories should be added to PKG_CONFIG_PATH. */
+  /** Dependencies whose pkg-config directories should be added to PKG_CONFIG_PATH.
+   *   Both `lib/pkgconfig` and `share/pkgconfig` are included automatically. */
   pkgConfigDeps?: string[];
   /** Additional explicit pkg-config search paths. */
   pkgConfigPaths?: string[];
+
+  /**
+   * Dep name providing Python 3 (`bin/python3`). When set:
+   * - The hermetic preamble creates `/usr/bin/env` and `/usr/bin/python3` wrapper
+   * - `/usr/bin` and `/deps/<python>/bin` are added to PATH (before toolchain)
+   *
+   * Use this for any build that invokes Python scripts (meson, glib, etc.).
+   */
+  python?: string;
 }
 
 /**
@@ -62,8 +72,17 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
   const tc = opts.toolchain ?? opts.tc ?? "toolchain";
   const rpathFlag = HOD_DUMMY_RPATH_FLAG;
 
+  const pathEntries: string[] = [];
+  // Python wrapper and bin must come first so that /usr/bin/python3
+  // (the wrapper) is found before any other python3 on PATH.
+  if (opts.python) {
+    pathEntries.push("/usr/bin", depSubpath(opts.python, "bin"));
+  }
+  pathEntries.push(depSubpath(tc, "bin"));
+  pathEntries.push(...(opts.binDeps ?? []).map((dep) => depSubpath(dep, "bin")));
+
   const env: Record<string, string> = {
-    PATH: pathList([depSubpath(tc, "bin"), ...(opts.binDeps ?? []).map((dep) => depSubpath(dep, "bin"))]),
+    PATH: pathList(pathEntries),
     CC: `${depSubpath(tc, "bin/gcc")} --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
     AR: depSubpath(tc, "bin/ar"),
     RANLIB: depSubpath(tc, "bin/ranlib"),
@@ -89,8 +108,16 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
     env.LIBRARY_PATH = libraryPath;
   }
 
+  // Add both lib/pkgconfig and share/pkgconfig for each dep.
+  // pkg-config silently ignores non-existent directories, so it's safe
+  // to add both even if only one exists. This handles data packages
+  // (xorgproto, gsettings-desktop-schemas, iso-codes, etc.) that install
+  // their .pc files in share/pkgconfig instead of lib/pkgconfig.
   const pkgConfigPath = pathList([
-    ...(opts.pkgConfigDeps ?? []).map((dep) => depSubpath(dep, "lib/pkgconfig")),
+    ...(opts.pkgConfigDeps ?? []).flatMap((dep) => [
+      depSubpath(dep, "lib/pkgconfig"),
+      depSubpath(dep, "share/pkgconfig"),
+    ]),
     ...(opts.pkgConfigPaths ?? []),
   ]);
   if (pkgConfigPath !== "") {
@@ -99,7 +126,7 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
 
   return {
     shell: depSubpath(tc, "bin/busybox"),
-    preamble: hermeticPreamble({ shell: tc, glibcLinker: tc }),
+    preamble: hermeticPreamble({ shell: tc, glibcLinker: tc, python: opts.python }),
     env,
   };
 }

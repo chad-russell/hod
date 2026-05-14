@@ -19,6 +19,7 @@ export const atkRuntimeDeps = ["glib", "libffi", "pcre2", "toolchain", "zlib"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["glib", "zlib", "libffi", "pcre2"],
     libDeps: ["glib", "zlib", "libffi", "pcre2"],
     pkgConfigDeps: ["glib", "zlib", "libffi", "pcre2"],
@@ -27,8 +28,6 @@ const recipe = await shellBuild({
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \

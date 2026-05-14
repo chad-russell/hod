@@ -2,8 +2,6 @@
 //!
 //! The store is SQLite + filesystem. Metadata lives in `hod.db`, blobs and
 //! recipes are sharded on disk by the first two hex chars of their BLAKE3 hash.
-//!
-//! See PRD §5 for the full design.
 
 // Sub-modules — not re-exported as public types; access via Store methods.
 mod blobs;

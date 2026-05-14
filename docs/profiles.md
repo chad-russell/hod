@@ -103,9 +103,11 @@ same toolchain, it appears once as `runtime/toolchain`.
 
 ### `env.sh` / `env.fish`
 
-The env scripts compose `PATH`, `LD_LIBRARY_PATH`, `MANPATH`, and
-`XDG_DATA_DIRS` from the linked package and runtime directories. They also set
-`HOD_PROFILE` to the profile name.
+The env scripts compose `PATH`, `MANPATH`, and `XDG_DATA_DIRS` from the linked
+package directories. They also set `HOD_PROFILE` to the profile name.
+
+They intentionally do **not** set `LD_LIBRARY_PATH`; Hod binaries are expected
+to find their own libraries via store-relative RUNPATH + bootstrap logic.
 
 ```bash
 source ~/.hod/profiles/default/env.sh

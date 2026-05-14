@@ -12,6 +12,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { bisonSourceRecipe } from "./bison-source.js";
 import { m4Recipe } from "../m4/m4.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["m4"] }),
@@ -32,12 +33,33 @@ export M4="/deps/m4/bin/m4"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+# Strip the real binary, then move it out of bin/ so we can install a
+# package-specific wrapper. Bison supports BISON_PKGDATADIR and M4 env vars;
+# use those instead of patching compiled-in strings in the ELF.
+${STRIP} $OUT/bin/bison 2>/dev/null || true
+mkdir -p $OUT/libexec/bison
+mv $OUT/bin/bison $OUT/libexec/bison/bison
 
-# Patch bison to find its data files at the dep mount point.
-# --prefix=/ produces references to //share/bison.
-sed -i "s|//share/bison|/deps/bison/share/bison|g" $OUT/bin/bison
+# Bake the canonical runtime location of the m4 dependency into the wrapper.
+# This is store-shape relative, so it works both in sandboxes (/xx/hash) and
+# from a host/transfer staging root (.../staging/xx/hash).
+m4_rel="$(readlink /deps/m4)"
+m4_store_path="\${m4_rel#../}"
+
+cat > $OUT/bin/bison <<'EOF'
+#!/bin/sh
+self="$(readlink -f "$0")"
+bin_dir="$(dirname "$self")"
+prefix="$(cd "$bin_dir/.." && pwd)"
+staging_root="$(cd "$bin_dir/../../.." && pwd)"
+export BISON_PKGDATADIR="\${BISON_PKGDATADIR:-$prefix/share/bison}"
+if [ -z "\${M4+x}" ]; then
+  export M4="$staging_root/@M4_STORE_PATH@/bin/m4"
+fi
+exec "$prefix/libexec/bison/bison" "$@"
+EOF
+sed -i "s|@M4_STORE_PATH@|$m4_store_path|g" $OUT/bin/bison
+chmod +x $OUT/bin/bison
 
 # Fix absolute symlinks
 cd $OUT/bin
@@ -55,7 +77,7 @@ ls -la $OUT/share/bison/skeletons/bison.m4
     dep("toolchain", nativeToolchainRecipe),
     dep("m4", m4Recipe),
   ],
-  runtime_deps: ["toolchain"],
+  runtime_deps: ["m4", "toolchain"],
 });
 
 await importToStore(recipe);

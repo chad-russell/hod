@@ -1,14 +1,14 @@
 //! Linux namespace sandbox for Process builds.
 //!
-//! Process recipes execute in isolated Linux namespaces:
-//! - **User**: User namespace with uid/gid mapping (maps to host user inside sandbox).
-//! - **Mount**: Private mount namespace with sandbox filesystem.
-//! - **PID**: Private PID namespace.
-//! - **IPC**: Private IPC namespace.
-//! - **UTS**: Private UTS namespace (isolated hostname).
-//! - **Network**: Private network namespace (no network unless `unsafe_flags & 0x01`).
+//! Current namespace setup:
+//! - **User**: user namespace with uid/gid mapping
+//! - **Mount**: private mount namespace with sandbox filesystem
+//! - **Network**: private network namespace unless `unsafe_flags & 0x01`
 //!
-//! The sandbox filesystem layout per PRD §6.2:
+//! Do not assume PID / IPC / UTS namespaces are enabled unless you verify the
+//! current implementation below.
+//!
+//! Sandbox filesystem layout:
 //! ```text
 //! /                   (root = sandbox_root on host)
 //! ├── <shard>/<hash>/ → bind-mounted dependency outputs at canonical store paths

@@ -1,5 +1,9 @@
 # Plan: Transfer Hod yad Closure to Laptop
 
+**Status:** Historical / completed  
+**Current authority:** `docs/closure-transfer.md`, `plans/geany-wrapper-handoff.md`  
+**Note:** The repo now has `hod copy-closure`; this file is pre-command transfer archaeology.
+
 ## Goal
 Run `yad` (GTK3 dialog tool) on the ThinkPad, with builds from the remote
 hod server.

@@ -1,7 +1,8 @@
 # Plan: Go Language Support for Hod
 
-**Status:** Ready to implement  
+**Status:** Implemented; historical design record  
 **Date:** 2026-05-11  
+**Current authority:** `recipes/helpers/go.ts`, `recipes/native/go/`, current source/tests  
 **Scope:** Go toolchain installation, `goBuild` helper, test recipes
 
 ## Background

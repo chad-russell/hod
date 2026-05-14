@@ -1,6 +1,6 @@
 //! Go toolchain — prebuilt binary installation.
 //!
-//! Installs the official Go 1.24.3 prebuilt binaries. The Go toolchain is
+//! Installs the official Go 1.26.3 prebuilt binaries. The Go toolchain is
 //! fully statically linked (no glibc dependency), so no runtime_deps are
 //! needed for the toolchain itself. Go outputs that use CGO will declare
 //! their own runtime_deps.

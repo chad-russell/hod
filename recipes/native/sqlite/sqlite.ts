@@ -37,6 +37,7 @@ export PATH="/tmp/cc-wrapper:$PATH"
   --enable-shared \\
   --disable-static \\
   --disable-dependency-tracking \\
+  CFLAGS="-O2 -DSQLITE_ENABLE_FTS5" \\
   CC="$CC"
 
 make -j$(nproc)

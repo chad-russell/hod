@@ -66,6 +66,9 @@ const recipe = await shellBuild({
       "libXfixes", "libXau", "libXcb", "libXdmcp",
       "libxml2", "libXtst", "xz",
     ],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto", "shared-mime-info" to pkgConfigDeps and remove this block.
     pkgConfigPaths: [
       "/deps/xorgproto/share/pkgconfig",
       "/deps/shared-mime-info/share/pkgconfig",

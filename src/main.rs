@@ -1,10 +1,7 @@
 //! Hod CLI — command-line interface for the deterministic build system.
 //!
-//! Two commands:
-//! - `hod build <recipe-file>` — build a recipe and all its transitive dependencies
-//! - `hod ls-output <hash>` — list the contents of a built output
-//!
-//! See PRD §8 for the full CLI specification.
+//! This file defines the clap surface and dispatches to the Rust modules that
+//! implement each subcommand.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};

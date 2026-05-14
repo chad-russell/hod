@@ -8,8 +8,6 @@
 //!   5. Recursively build all dependencies
 //!   6. Dispatch to the recipe-specific builder
 //!   7. Record the output in the store
-//!
-//! See PRD §9 for the full build execution flow.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -56,7 +54,7 @@ impl Default for BuildOptions {
 
 /// Errors from the build orchestrator.
 ///
-/// Each variant maps to a specific exit code per PRD §8.2.
+/// Each variant maps to a stable process exit code.
 #[derive(Debug)]
 pub enum BuildError {
     /// The recipe binary is malformed (exit code 3).
@@ -149,7 +147,7 @@ impl From<std::io::Error> for BuildError {
 }
 
 impl BuildError {
-    /// Return the exit code per PRD §8.2.
+    /// Return the process exit code for this error.
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::InvalidRecipe(_) => 3,

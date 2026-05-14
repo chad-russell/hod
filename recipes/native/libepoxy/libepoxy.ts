@@ -21,17 +21,19 @@ export const libepoxyRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    python: "python",
     includeDeps: ["xorgproto", "libX11", "libXau", "libXcb", "libXdmcp"],
     libDeps: ["libX11", "libXau", "libXcb", "libXdmcp"],
     pkgConfigDeps: ["libX11", "libXau", "libXcb", "libXdmcp"],
+    // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
+    // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
+    // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
   script: `
 
 cp -a /deps/source/. /tmp/build
 cd /tmp/build
-
-find . -name '*.py' -type f -exec sed -i '1s|^#!/usr/bin/env python3|#!/deps/python/bin/python3|' {} +
 
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \

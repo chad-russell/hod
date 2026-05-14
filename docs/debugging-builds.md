@@ -98,14 +98,18 @@ Dependencies are mounted at canonical store-shaped paths and symlinked into `/st
 └── proc/                   # host /proc bind mount
 ```
 
-The builder also auto-populates environment variables from dependency outputs:
+Core Hod now provides only the universal build variables:
 
-- `PATH` from dependency `bin/` directories
-- `LIBRARY_PATH` from dependency `lib/` directories
-- `C_INCLUDE_PATH` from dependency `include/` directories
-- `OUT=/out`, `DEPS=/deps`, `TMPDIR=/tmp`, `HOME=/homeless-shelter`
+- `OUT=/out`
+- `DEPS=/deps`
+- `TMPDIR=/tmp`
+- `HOME=/homeless-shelter`
+- `HOD_STORE=<store-root>`
 
-Recipe env vars are set first, then the standard builder vars above are set last (always winning).
+Ecosystem-specific variables such as `PATH`, `LIBRARY_PATH`, `C_INCLUDE_PATH`,
+`PKG_CONFIG_PATH`, `CC`, and `LDFLAGS` must come from the recipe itself,
+typically via TypeScript helpers like `cProfile()`, `cargoBuild()`, or
+`goBuild()`.
 
 ## Keeping Iteration Fast
 
@@ -115,6 +119,9 @@ Recipe env vars are set first, then the standard builder vars above are set last
 - Use `--force` only when you need to bypass a cached output.
 - Do not assume failed sandbox reuse is supported. Current `build_process` removes any existing sandbox for that recipe at build start.
 
-## Future / Desired Workflow
+## Future Improvements
 
-An interactive `hod shell` command would still be valuable for resuming a complex failed build in a live sandbox, but it should be documented here only after it is implemented in the CLI and builder.
+`hod shell` exists today for running built packages, but it is **not** a
+failed-build resume tool. A future workflow for reopening a preserved failed
+sandbox interactively could still be valuable, but it would be separate from
+the current `hod shell` behavior.

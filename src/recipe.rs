@@ -42,6 +42,7 @@ pub enum RecipeType {
     Download = 0x04,
     Process = 0x05,
     Unpack = 0x06,
+    GitFetch = 0x07,
 }
 
 impl RecipeType {
@@ -53,6 +54,7 @@ impl RecipeType {
             0x04 => Some(Self::Download),
             0x05 => Some(Self::Process),
             0x06 => Some(Self::Unpack),
+            0x07 => Some(Self::GitFetch),
             _ => None,
         }
     }
@@ -140,6 +142,8 @@ pub enum ArchiveFormat {
     TarGz = 0x01,
     #[serde(rename = "tar_xz")]
     TarXz = 0x02,
+    #[serde(rename = "tar_bz2")]
+    TarBz2 = 0x03,
 }
 
 impl ArchiveFormat {
@@ -147,9 +151,26 @@ impl ArchiveFormat {
         match v {
             0x01 => Some(Self::TarGz),
             0x02 => Some(Self::TarXz),
+            0x03 => Some(Self::TarBz2),
             _ => None,
         }
     }
+}
+
+/// A git fetch recipe — clone a git repository at a known revision.
+///
+/// Analogous to Nix's `builtins.fetchGit`. Produces a directory tree output
+/// (the working tree at the specified revision, without `.git` metadata).
+/// The output hash is verified against `expected_hash` for hermeticity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeGitFetch {
+    /// Git repository URL (HTTPS or SSH).
+    pub url: String,
+    /// Revision to checkout — commit hash, tag, or branch name.
+    pub revision: String,
+    /// Expected BLAKE3 hash of the output directory tree.
+    #[serde(with = "hash_serde")]
+    pub expected_hash: Hash,
 }
 
 /// An unpack recipe — extract a tar archive into a directory output.
@@ -232,7 +253,7 @@ pub struct RecipeProcess {
     pub runtime_deps: Option<Vec<String>>,
 }
 
-/// The top-level recipe enum — one of the six recipe types.
+/// The top-level recipe enum — one of the recipe types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Recipe {
@@ -242,6 +263,7 @@ pub enum Recipe {
     Download(RecipeDownload),
     Process(RecipeProcess),
     Unpack(RecipeUnpack),
+    GitFetch(RecipeGitFetch),
 }
 
 impl Recipe {
@@ -254,6 +276,7 @@ impl Recipe {
             Self::Download(_) => RecipeType::Download,
             Self::Process(_) => RecipeType::Process,
             Self::Unpack(_) => RecipeType::Unpack,
+            Self::GitFetch(_) => RecipeType::GitFetch,
         }
     }
 
@@ -354,6 +377,11 @@ impl Recipe {
                     enc.list_u32(runtime_deps, |e, dep| e.str_u16(dep));
                 }
             }
+            Recipe::GitFetch(gf) => {
+                enc.str_u16(&gf.url);
+                enc.str_u16(&gf.revision);
+                enc.hash(&gf.expected_hash);
+            }
         }
         enc.into_bytes()
     }
@@ -411,6 +439,7 @@ impl Recipe {
             RecipeType::Download => Self::decode_download(&mut body_dec)?,
             RecipeType::Process => Self::decode_process(&mut body_dec)?,
             RecipeType::Unpack => Self::decode_unpack(&mut body_dec)?,
+            RecipeType::GitFetch => Self::decode_git_fetch(&mut body_dec)?,
         };
 
         // Body must be fully consumed
@@ -604,6 +633,17 @@ impl Recipe {
             output_scaffold_hash,
             unsafe_flags,
             runtime_deps,
+        }))
+    }
+
+    fn decode_git_fetch(dec: &mut Decoder) -> Result<Self> {
+        let url = dec.str_u16()?;
+        let revision = dec.str_u16()?;
+        let expected_hash = dec.hash()?;
+        Ok(Recipe::GitFetch(RecipeGitFetch {
+            url,
+            revision,
+            expected_hash,
         }))
     }
 }

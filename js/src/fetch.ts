@@ -76,9 +76,9 @@ export async function fetchTarball(options: FetchTarballOptions): Promise<BuiltR
     );
   }
 
-  if (!["tar_gz", "tar_xz"].includes(format)) {
+  if (!["tar_gz", "tar_xz", "tar_bz2"].includes(format)) {
     throw new Error(
-      `fetchTarball(): unsupported format "${format}". Only "tar_gz" and "tar_xz" are currently supported.`,
+      `fetchTarball(): unsupported format "${format}". Only "tar_gz", "tar_xz", and "tar_bz2" are currently supported.`,
     );
   }
 

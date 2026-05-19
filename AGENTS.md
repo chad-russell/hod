@@ -68,9 +68,19 @@ docs/
 - Process `runtime_deps` drive:
   - store-relative ELF relocation
   - AT_EXECFN bootstrap injection for executables
-  - post-build wrapper generation for runtime env like `XDG_DATA_DIRS` / `GSETTINGS_SCHEMA_PATH`
+  - post-build wrapper generation for runtime env like `XDG_DATA_DIRS` / `GSETTINGS_SCHEMA_PATH` / `GSK_RENDERER` / `GIO_LAUNCH_DESKTOP`
 - Core Rust no longer injects C/C++-specific build env automatically. Ecosystem env composition lives in TS helpers like `cProfile`, `cargoBuild`, and `goBuild`.
 - `shellBuild` injects the long dummy RPATH automatically. If a recipe overrides linker flags manually, it must preserve the dummy RPATH slot.
+
+## Debugging philosophy
+
+When a user reports a runtime failure, always:
+
+1. **Identify the root cause** — trace the error back to the actual missing piece (a disabled build option, a missing runtime_dep, a wrong path, etc.).
+2. **Provide a quick workaround** — give the user a one-liner that works *now* (e.g. `GDK_BACKEND=x11`).
+3. **Suggest the proper fix** — propose the recipe or infrastructure change that eliminates the root cause for good.
+
+Never stop at "it works on my machine" or "try a different binary." The goal is to close the gap permanently.
 
 ## When editing docs
 
@@ -103,14 +113,24 @@ Avoid ignored bootstrap/sandbox tests unless explicitly asked.
 
 The current tree has crossed an important portability milestone:
 
-- build **Geany** from source
-- copy its closure to another machine
-- run it there successfully on NixOS/KDE
+- build **Nautilus 48.7** from source
+- copy its closure to another machine (NixOS + niri)
+- run it there — window rendering, schema resolution, and "Open With" app launching all work
 
-This means closure transfer + relocation + wrapper/runtime setup are now good enough for at least one real GUI app.
+This means closure transfer + relocation + wrapper/runtime setup are now good enough for a complex GTK4/libadwaita GUI app with a deep dependency tree.
+
+Additionally, the COSMIC desktop environment build is nearly complete:
+
+- **18 of 19** COSMIC components build from source (8 core + 10 supporting + pop-launcher + cosmic-icons)
+- Full dependency chain: Mesa → eudev/libinput/seatd → PulseAudio/pipewire → cosmic-comp → all apps
+- Ready to proceed to Phase 5 (bootable VM image) with the 18 working components
 
 ## Likely next fronts
 
-1. generalize GUI runtime metadata/wrappers beyond Geany
-2. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
-3. reduce bootstrap trust surface (seed minimization)
+1. **COSMIC desktop environment** (`plans/cosmic-desktop-roadmap.md`) — build the full COSMIC DE from source: Mesa → C deps → Rust apps → bootable VM. This is the top priority.
+   - **18/19 components build.** Only xdg-desktop-portal-cosmic remains blocked on pipewire-sys bindgen.
+   - Phase 5 (VM image) can proceed with the 18 working components.
+2. enable Vulkan/GL in GTK4 build to eliminate `GSK_RENDERER=cairo` workaround
+3. pre-generate pipewire-sys bindings to unblock xdg-desktop-portal-cosmic
+4. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
+5. reduce bootstrap trust surface (seed minimization)

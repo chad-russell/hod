@@ -76,11 +76,12 @@ tests/             Rust unit/integration tests
 
 ## Best places to go next
 
-After the Geany + closure-transfer milestone, the strongest next fronts are:
+After the Nautilus + closure-transfer milestone, the strongest next front is:
 
-1. **GUI runtime metadata/wrappers** — generalize the Geany work so more desktop apps run directly after transfer.
-2. **Closure distribution UX** — `copy-closure --from`, cache workflows, and smoother multi-machine use.
-3. **Bootstrap trust reduction** — seed minimization from the current bootstrap pipeline.
+1. **COSMIC desktop environment** — build the full COSMIC DE (compositor, panel, apps) from source, culminating in a bootable VM running COSMIC from the hod store. See `plans/cosmic-desktop-roadmap.md`.
+2. **GUI runtime metadata/wrappers** — generalize the Nautilus work so more desktop apps run directly after transfer.
+3. **Closure distribution UX** — `copy-closure --from`, cache workflows, and smoother multi-machine use.
+4. **Bootstrap trust reduction** — seed minimization from the current bootstrap pipeline.
 
 ## For agents
 

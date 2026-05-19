@@ -330,14 +330,221 @@ fn patch_runpath_by_extension(
     old_rpath_offset: usize,
     old_rpath_len: usize,
 ) -> std::result::Result<bool, PackedError> {
+    // Strategy 1: Extend .dynstr into zero-padded space
     match patch_runpath_padding_extension(data, new_rpath, old_rpath_offset, old_rpath_len) {
-        Ok(result) => Ok(result),
-        Err(PackedError::RunpathTooShort { .. }) => {
-            // Padding extension failed — create new PT_LOAD segment
-            patch_elf_with_new_segment(data, new_rpath, None)
-        }
-        Err(e) => Err(e),
+        Ok(result) => return Ok(result),
+        Err(PackedError::RunpathTooShort { .. }) => {}
+        Err(e) => return Err(e),
     }
+
+    // Strategy 2: Extend the last PT_LOAD segment to hold relocated .dynstr.
+    // This does NOT need a new program header slot, so PT_GNU_STACK is preserved.
+    // Critical for shared libraries loaded via dlopen (e.g., libclang.so used by
+    // bindgen) because glibc defaults to requiring executable stack for ELFs
+    // missing PT_GNU_STACK, which mprotect(PROT_EXEC) rejects in user namespaces.
+    match patch_runpath_extend_last_load(data, new_rpath) {
+        Ok(true) => return Ok(true),
+        Ok(false) => {}
+        Err(_) => {}
+    }
+
+    // Strategy 3: Create new PT_LOAD segment (may repurpose PT_GNU_STACK)
+    patch_elf_with_new_segment(data, new_rpath, None)
+}
+
+/// Strategy 1: Extend `.dynstr` into zero-padded space after its content.
+///
+/// Extend the last PT_LOAD segment to hold relocated `.dynstr` with new RUNPATH.
+///
+/// This strategy appends the new `.dynstr` content (old .dynstr + new RUNPATH)
+/// at the end of the file, then extends the last PT_LOAD segment's `p_filesz`
+/// and `p_memsz` to cover it. No new program header entry is needed, so
+/// PT_GNU_STACK (and all other phdrs) are preserved.
+///
+/// Returns `Ok(true)` if patched, `Ok(false)` if the ELF has no suitable last
+/// PT_LOAD segment to extend.
+fn patch_runpath_extend_last_load(
+    data: &mut Vec<u8>,
+    new_rpath: &[u8],
+) -> std::result::Result<bool, PackedError> {
+    let e_phentsize: usize;
+    let e_phnum: usize;
+    let e_phoff: usize;
+
+    struct ExtInfo {
+        last_load_idx: usize,
+        last_load_phdr_offset: usize,
+        dyn_base: usize,
+        strtab_idx: usize,
+        strsz_idx: usize,
+        runpath_idx: usize,
+        strtab_vaddr: u64,
+        dynstr_file_off: usize,
+        actual_str_end: usize,
+        old_rpath_file_off: usize,
+        old_rpath_len: usize,
+        last_load_offset: u64,
+        last_load_vaddr: u64,
+        last_load_filesz: u64,
+        last_load_memsz: u64,
+    }
+
+    let info = {
+        let elf = Elf::parse(data).map_err(|e| PackedError::NotElf(e.to_string()))?;
+        e_phentsize = elf.header.e_phentsize as usize;
+        e_phnum = elf.header.e_phnum as usize;
+        e_phoff = elf.header.e_phoff as usize;
+
+        let dynamic = match elf.dynamic {
+            Some(ref d) => d,
+            None => return Ok(false),
+        };
+
+        let has_runpath = dynamic.dyns.iter().any(|e| {
+            e.d_tag == goblin::elf::dynamic::DT_RUNPATH
+                || e.d_tag == goblin::elf::dynamic::DT_RPATH
+        });
+        if !has_runpath {
+            return Ok(false);
+        }
+
+        let last_load = elf
+            .program_headers
+            .iter()
+            .enumerate()
+            .filter(|(_, ph)| ph.p_type == program_header::PT_LOAD)
+            .last();
+        let (last_load_idx, last_load_ph) = match last_load {
+            Some(x) => x,
+            None => return Ok(false),
+        };
+
+        if last_load_ph.p_align > 0 && (data.len() as u64) % last_load_ph.p_align != 0 {
+            // File end is not aligned to the segment alignment — skip
+        }
+
+        let dyn_phdr = elf
+            .program_headers
+            .iter()
+            .find(|ph| ph.p_type == program_header::PT_DYNAMIC);
+        let dyn_base = match dyn_phdr {
+            Some(ph) => ph.p_offset as usize,
+            None => return Ok(false),
+        };
+
+        let mut strtab_vaddr: u64 = 0;
+        let mut strsz: u64 = 0;
+        let mut strtab_idx: usize = 0;
+        let mut strsz_idx: usize = 0;
+        let mut runpath_idx: usize = 0;
+
+        for (i, entry) in dynamic.dyns.iter().enumerate() {
+            match entry.d_tag {
+                goblin::elf::dynamic::DT_STRTAB => {
+                    strtab_vaddr = entry.d_val;
+                    strtab_idx = i;
+                }
+                goblin::elf::dynamic::DT_STRSZ => {
+                    strsz = entry.d_val;
+                    strsz_idx = i;
+                }
+                goblin::elf::dynamic::DT_RUNPATH | goblin::elf::dynamic::DT_RPATH => {
+                    runpath_idx = i;
+                }
+                _ => {}
+            }
+        }
+
+        if strtab_vaddr == 0 || strsz == 0 {
+            return Ok(false);
+        }
+
+        let dynstr_file_off = vaddr_to_file_offset(&elf, strtab_vaddr)? as usize;
+        let actual_str_end = dynstr_file_off + strsz as usize;
+
+        let rpath_entry = dynamic
+            .dyns
+            .iter()
+            .find(|e| {
+                e.d_tag == goblin::elf::dynamic::DT_RUNPATH
+                    || e.d_tag == goblin::elf::dynamic::DT_RPATH
+            })
+            .ok_or_else(|| PackedError::NotElf("no RUNPATH entry".into()))?;
+
+        let old_rpath_strtab_off = rpath_entry.d_val as usize;
+        let old_rpath_file_off = dynstr_file_off + old_rpath_strtab_off;
+        let old_rpath_end = actual_str_end;
+        let old_rpath_len = old_rpath_end - old_rpath_file_off;
+
+        ExtInfo {
+            last_load_idx,
+            last_load_phdr_offset: e_phoff + last_load_idx * e_phentsize,
+            dyn_base,
+            strtab_idx,
+            strsz_idx,
+            runpath_idx,
+            strtab_vaddr,
+            dynstr_file_off,
+            actual_str_end,
+            old_rpath_file_off,
+            old_rpath_len,
+            last_load_offset: last_load_ph.p_offset,
+            last_load_vaddr: last_load_ph.p_vaddr,
+            last_load_filesz: last_load_ph.p_filesz,
+            last_load_memsz: last_load_ph.p_memsz,
+        }
+    };
+
+    let old_dynstr = data[info.dynstr_file_off..info.actual_str_end].to_vec();
+    let new_rpath_str = new_rpath;
+
+    let new_dynstr_len = old_dynstr.len() + 1 + new_rpath_str.len() + 1;
+    let mut new_dynstr = Vec::with_capacity(new_dynstr_len);
+    new_dynstr.extend_from_slice(&old_dynstr);
+    new_dynstr.push(0);
+    new_dynstr.extend_from_slice(new_rpath_str);
+    new_dynstr.push(0);
+
+    let new_rpath_offset_in_dynstr = old_dynstr.len() + 1;
+
+    let old_file_end = data.len() as u64;
+    let align = 4096u64;
+    let append_offset = (old_file_end + align - 1) & !(align - 1);
+    let padding_needed = (append_offset - old_file_end) as usize;
+    let new_data_len = append_offset as usize + new_dynstr.len();
+
+    let new_strtab_vaddr = info.last_load_vaddr
+        + (append_offset - info.last_load_offset);
+    let new_last_load_filesz = (append_offset - info.last_load_offset) as u64 + new_dynstr.len() as u64;
+    let new_last_load_memsz = new_last_load_filesz.max(info.last_load_memsz);
+
+    data.resize(new_data_len, 0);
+    data[old_file_end as usize..old_file_end as usize + padding_needed].fill(0);
+    let write_start = append_offset as usize;
+    data[write_start..write_start + new_dynstr.len()].copy_from_slice(&new_dynstr);
+
+    data[info.old_rpath_file_off..info.old_rpath_file_off + info.old_rpath_len].fill(0);
+
+    let dyn_entsize: usize = 16;
+
+    let strtab_val_off = info.dyn_base + info.strtab_idx * dyn_entsize + 8;
+    data[strtab_val_off..strtab_val_off + 8].copy_from_slice(&new_strtab_vaddr.to_le_bytes());
+
+    let strsz_val_off = info.dyn_base + info.strsz_idx * dyn_entsize + 8;
+    data[strsz_val_off..strsz_val_off + 8]
+        .copy_from_slice(&(new_dynstr.len() as u64).to_le_bytes());
+
+    let runpath_val_off = info.dyn_base + info.runpath_idx * dyn_entsize + 8;
+    data[runpath_val_off..runpath_val_off + 8]
+        .copy_from_slice(&(new_rpath_offset_in_dynstr as u64).to_le_bytes());
+
+    let filesz_off = info.last_load_phdr_offset + 32;
+    data[filesz_off..filesz_off + 8].copy_from_slice(&new_last_load_filesz.to_le_bytes());
+
+    let memsz_off = info.last_load_phdr_offset + 40;
+    data[memsz_off..memsz_off + 8].copy_from_slice(&new_last_load_memsz.to_le_bytes());
+
+    Ok(true)
 }
 
 /// Strategy 1: Extend `.dynstr` into zero-padded space after its content.
@@ -543,11 +750,16 @@ enum PhdrSlot {
 /// Find a program header slot for a new PT_LOAD entry.
 ///
 /// Tries strategies in order:
-/// 1. **Repurpose PT_GNU_STACK** — overwrite a PT_GNU_STACK entry that has
-///    `p_filesz=0, p_memsz=0` (purely advisory, no actual content).
-/// 2. **Fill gap after phdr table** — if ≥56 bytes of zero-filled space exist
+/// 1. **Fill gap after phdr table** — if ≥56 bytes of zero-filled space exist
 ///    between the end of the phdr table and the next section, write a new
 ///    entry there and increment `e_phnum`.
+/// 2. **Repurpose PT_GNU_STACK** — overwrite a PT_GNU_STACK entry that has
+///    `p_filesz=0, p_memsz=0` (purely advisory, no actual content).
+///    This is destructive: the loaded library will lack PT_GNU_STACK, which
+///    causes glibc's dynamic linker to default to requiring executable stack.
+///    That fails inside user namespaces (mprotect PROT_EXEC is restricted),
+///    breaking dlopen for libraries like libclang.so used by bindgen.
+///    Therefore gap-fill is preferred.
 ///
 /// Returns `Err` if neither strategy works (shift-file deferred to Phase 2).
 fn find_phdr_slot(data: &mut [u8]) -> std::result::Result<PhdrSlot, PackedError> {
@@ -556,15 +768,7 @@ fn find_phdr_slot(data: &mut [u8]) -> std::result::Result<PhdrSlot, PackedError>
     let e_phentsize = elf.header.e_phentsize as usize;
     let e_phnum = elf.header.e_phnum as usize;
 
-    // Strategy 1: Repurpose PT_GNU_STACK
-    for (i, ph) in elf.program_headers.iter().enumerate() {
-        if ph.p_type == program_header::PT_GNU_STACK && ph.p_filesz == 0 && ph.p_memsz == 0 {
-            let phdr_offset = e_phoff + i * e_phentsize;
-            return Ok(PhdrSlot::RepurposedGnuStack { phdr_offset });
-        }
-    }
-
-    // Strategy 2: Fill gap after phdr table
+    // Strategy 1: Fill gap after phdr table (non-destructive, preferred)
     let phdr_table_end = e_phoff + e_phnum * e_phentsize;
 
     // Find the next section/segment offset after the phdr table
@@ -597,6 +801,14 @@ fn find_phdr_slot(data: &mut [u8]) -> std::result::Result<PhdrSlot, PackedError>
             return Ok(PhdrSlot::FillGap {
                 phdr_offset: phdr_table_end,
             });
+        }
+    }
+
+    // Strategy 2: Repurpose PT_GNU_STACK (destructive — loses exec-stack info)
+    for (i, ph) in elf.program_headers.iter().enumerate() {
+        if ph.p_type == program_header::PT_GNU_STACK && ph.p_filesz == 0 && ph.p_memsz == 0 {
+            let phdr_offset = e_phoff + i * e_phentsize;
+            return Ok(PhdrSlot::RepurposedGnuStack { phdr_offset });
         }
     }
 

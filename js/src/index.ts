@@ -10,6 +10,7 @@ export type { ProcessDefinition, EnvEntry } from "./process.js";
 export type { DownloadOptions } from "./download.js";
 export type { UnpackOptions, ArchiveFormat } from "./unpack.js";
 export type { FetchTarballOptions } from "./fetch.js";
+export type { FetchGitOptions } from "./git-fetch.js";
 
 // Recipe constructors
 export { fileFromPath, fileFromHash } from "./file.js";
@@ -20,6 +21,7 @@ export { unpack } from "./unpack.js";
 
 // Source fetching
 export { fetchTarball } from "./fetch.js";
+export { fetchGit } from "./git-fetch.js";
 
 // Build script helpers
 export { hermeticPreamble } from "./preamble.js";

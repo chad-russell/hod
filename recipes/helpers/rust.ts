@@ -109,6 +109,9 @@ export interface CargoBuildOptions {
 
   /** Bitmask of unsafe flags. Bit 0 = allow networking. */
   unsafe_flags?: number;
+
+  /** Shell commands to run after source extraction but before `cargo build`. */
+  preBuildScript?: string;
 }
 
 /**
@@ -266,6 +269,7 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
   const buildCmd = [
     "cd /tmp/build",
     `export LD_LIBRARY_PATH=${libPathParts.join(":")}`,
+    ...(opts.preBuildScript ? [opts.preBuildScript] : []),
     `cargo build --release --target x86_64-unknown-linux-gnu${cargoFlags}`,
     "",
     "mkdir -p $OUT/bin",

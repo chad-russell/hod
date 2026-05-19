@@ -70,7 +70,7 @@ import { STRIP_ALL } from "../../helpers/strip.js";
 export const libadwaitaRuntimeDeps = [
   "appstream", "at-spi2-core", "bzip2", "cairo", "curl", "dbus", "expat",
   "fontconfig", "freetype", "fribidi", "gdk-pixbuf", "glib", "graphene",
-  "harfbuzz", "libX11", "libXau", "libXcb", "libXcomposite", "libXcursor",
+  "gtk4", "harfbuzz", "libX11", "libXau", "libXcb", "libXcomposite", "libXcursor",
   "libXdamage", "libXdmcp", "libXext", "libXfixes", "libXi", "libXinerama",
   "libXrandr", "libXrender", "libXtst", "libdrm", "libepoxy", "libffi",
   "libfyaml", "libiconv", "libjpeg", "libpng", "libtiff", "libxml2",

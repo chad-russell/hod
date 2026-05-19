@@ -19,7 +19,8 @@
 | `end-user-runtime.md` | Superseded | Early runtime/profile design; current implementation uses TS profiles, `src/run.rs`, and `src/profile.rs`. |
 | `geany-wrapper-handoff.md` | Historical / resolved | Records the Geany portability investigation and fix path. |
 | `go-language-support.md` | Implemented | Go helper/toolchain work now exists in `recipes/helpers/go.ts` and `recipes/native/go/`. |
-| `gtk-gui-roadmap.md` | Active | Desktop/runtime work remains a strong next frontier, but parts of the roadmap are already complete. |
+| `cosmic-desktop-roadmap.md` | **Active — top priority** | Build COSMIC DE from source (Mesa → C deps → Rust apps → bootable VM). See below. |
+| `gtk-gui-roadmap.md` | Superseded by `cosmic-desktop-roadmap.md` | The GTK3/GTK4 GUI stack is complete and working. COSMIC is the new desktop frontier. |
 | `merge-rpath-bootstrap-segment.md` | Implemented | Current authority is `src/packed.rs` and `docs/relocatable-binaries-guide.md`. |
 | `profiles.md` | Implemented | Current behavior is documented in `docs/profiles.md`. |
 | `rebuild-after-shellbuild-redesign.md` | Historical | Investigation log for the shellBuild env redesign and rebuild/GC validation. |
@@ -28,18 +29,22 @@
 
 ## Best places to go next
 
-After the Geany + closure-transfer milestone, the best follow-on work is likely:
+The **top priority** is the COSMIC desktop environment roadmap (`cosmic-desktop-roadmap.md`).
+This plan has five phases:
 
-1. **Desktop runtime generalization**
-   - make the Geany success boring and repeatable for more GUI apps
-   - improve generic wrapper/runtime metadata behavior
-2. **Closure distribution UX**
-   - implement or revisit `copy-closure --from`
-   - move toward cache-like multi-machine workflows
-3. **Bootstrap minimization**
-   - reduce the irreducible seed and keep tightening the trust story
-4. **Low-risk cleanup**
-   - finish strip/profile cleanup work from `standardize-strip-in-profiles.md`
+1. **Mesa / GPU graphics stack** — LLVM → Mesa (EGL/GLES), enabling GPU rendering
+2. **COSMIC C library dependencies** — systemd-libs, libinput, libseat, pipewire, etc.
+3. **Cargo vendoring & Rust toolkit** — reproducible offline builds of COSMIC Rust crates
+4. **COSMIC desktop components** — compositor, panel, session, settings, files, edit, term, launcher
+5. **Bootable VM** — Arch-based QEMU image running COSMIC from the hod store
+
+See `cosmic-desktop-roadmap.md` for the full plan with per-phase tasks and exit criteria.
+
+Secondary priorities:
+
+- **Closure distribution UX** — `copy-closure --from`, cache workflows
+- **Bootstrap minimization** — reduce the irreducible seed
+- **Low-risk cleanup** — finish strip/profile cleanup (`standardize-strip-in-profiles.md`)
 
 ## Plan-file best practice
 

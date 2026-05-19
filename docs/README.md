@@ -37,16 +37,17 @@ Read `../plans/README.md` before trusting any individual plan file.
 
 Hod now has a proven end-to-end portability milestone:
 
-- build **Geany** from source
-- copy its closure to another machine
-- run it there successfully from the transferred store
+- build **Nautilus 48.7** from source (full GTK4/libadwaita GUI stack)
+- copy its closure to another machine (NixOS + niri)
+- run it there successfully — window rendering (`GSK_RENDERER=cairo`), schema resolution, and "Open With" application launching (`GIO_LAUNCH_DESKTOP`) all work
 
-That milestone is the best evidence that the current relocation + closure-transfer stack is real, not just theoretical.
+This means closure transfer + relocation + wrapper/runtime setup are now good enough for a real, complex GUI app with a deep dependency tree.
 
 ## Suggested next fronts
 
-If you are looking for the highest-value next work after the Geany milestone:
+If you are looking for the highest-value next work:
 
-1. generalize GUI runtime metadata/wrappers
-2. improve closure pull/cache workflows
-3. keep shrinking the bootstrap trust base
+1. **COSMIC desktop environment** — build the full COSMIC DE from source (Mesa → C deps → Rust apps → bootable VM). See `../plans/cosmic-desktop-roadmap.md` for the detailed roadmap.
+2. enable Vulkan/GL in the GTK4 build so `GSK_RENDERER=cairo` is no longer needed
+3. improve closure pull/cache workflows (`copy-closure --from`)
+4. keep shrinking the bootstrap trust base

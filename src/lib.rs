@@ -18,6 +18,7 @@ pub mod build;
 pub mod closure;
 pub mod download;
 pub mod encoding;
+pub mod git_fetch;
 pub mod hash;
 pub mod packed;
 pub mod profile;

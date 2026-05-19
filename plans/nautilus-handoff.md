@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-13 (updated 2026-05-14)
 **Author:** Agent session (preceded by earlier session)
-**Status:** In progress — Phase 6 ✅ COMPLETE, Phase 7 (Nautilus) next
+**Status:** COMPLETE — Nautilus 48.7 built successfully ✅
 **Target:** Nautilus **48.7** (latest stable, GNOME 48)
 
 ---
@@ -162,6 +162,10 @@ recipes/native/
   iso-codes/iso-codes.ts               ✅ built
   gnome-desktop/gnome-desktop-source.ts ✅ built
   gnome-desktop/gnome-desktop.ts        ✅ built
+
+recipes/native/nautilus/
+  nautilus-source.ts                    ✅ built
+  nautilus.ts                           ✅ built
 ```
 
 **Modified existing recipes:**
@@ -194,6 +198,8 @@ recipes/native/
 | **libsass** | **3.6.5** | `https://github.com/sass/libsass/archive/refs/tags/3.6.5.tar.gz` | `e3f4d3691bb7335d8571ea8f3b79f38294a331d65b5b952242178881c1f12d4b` |
 
 **Note:** GTK4 tarball downloaded and hashed but **not yet built**. Tarball uses `gtk-4.18.6/` top-level directory (normal `stripComponents: 1`).
+
+| **Nautilus** | **48.7** | `https://download.gnome.org/sources/nautilus/48/nautilus-48.7.tar.xz` | `83b2c5c5f121a124e0c401a4188097148b54e9a9f313a72014f8a6fdeb899e4d` |
 
 ---
 
@@ -300,11 +306,23 @@ recipes/native/
     - Provides `libgnome-desktop-4.so`, `libgnome-bg-4.so`, `libgnome-rr-4.so` + `.pc` files
     - Patched out `subdir('po')`, `subdir('tests')`, fixed introspection-disabled empty GIR bug
 
-### Phase 7: Nautilus! ❌
+### Phase 7: Nautilus! ✅
 
-23. **nautilus (48.7)**
-    - Source: `https://download.gnome.org/sources/nautilus/48/nautilus-48.7.tar.xz`
-    - Meson options: `-Dextensions=false -Dselinux=false -Dcloudproviders=false -Dpackagekit=false -Ddocs=false -Dtests=none -Dintrospection=disabled`
+23. **nautilus (48.7)** ✅
+    - Recipe: `recipes/native/nautilus/nautilus.ts`
+    - Source: `https://download.gnome.org/sources/nautilus/48/nautilus-48.7.tar.xz` (BLAKE3: `83b2c5c5f121a124e0c401a4188097148b54e9a9f313a72014f8a6fdeb899e4d`)
+    - Output hash: `5468561093849fa2460e51e721d7c9ef220b7164e919c2125e6c509fcfbf9679`
+    - Meson options: `-Dextensions=false -Dselinux=false -Dcloudproviders=false -Dpackagekit=false -Ddocs=false -Dtests=none -Dintrospection=false -Dprofile=`
+    - Build challenges and solutions:
+      - `-Dintrospection=disabled` → changed to `-Dintrospection=false` (Nautilus uses boolean type, not combo)
+      - `-Werror=missing-include-dirs` errors from non-existent `/include`, `/include/freetype2` paths in `.pc` files → patched out from meson.build
+      - `g_variant_builder_init_static` undefined (added in GLib 2.84, our GLib is 2.82.5) → patched to `g_variant_builder_init` in nautilus-application.c
+      - `subdir('po')` needs gettext → patched out
+      - `i18n.merge_file()` for .desktop and metainfo files → replaced with `configure_file()` equivalents
+      - `gnome.post_install()` needs host tools → patched out, glib-compile-schemas run manually
+      - Validation tests (desktop-file-validate, appstreamcli) → patched out
+    - Provides `bin/nautilus`, `bin/nautilus-autorun-software`, `lib/libnautilus-extension.so.4`, data files
+    - Wrapper scripts set XDG_DATA_DIRS and GSETTINGS_SCHEMA_PATH from runtime deps
 
 ---
 
@@ -357,7 +375,7 @@ Level 6:
   ✅ gnome-desktop-4 (44.5)    — GTK4 + schemas + libseccomp + xkb-config + iso-codes
 
 Level 7:
-  ❌ nautilus (48.7)            — needs all of the above
+  ✅ nautilus (48.7)            — needs all of the above
 ```
 
 ---

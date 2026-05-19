@@ -66,7 +66,7 @@ export const gtk4RuntimeDeps = [
   "libXdamage", "libXdmcp", "libXext", "libXfixes", "libXi",
   "libXinerama", "libXrandr", "libXrender", "libXtst", "libdrm",
   "libepoxy", "libffi", "libiconv", "libjpeg", "libpng", "libtiff",
-  "libxml2", "pango", "pcre2", "pixman", "shared-mime-info",
+  "libxkbcommon", "libxml2", "pango", "pcre2", "pixman", "shared-mime-info",
   "toolchain", "wayland", "xz", "zlib", "zstd",
 ];
 
@@ -122,7 +122,7 @@ const recipe = await shellBuild({
       "libX11", "libXext", "libXrender", "libXi", "libXrandr",
       "libXcursor", "libXinerama", "libXdamage", "libXcomposite",
       "libXfixes", "libXau", "libXcb", "libXdmcp",
-      "libxml2", "libXtst", "xz", "wayland",
+      "libxml2", "libXtst", "xz", "wayland", "wayland-protocols",
       "libxkbcommon", "libdrm", "libjpeg", "libtiff", "zstd",
     ],
     // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
@@ -175,6 +175,8 @@ cat > /tmp/egl-stub.c << 'STUBEOF'
 #include <stddef.h>
 typedef void* EGLDisplay;
 typedef void* EGLConfig;
+typedef void* EGLSurface;
+typedef void* EGLContext;
 typedef int EGLint;
 typedef unsigned int EGLBoolean;
 typedef void* gpointer;
@@ -192,6 +194,9 @@ gpointer gdk_x11_display_get_egl_display(gpointer display) { return NULL; }
 int gdk_display_init_egl(gpointer display) { return 0; }
 gpointer gdk_display_get_egl_config(gpointer display) { return NULL; }
 gsize gdk_x11_gl_context_egl_get_type(void) { return 0; }
+EGLBoolean eglSwapInterval(EGLDisplay d, EGLint i) { return EGL_FALSE; }
+EGLBoolean eglMakeCurrent(EGLDisplay d, EGLSurface s, EGLSurface r, EGLContext c) { return EGL_FALSE; }
+EGLBoolean eglTerminate(EGLDisplay d) { return EGL_FALSE; }
 STUBEOF
 /deps/toolchain/bin/gcc -c -O2 /tmp/egl-stub.c -o /tmp/egl-stub.o
 /deps/toolchain/bin/ar rcs /tmp/libegl-stub.a /tmp/egl-stub.o
@@ -202,6 +207,11 @@ cp /tmp/egl-stub.c gdk/x11/egl-stub.c
 sed -i "/gdk_x11_sources/s/\]/, files('egl-stub.c') ]/" gdk/x11/meson.build
 # Verify
 grep egl-stub gdk/x11/meson.build || echo 'WARNING: egl-stub not found in gdk/x11/meson.build'
+
+# Also add egl-stub.c to the Wayland backend sources
+cp /tmp/egl-stub.c gdk/wayland/egl-stub.c
+sed -i "/gdk_wayland_sources = files/s/\])/, files('egl-stub.c')])/" gdk/wayland/meson.build
+grep egl-stub gdk/wayland/meson.build || echo 'WARNING: egl-stub not found in gdk/wayland/meson.build'
 
 # Provide EGL headers for compilation. GTK4's X11 backend uses EGL types
 # unconditionally even when HAVE_EGL is not set. We provide minimal stubs.
@@ -230,11 +240,15 @@ typedef unsigned int EGLBoolean;
 #define EGL_VENDOR 0x3053
 #define EGL_PLATFORM_X11_KHR 0x31D5
 #define EGL_PLATFORM_X11_SCREEN_KHR 0x31D6
+#define EGL_PLATFORM_WAYLAND_EXT 0x31D8
 extern EGLDisplay eglGetDisplay(void*);
 extern EGLDisplay eglGetPlatformDisplay(EGLenum, void*, const EGLint*);
 extern EGLBoolean eglInitialize(EGLDisplay, EGLint*, EGLint*);
 extern const char* eglQueryString(EGLDisplay, EGLint);
 extern EGLBoolean eglGetConfigAttrib(EGLDisplay, EGLConfig, EGLint, EGLint*);
+extern EGLBoolean eglSwapInterval(EGLDisplay, EGLint);
+extern EGLBoolean eglMakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
+extern EGLBoolean eglTerminate(EGLDisplay);
 #endif
 EGLEOF
 cat > /tmp/egl-stub/epoxy/egl.h << 'EPOXYEOF'
@@ -263,7 +277,7 @@ meson setup build \\
   --buildtype=release \\
   -Ddefault_library=shared \\
   -Dx11-backend=true \\
-  -Dwayland-backend=false \\
+  -Dwayland-backend=true \\
   -Dbroadway-backend=false \\
   -Dvulkan=disabled \\
   -Dmedia-gstreamer=disabled \\
@@ -294,6 +308,12 @@ for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
     */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
   esac
 done
+
+# Compile GSettings schemas — GTK4 ships org.gtk.gtk4.Settings.FileChooser etc.
+# Downstream apps (nautilus) call g_settings_new() which requires compiled schemas.
+if [ -d "$OUT/share/glib-2.0/schemas" ] && ls "$OUT/share/glib-2.0/schemas/"*.gschema.xml >/dev/null 2>&1; then
+  /deps/glib/bin/glib-compile-schemas $OUT/share/glib-2.0/schemas
+fi
 
 ${STRIP_ALL}
 `,

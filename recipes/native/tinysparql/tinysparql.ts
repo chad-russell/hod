@@ -38,9 +38,9 @@ import { mesonProfile } from "../../helpers/meson.js";
 import { STRIP_ALL } from "../../helpers/strip.js";
 
 export const tinysparqlRuntimeDeps = [
-  "dbus", "expat", "glib", "libffi", "libiconv", "libidn2", "libpsl",
-  "libsoup3", "libunistring", "libxml2", "nghttp2", "pcre2", "sqlite",
-  "toolchain", "xz", "zlib",
+  "dbus", "expat", "glib", "json-glib", "libffi", "libiconv", "libidn2",
+  "libpsl", "libsoup3", "libunistring", "libxml2", "nghttp2", "pcre2",
+  "sqlite", "toolchain", "xz", "zlib",
 ];
 
 // All deps that provide shared libraries (for rpath-link)
@@ -82,6 +82,46 @@ cd /tmp/build
 
 export LDFLAGS="$HOD_DUMMY_RPATH \\
   ${rpathLinkFlags}"
+
+# Patch tracker-parser.c to resolve modules relative to the library itself
+# using dladdr(), instead of a hardcoded absolute PRIVATE_LIBDIR.
+# Without this, g_module_open("/lib/tinysparql-3.0/<module>") fails because
+# the library is not installed at the filesystem root.
+python3 << 'PYEOF'
+with open('src/common/tracker-parser.c', 'r') as f:
+    content = f.read()
+
+# Add dladdr include and a helper function after the existing includes
+old_include = '#include <gmodule.h>'
+new_includes = '''#include <gmodule.h>
+#include <dlfcn.h>
+
+/* Resolve the parser module directory relative to this library's location.
+ * Uses dladdr() to find the absolute path of libtinysparql, then computes
+ * the sibling directory tinysparql-3.0/ where the parser modules live. */
+static gchar *
+get_private_libdir (void)
+{
+    Dl_info info;
+    if (dladdr ((void *) get_private_libdir, &info) && info.dli_fname) {
+        gchar *dir = g_path_get_dirname (info.dli_fname);
+        gchar *result = g_build_filename (dir, "tinysparql-3.0", NULL);
+        g_free (dir);
+        return result;
+    }
+    return g_strdup ("/lib/tinysparql-3.0");  /* fallback */
+}'''
+content = content.replace(old_include, new_includes, 1)
+
+# Replace the PRIVATE_LIBDIR path construction with our dladdr-based one
+content = content.replace(
+    'module_path = g_strdup_printf (PRIVATE_LIBDIR "/%s", modules[i]);',
+    'module_path = g_build_filename (get_private_libdir (), modules[i], NULL);'
+)
+
+with open('src/common/tracker-parser.c', 'w') as f:
+    f.write(content)
+PYEOF
 
 # Patch meson.build to bypass cc.run() checks and remove unnecessary subdirs.
 # cc.run() compiles AND runs test programs, which fails in the sandbox.
@@ -126,6 +166,40 @@ meson setup build \\
 
 ninja -C build
 DESTDIR=$OUT ninja -C build install
+
+# Fix absolute-path DT_NEEDED for sqlite3.
+# Meson resolves the library to an absolute sandbox path and embeds it
+# in the ELF DT_NEEDED. At runtime outside the sandbox this path doesn't
+# exist. We replace it with the bare library name so the dynamic linker
+# can find it via RUNPATH.
+python3 -c "
+import sys, re
+import os
+nul = bytes([0])
+for root, dirs, files in os.walk('$OUT'):
+    for name in files:
+        path = os.path.join(root, name)
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except:
+            continue
+        if data[:4] != b'\x7fELF':
+            continue
+        modified = False
+        for m in list(re.finditer(rb'/[0-9a-f]{2}/[0-9a-f]{64}/lib/libsqlite3\.so', data)):
+            start = m.start()
+            end = data.index(nul, start)
+            old = data[start:end]
+            new = b'libsqlite3.so.0'
+            replacement = new + nul * (len(old) - len(new))
+            data = data[:start] + replacement + data[end:]
+            modified = True
+            print(f'  Patched DT_NEEDED in {path}: {old[:40]}... -> {new.decode()}')
+        if modified:
+            with open(path, 'wb') as f:
+                f.write(data)
+" 2>/dev/null || true
 
 # Make pkg-config files relocatable.
 for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do

@@ -33,7 +33,7 @@ use crate::store::Store;
 ///
 /// Returns the number of wrappers generated.
 pub fn generate_wrappers(
-    _store: &Store,
+    store: &Store,
     output_staging_dir: &Path,
     runtime_dep_outputs: &BTreeMap<String, Hash>,
 ) -> Result<usize, WrapError> {
@@ -51,6 +51,76 @@ pub fn generate_wrappers(
             (shard, hex)
         })
         .collect();
+
+    // Detect gio-launch-desktop helper from runtime deps (e.g., glib).
+    // GLib's GIO uses this binary to launch desktop apps. It's looked up
+    // via the GIO_LAUNCH_DESKTOP env var, a compile-time path, or PATH.
+    // Since hod installs to a staging dir, the compile-time path
+    // (/libexec/gio-launch-desktop) won't exist, so we set the env var.
+    let gio_launch: Option<String> = dep_shard_hex.iter().find_map(|(shard, hex)| {
+        let staging = store.root().join("staging").join(shard).join(hex);
+        let candidate = staging.join("libexec/gio-launch-desktop");
+        if candidate.exists() {
+            Some(format!("$staging_root/{shard}/{hex}/libexec/gio-launch-desktop"))
+        } else {
+            None
+        }
+    });
+
+    let gio_launch_export = match &gio_launch {
+        Some(path) => format!("export GIO_LAUNCH_DESKTOP=\"{path}\"\n"),
+        None => String::new(),
+    };
+
+    // Detect XKB config root from runtime deps (e.g., xkeyboard-config)
+    let xkb_root: Option<String> = runtime_dep_outputs
+        .iter()
+        .find_map(|(_name, hash)| {
+            let shard = hash_shard(hash);
+            let hex = hash_to_hex(hash);
+            let staging = store.root().join("staging").join(&shard).join(&hex);
+            if staging.join("share/X11/xkb").is_dir() {
+                Some(format!("$staging_root/{shard}/{hex}/share/X11/xkb"))
+            } else {
+                None
+            }
+        });
+
+    // Detect whether the runtime deps include GTK4 (via dep names or
+    // the presence of libgtk-4.so in staging dirs). When GTK4 is present
+    // but was built without Vulkan/GL support (common in hod sandboxes),
+    // force the Cairo software renderer so windows actually render.
+    let has_gtk4 = dep_shard_hex.iter().any(|(_shard, hex)| {
+        let staging = store.root().join("staging").join(_shard).join(hex);
+        // Check for libgtk-4.so* in lib/ — matches any GTK4-containing dep
+        staging.join("lib/libgtk-4.so").exists()
+            || std::fs::read_dir(staging.join("lib"))
+                .ok()
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with("libgtk-4.so")
+                        })
+                })
+                .unwrap_or(false)
+    });
+
+    let gsk_export = if has_gtk4 {
+        // Only force cairo if no renderer is explicitly requested by the user.
+        // This allows GSK_RENDERER=vulkan to override if GTK4 is later rebuilt
+        // with Vulkan support.
+        "if [ -z \"${GSK_RENDERER:-}\" ]; then export GSK_RENDERER=cairo; fi\n".to_string()
+    } else {
+        String::new()
+    };
+
+    let xkb_export = match &xkb_root {
+        Some(path) => format!("export XKB_CONFIG_ROOT=\"{path}\"\n"),
+        None => String::new(),
+    };
 
     let mut count = 0;
 
@@ -96,7 +166,7 @@ pub fn generate_wrappers(
         std::fs::rename(&path, &wrapped_path).map_err(WrapError::Io)?;
 
         // Generate the wrapper script
-        let wrapper_content = generate_wrapper_script(&name, &wrapped_name, &dep_shard_hex);
+        let wrapper_content = generate_wrapper_script(&name, &wrapped_name, &dep_shard_hex, &gsk_export, &gio_launch_export, &xkb_export);
 
         std::fs::write(&path, &wrapper_content).map_err(WrapError::Io)?;
 
@@ -149,6 +219,9 @@ fn generate_wrapper_script(
     _name: &str,
     wrapped_name: &str,
     dep_shard_hex: &[(String, String)],
+    gsk_export: &str,
+    gio_launch_export: &str,
+    xkb_export: &str,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
     // Each path is: $staging_root/<shard>/<hex>/share
@@ -202,7 +275,7 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
-exec "$bin_dir/{wrapped_name}" "$@"
+{gsk_export}{gio_launch_export}{xkb_export}exec "$bin_dir/{wrapped_name}" "$@"
 "#
     )
 }

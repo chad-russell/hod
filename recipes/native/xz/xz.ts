@@ -36,10 +36,16 @@ make install DESTDIR=$OUT
 for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
   case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
+    */lib64/pkgconfig/*) pc_prefix='\${pcfiledir}/../../..' ;;
+    */share/pkgconfig/*) pc_prefix='\${pcfiledir}/../..' ;;
+    */lib/pkgconfig/*)   pc_prefix='\${pcfiledir}/../..' ;;
   esac
+  sed -i \
+    -e "s|^prefix=.*|prefix=$pc_prefix|" \
+    -e 's|^exec_prefix=.*|exec_prefix=\${prefix}|' \
+    -e 's|^libdir=.*|libdir=\${prefix}/lib|' \
+    -e 's|^includedir=.*|includedir=\${prefix}/include|' \
+    "$pc"
 done
 
 # Strip binaries

@@ -30,9 +30,9 @@ import { mesonProfile } from "../../helpers/meson.js";
 import { STRIP_ALL } from "../../helpers/strip.js";
 
 export const cairoRuntimeDeps = [
-  "expat", "fontconfig", "freetype", "libX11", "libXau", "libXcb",
-  "libXdmcp", "libXext", "libXrender", "libpng", "pixman", "toolchain",
-  "zlib",
+  "expat", "fontconfig", "freetype", "glib", "libX11", "libXau", "libXcb",
+  "libXdmcp", "libXext", "libXrender", "libffi", "libpng", "pcre2",
+  "pixman", "toolchain", "zlib",
 ];
 
 const recipe = await shellBuild({

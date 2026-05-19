@@ -61,8 +61,8 @@ import { STRIP_ALL } from "../../helpers/strip.js";
 
 export const libportalRuntimeDeps = [
   "at-spi2-core", "bzip2", "cairo", "dbus", "expat", "fontconfig",
-  "freetype", "fribidi", "gdk-pixbuf", "glib", "graphene", "harfbuzz",
-  "libX11", "libXau", "libXcb", "libXcomposite", "libXcursor",
+  "freetype", "fribidi", "gdk-pixbuf", "glib", "graphene", "gtk4",
+  "harfbuzz", "libX11", "libXau", "libXcb", "libXcomposite", "libXcursor",
   "libXdamage", "libXdmcp", "libXext", "libXfixes", "libXi",
   "libXinerama", "libXrandr", "libXrender", "libXtst", "libdrm",
   "libepoxy", "libffi", "libiconv", "libjpeg", "libpng", "libtiff",

@@ -6,14 +6,18 @@
 
 /** Path string that reserves ELF space for store-relative relocation.
  *
- * Must be long enough for the relocation pass to overwrite in-place with
- * $ORIGIN-relative paths to all runtime dependency outputs.  Currently
- * supports ~6 runtime deps at ~88 chars each plus a self-referencing
- * $ORIGIN/../lib path.
+ * The relocation pass first tries to overwrite the dummy RUNPATH in-place.
+ * If the final RUNPATH (computed from runtime_deps) is longer than the
+ * dummy, the pass automatically falls back to the new PT_LOAD segment
+ * strategy (see patch_elf_with_new_segment in src/packed.rs), which has
+ * no upper limit on RUNPATH length.
+ *
+ * The current length supports in-place patching for ~6 runtime deps.
+ * This covers most packages; heavier recipes (e.g., nautilus with 69 deps)
+ * transparently use the new-segment fallback.
  *
  * Do not change this without coordinating with src/packed.rs and
- * src/relocate.rs — the relocation pass does in-place RUNPATH replacement
- * and needs the slot to be long enough for the computed paths.
+ * src/relocate.rs.
  */
 export const HOD_DUMMY_RUNPATH =
   "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/" +

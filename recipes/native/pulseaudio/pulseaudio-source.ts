@@ -1,0 +1,8 @@
+import { fetchTarball } from "../../../js/src/index.js";
+
+const recipe = await fetchTarball({
+  url: "https://freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz",
+  hash: "e56408636f88e3c8b7575795722ebccd7cadb032f7cefda3d055af549b34df4f",
+});
+
+export const pulseaudioSourceRecipe = recipe;

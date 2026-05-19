@@ -735,6 +735,7 @@ fn format_recipe_type(recipe: &Recipe) -> &'static str {
         Recipe::Download(_) => "download",
         Recipe::Process(_) => "process",
         Recipe::Unpack(_) => "unpack",
+        Recipe::GitFetch(_) => "git-fetch",
     }
 }
 

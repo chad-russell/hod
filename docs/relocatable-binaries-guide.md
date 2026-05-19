@@ -365,7 +365,17 @@ When Hod has an evaluator, it can automatically:
 - The user writes `build_relocatable_binary("bash", deps=[...])` and gets a store-relative relocatable binary
 
 ### Layer 6: Runtime metadata and wrappers
-Current behavior: after relocation, Hod can generate wrapper scripts for ELF executables in `bin/` that construct runtime env such as `XDG_DATA_DIRS` and `GSETTINGS_SCHEMA_PATH` from runtime dependency outputs. This is enough for real apps like Geany, but it is still only a partial solution.
+Current behavior: after relocation, Hod generates wrapper scripts for ELF executables in `bin/` (`src/wrap.rs`). The wrappers:
+
+1. **Resolve their own store path** from `$0` via `readlink -f`.
+2. **Build `XDG_DATA_DIRS`** from own prefix `share/` plus all runtime dep `share/` directories, appending the inherited system `XDG_DATA_DIRS`.
+3. **Build `GSETTINGS_SCHEMA_PATH`** from own prefix and all runtime dep `share/glib-2.0/schemas/` directories.
+4. **Detect GTK4** (`libgtk-4.so` in any runtime dep) and set `GSK_RENDERER=cairo` if the user hasn't overridden it. This is needed because the sandbox-built GTK4 has Vulkan disabled and EGL stubbed out — without it, windows are created but never rendered.
+5. **Detect `gio-launch-desktop`** in runtime deps (from GLib) and set `GIO_LAUNCH_DESKTOP` to the staged path. GLib 2.80+ uses this helper binary to launch desktop apps (e.g., "Open With" in Nautilus). The compile-time path (`/libexec/gio-launch-desktop`) doesn't exist on non-FHS systems like NixOS, so the env var override is essential.
+6. **Detect `XKB_CONFIG_ROOT`** from runtime deps (e.g., `xkeyboard-config`) and set it.
+7. **Exec the wrapped binary** with the constructed environment.
+
+This is enough for real apps like Geany and Nautilus, but it is still only a partial solution.
 
 Longer-term, Hod will likely want declarative runtime metadata for non-ELF paths and richer env needs:
 

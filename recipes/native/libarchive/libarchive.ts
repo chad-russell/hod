@@ -15,7 +15,7 @@ import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { cProfile } from "../../helpers/c.js";
 import { STRIP_ALL } from "../../helpers/strip.js";
 
-export const libarchiveRuntimeDeps = ["bzip2", "libiconv", "openssl", "toolchain", "xz", "zlib"];
+export const libarchiveRuntimeDeps = ["bzip2", "libiconv", "libxml2", "openssl", "toolchain", "xz", "zlib"];
 
 const recipe = await shellBuild({
   ...cProfile({

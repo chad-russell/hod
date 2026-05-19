@@ -1089,7 +1089,7 @@ fn recipe_dependencies(recipe: &Recipe) -> Vec<[u8; 32]> {
     match recipe {
         Recipe::File(f) => f.resources_hash.iter().copied().collect(),
         Recipe::Directory(d) => d.entries.iter().map(|e| e.entry_hash).collect(),
-        Recipe::Symlink(_) | Recipe::Download(_) => Vec::new(),
+        Recipe::Symlink(_) | Recipe::Download(_) | Recipe::GitFetch(_) => Vec::new(),
         Recipe::Unpack(u) => u.archive_recipe_hash.iter().copied().collect(),
         Recipe::Process(p) => {
             let mut deps: Vec<[u8; 32]> = p.dependencies.iter().map(|d| d.recipe_hash).collect();
@@ -1109,7 +1109,7 @@ fn recipe_blob_references(recipe: &Recipe) -> Vec<[u8; 32]> {
         Recipe::File(f) => vec![f.content_blob_hash],
         Recipe::Download(d) => vec![d.expected_hash],
         Recipe::Unpack(u) => vec![u.archive_hash],
-        Recipe::Directory(_) | Recipe::Symlink(_) | Recipe::Process(_) => Vec::new(),
+        Recipe::Directory(_) | Recipe::Symlink(_) | Recipe::Process(_) | Recipe::GitFetch(_) => Vec::new(),
     }
 }
 

@@ -271,6 +271,7 @@ fn do_build(
         Recipe::Download(dl) => crate::download::build_download(store, dl)?,
         Recipe::Unpack(u) => build_unpack(store, u)?,
         Recipe::Process(p) => build_process(store, p, &dep_outputs, options)?,
+        Recipe::GitFetch(gf) => crate::git_fetch::build_git_fetch(store, gf)?,
     };
 
     // 6. Compute output hash and stage it
@@ -669,6 +670,7 @@ fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
     let format_arg = match u.format {
         ArchiveFormat::TarGz => "-xzf",
         ArchiveFormat::TarXz => "-xJf",
+        ArchiveFormat::TarBz2 => "-xjf",
     };
     let mut tar_args = vec![
         format_arg.to_string(),
@@ -988,7 +990,7 @@ pub fn materialize_artifact(store: &Store, output_hash: &Hash, path: &Path) -> R
 }
 
 /// Copy a directory recursively.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     if dst.exists() {
         std::fs::remove_dir_all(dst)?;
     }
@@ -1057,7 +1059,7 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
 ///
 /// Also stages each artifact to its individual staging path so that
 /// `stage_artifact` for Directory can find children later.
-fn path_to_artifact(path: &Path, store: &Store) -> Result<Artifact> {
+pub(crate) fn path_to_artifact(path: &Path, store: &Store) -> Result<Artifact> {
     if path.is_symlink() {
         let target = std::fs::read_link(path)?.to_string_lossy().to_string();
         let artifact = Artifact::Symlink { target };
@@ -1288,5 +1290,6 @@ fn format_recipe_type(rt: RecipeType) -> &'static str {
         RecipeType::Download => "download",
         RecipeType::Process => "process",
         RecipeType::Unpack => "unpack",
+        RecipeType::GitFetch => "git-fetch",
     }
 }

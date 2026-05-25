@@ -79,7 +79,7 @@ ${STRIP_ALL}
     dep("ninja", ninjaRecipe),
     dep("python", pythonRecipe),
   ],
-  runtime_deps: [...glibRuntimeDeps],
+  runtime_deps: ["glib", ...glibRuntimeDeps],
 });
 
 await importToStore(recipe);

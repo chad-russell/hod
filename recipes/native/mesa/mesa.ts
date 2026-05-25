@@ -1,12 +1,12 @@
 //! Mesa 26.0.7 — open-source OpenGL/EGL/GBM graphics stack.
 //!
-//! Builds Mesa with the llvmpipe software rasterizer for GPU rendering
-//! in VMs and environments without hardware GPU drivers.
+//! Builds Mesa with the Intel iris driver plus llvmpipe software fallback.
 //!
 //! ## Drivers
 //!
+//! - **iris** (Gallium): Modern Intel OpenGL driver for Gen8+ GPUs.
 //! - **llvmpipe** (Gallium): Software OpenGL renderer using LLVM JIT.
-//!   Provides OpenGL 4.6 compatibility via CPU rasterization.
+//!   Provides CPU fallback when no matching hardware driver is available.
 //! - No Vulkan drivers (lavapipe can be added later if needed).
 //!
 //! ## Libraries produced
@@ -16,7 +16,7 @@
 //! - `libGLESv2.so` — OpenGL ES 2.0/3.0
 //! - `libgbm.so` — Generic Buffer Manager (needed by Wayland compositors)
 //! - `libglapi.so` — GL API dispatch
-//! - `libgallium-*.so` — Gallium driver shared library (contains llvmpipe)
+//! - `libgallium-*.so` — Gallium driver shared library (contains iris/llvmpipe)
 //! - DRI driver backends in `lib/dri/`
 //! - GBM backend in `lib/gbm/`
 //!
@@ -73,6 +73,9 @@ import { bisonRecipe } from "../bison/bison.js";
 import { zstdRecipe } from "../zstd/zstd.js";
 import { libxml2Recipe } from "../libxml2/libxml2.js";
 import { libffiRecipe } from "../libffi/libffi.js";
+import { libclcRecipe } from "../libclc/libclc.js";
+import { spirvLlvmTranslatorRecipe } from "../spirv-llvm-translator/spirv-llvm-translator.js";
+import { spirvToolsRecipe } from "../spirv-tools/spirv-tools.js";
 import { mesonProfile } from "../../helpers/meson.js";
 import { STRIP_ALL } from "../../helpers/strip.js";
 
@@ -85,7 +88,8 @@ const libDepNames = [
 
 // All deps whose include/ and pkg-config dirs need to be on search paths.
 const allPkgConfigDeps = [
-  "libdrm", "libglvnd", "wayland", "wayland-protocols", "zlib", "expat",
+  "libdrm", "libglvnd", "wayland", "wayland-protocols", "zlib", "expat", "libclc",
+  "spirv-llvm-translator", "spirv-tools",
   "xorgproto", "libffi",
   "libX11", "libXext", "libXrandr", "libXdamage", "libXfixes",
   "libxshmfence", "libXxf86vm", "libXcb", "libXau", "libXdmcp",
@@ -199,7 +203,8 @@ meson setup build \\
   --libdir=lib \\
   --buildtype=release \\
   -Dplatforms=x11,wayland \\
-  -Dgallium-drivers=llvmpipe \\
+  -Dgallium-drivers=iris,llvmpipe \\
+  -Dstatic-libclc=spirv,spirv64 \\
   -Dvulkan-drivers= \\
   -Dshared-llvm=false \\
   -Degl=enabled \\
@@ -252,6 +257,9 @@ echo "=== Mesa installation complete ==="
     dep("source", mesaSourceRecipe),
     dep("toolchain", nativeToolchainRecipe),
     dep("llvm", llvmRecipe),
+    dep("libclc", libclcRecipe),
+    dep("spirv-llvm-translator", spirvLlvmTranslatorRecipe),
+    dep("spirv-tools", spirvToolsRecipe),
     dep("libglvnd", libglvndRecipe),
     dep("libdrm", libdrmRecipe),
     dep("zlib", zlibRecipe),

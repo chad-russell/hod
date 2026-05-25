@@ -8,18 +8,19 @@ This document describes debugging workflows that match the current CLI in this c
 
 | Goal | Current workflow |
 |------|------------------|
-| Preserve a failed sandbox | `hod build --hash <hash> --keep-failed` |
-| Reduce log noise | `hod build --hash <hash> --quiet` |
+| Preserve a failed sandbox | `hod build <file.ts> --keep-failed` or `hod build --hash <hash> --keep-failed` |
+| Reduce log noise | `hod build <file.ts> --quiet` or `hod build --hash <hash> --quiet` |
 | Inspect recipe JSON | `hod inspect <hash>` |
 | Export recipe binary for debugging | `hod export-recipe <hash> -o <path>` |
 | Import a recipe into the store | `hod import-recipe <recipe.hod>` or `importToStore()` from TS |
+| Build from TypeScript recipe | `hod build <recipe.ts>` |
 | Build from store hash | `hod build --hash <hex>` |
-| Build from `.hod` file | `hod build <recipe.hod>` |
+| Build from `.hod` file | `hod build <recipe.hod>` for exported/debug recipes |
 
 ## Preserve and Inspect a Failed Build
 
 ```bash
-hod build --hash <recipe-hash> --keep-failed
+hod build recipes/native/alacritty/alacritty.ts --keep-failed
 ```
 
 On failure, Hod prints the preserved sandbox path, typically:

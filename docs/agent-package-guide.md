@@ -23,7 +23,38 @@ Each package has two files in `recipes/native/<package>/`:
 <package>.ts          # Builds it
 ```
 
-Source files use the `fetchTarball()` SDK function (which composes `download()` + `unpack()`). Build files use `shellBuild()`. Both call `importToStore()` at the end.
+Source files often use the `fetchTarball()` SDK function (which composes
+`download()` + `unpack()`), but upstream release binaries are also first-class
+inputs when that is the pragmatic upstream-supported path. Build files use
+`shellBuild()` or another helper and call `importToStore()` at the end.
+
+### Upstream Binary Policy
+
+Hod is not source-only. Prefer upstream-provided release binaries when source
+builds are expensive, unstable, mid-rewrite, or when upstream clearly treats the
+binary artifact as the supported distribution format. This is especially true
+for fast-moving developer tools and large applications.
+
+Rules for binary recipes:
+
+1. **Content hash is mandatory.** Every downloaded artifact must be pinned by a
+   Hod/BLAKE3 hash. Upstream signatures should be verified when practical and
+   available, but a strong pinned hash is acceptable on its own.
+2. **No host userland dependencies.** A binary package must run from the Hod
+   store without relying on `/usr`, `/nix`, distro libraries, host dynamic
+   linkers, or host package-manager paths. The host may provide the Linux
+   kernel and normal kernel interfaces; userland runtime dependencies belong in
+   the Hod store.
+3. **Patch or wrap minimally.** Do only the work required to make the upstream
+   artifact store-relative and self-contained: patch ELF interpreters/RUNPATHs,
+   provide Hod runtime deps, add small wrappers for required runtime env, and
+   document any unavoidable assumptions.
+4. **Reuse upstream shape.** Keep the upstream artifact layout and behavior as
+   much as possible. Avoid rebuilding, vendoring, or rewriting unless needed for
+   portability, security, or correctness.
+
+This is intentionally close to using Nix packages on a non-NixOS host: the host
+provides a kernel, while Hod provides the package's userland closure.
 
 ### The Toolchain
 

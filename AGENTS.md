@@ -12,6 +12,7 @@ This file is the **agent/LLM quick-start**. `README.md` is human-oriented; this 
 ## Ground truth
 
 - **TypeScript recipes are the source of truth.** Authoritative recipes live in `recipes/**/*.ts`.
+- **Hod is not source-only.** Prefer upstream release binaries when that is the pragmatic supported path, as long as artifacts are content-hashed and made self-contained in the Hod store (host may provide the Linux kernel, not userland libraries/interpreters).
 - **`.hod` files are not the normal workflow.** They are for import/export/debugging.
 - **There is no top-level `PRD.md`.** Do not add new references to it.
 - **Current behavior lives in `docs/`, source, and tests.** `plans/` contains design history and active planning notes, but many files there are historical.
@@ -119,18 +120,14 @@ The current tree has crossed an important portability milestone:
 
 This means closure transfer + relocation + wrapper/runtime setup are now good enough for a complex GTK4/libadwaita GUI app with a deep dependency tree.
 
-Additionally, the COSMIC desktop environment build is nearly complete:
+Additionally, the COSMIC desktop environment build is complete:
 
-- **18 of 19** COSMIC components build from source (8 core + 10 supporting + pop-launcher + cosmic-icons)
+- **All 19** COSMIC components build from source (8 core + 10 supporting + pop-launcher + cosmic-icons + xdg-desktop-portal-cosmic)
 - Full dependency chain: Mesa → eudev/libinput/seatd → PulseAudio/pipewire → cosmic-comp → all apps
-- Ready to proceed to Phase 5 (bootable VM image) with the 18 working components
+- xdg-desktop-portal-cosmic was unblocked by source-built bindgen infrastructure (LLVM 18/Clang built from source, cmake built from source)
+- Ready to proceed to Phase 5 (bootable VM image) with all 19 components
 
 ## Likely next fronts
 
-1. **COSMIC desktop environment** (`plans/cosmic-desktop-roadmap.md`) — build the full COSMIC DE from source: Mesa → C deps → Rust apps → bootable VM. This is the top priority.
-   - **18/19 components build.** Only xdg-desktop-portal-cosmic remains blocked on pipewire-sys bindgen.
-   - Phase 5 (VM image) can proceed with the 18 working components.
-2. enable Vulkan/GL in GTK4 build to eliminate `GSK_RENDERER=cairo` workaround
-3. pre-generate pipewire-sys bindings to unblock xdg-desktop-portal-cosmic
-4. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
-5. reduce bootstrap trust surface (seed minimization)
+1. enable Vulkan/GL in GTK4 build to eliminate `GSK_RENDERER=cairo` workaround
+2. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)

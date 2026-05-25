@@ -32,7 +32,9 @@ fn test_store() -> (TempDir, Store) {
 fn write_recipe_file(tmp: &TempDir, recipe: &Recipe) -> std::path::PathBuf {
     let bytes = recipe.encode();
     let hash = recipe.recipe_hash();
-    let path = tmp.path().join(format!("{}.hod", &hash_to_hex(&hash)[..16]));
+    let path = tmp
+        .path()
+        .join(format!("{}.hod", &hash_to_hex(&hash)[..16]));
     std::fs::write(&path, &bytes).unwrap();
     path
 }
@@ -66,11 +68,7 @@ fn run_build_with_args(
 fn run_import_from_json(json: &str, store_path: &std::path::Path) -> std::process::Output {
     use std::io::Write;
     let mut child = Command::new(hod_bin())
-        .args([
-            "import-from-json",
-            "--store",
-            store_path.to_str().unwrap(),
-        ])
+        .args(["import-from-json", "--store", store_path.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -84,7 +82,10 @@ fn run_import_from_json(json: &str, store_path: &std::path::Path) -> std::proces
 }
 
 /// Run `hod import-recipe` with the given arguments.
-fn run_import_recipe(recipe_path: &std::path::Path, store_path: &std::path::Path) -> std::process::Output {
+fn run_import_recipe(
+    recipe_path: &std::path::Path,
+    store_path: &std::path::Path,
+) -> std::process::Output {
     Command::new(hod_bin())
         .args([
             "import-recipe",
@@ -99,18 +100,17 @@ fn run_import_recipe(recipe_path: &std::path::Path, store_path: &std::path::Path
 /// Run `hod inspect` with the given arguments.
 fn run_inspect(hash: &str, store_path: &std::path::Path) -> std::process::Output {
     Command::new(hod_bin())
-        .args([
-            "inspect",
-            hash,
-            "--store",
-            store_path.to_str().unwrap(),
-        ])
+        .args(["inspect", hash, "--store", store_path.to_str().unwrap()])
         .output()
         .expect("failed to run hod")
 }
 
 /// Run `hod export-recipe` with the given arguments.
-fn run_export_recipe(hash: &str, output: &std::path::Path, store_path: &std::path::Path) -> std::process::Output {
+fn run_export_recipe(
+    hash: &str,
+    output: &std::path::Path,
+    store_path: &std::path::Path,
+) -> std::process::Output {
     Command::new(hod_bin())
         .args([
             "export-recipe",
@@ -135,12 +135,7 @@ fn run_ls_output_with_args(
     store_path: &std::path::Path,
     extra_args: &[&str],
 ) -> std::process::Output {
-    let mut args = vec![
-        "ls-output",
-        hash,
-        "--store",
-        store_path.to_str().unwrap(),
-    ];
+    let mut args = vec!["ls-output", hash, "--store", store_path.to_str().unwrap()];
     args.extend(extra_args);
     Command::new(hod_bin())
         .args(&args)
@@ -156,6 +151,14 @@ fn setup_file_recipe(store: &Store, content: &[u8], executable: bool) -> Recipe 
         executable,
         resources_hash: None,
     })
+}
+
+fn bun_available() -> bool {
+    Command::new("bun")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -175,17 +178,85 @@ fn build_valid_file_recipe_prints_hash_exit_0() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(output.status.success(), "build should succeed, stderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "build should succeed, stderr: {stderr}"
+    );
 
     // stdout should contain exactly the output hash (one line, 64 hex chars)
     let hash_line = stdout.trim();
-    assert_eq!(hash_line.len(), 64, "output should be 64 hex chars, got: {hash_line}");
-    assert!(hash_line.chars().all(|c| c.is_ascii_hexdigit()), "output should be hex: {hash_line}");
+    assert_eq!(
+        hash_line.len(),
+        64,
+        "output should be 64 hex chars, got: {hash_line}"
+    );
+    assert!(
+        hash_line.chars().all(|c| c.is_ascii_hexdigit()),
+        "output should be hex: {hash_line}"
+    );
 
     // Verify the hash is valid by looking it up in the store
     let recipe_hash = recipe.recipe_hash();
     let stored_output = store.get_output(&recipe_hash).unwrap().unwrap();
     assert_eq!(hash_to_hex(&stored_output), hash_line);
+}
+
+#[test]
+fn build_typescript_recipe_prints_hash_exit_0() {
+    if !bun_available() {
+        eprintln!("skipping: bun is not available");
+        return;
+    }
+
+    let (tmp, store) = test_store();
+    let fixture = tmp.path().join("hello.txt");
+    std::fs::write(&fixture, b"hello from ts recipe\n").unwrap();
+
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("js/src/index.js");
+    let recipe_path = tmp.path().join("hello.ts");
+    std::fs::write(
+        &recipe_path,
+        format!(
+            r#"import {{ fileFromPath, importToStore }} from "{}";
+
+const recipe = await fileFromPath("{}", {{ executable: false }});
+await importToStore(recipe);
+"#,
+            sdk.display(),
+            fixture.display(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(hod_bin())
+        .args([
+            "build",
+            recipe_path.to_str().unwrap(),
+            "--store",
+            store.root().to_str().unwrap(),
+            "--quiet",
+        ])
+        .env("HOD_BIN", hod_bin())
+        .output()
+        .expect("failed to run hod build");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "build should succeed, stderr: {stderr}"
+    );
+
+    let hash_line = stdout.trim();
+    assert_eq!(
+        hash_line.len(),
+        64,
+        "output should be 64 hex chars, got: {hash_line}"
+    );
+    assert!(
+        hash_line.chars().all(|c| c.is_ascii_hexdigit()),
+        "output should be hex: {hash_line}"
+    );
 }
 
 #[test]
@@ -198,17 +269,18 @@ fn build_invalid_file_exit_3() {
 
     let output = run_build(&bad_path, store.root());
 
-    assert_eq!(output.status.code(), Some(3), "invalid recipe should exit 3");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "invalid recipe should exit 3"
+    );
 }
 
 #[test]
 fn build_nonexistent_file_exit_3() {
     let (tmp, store) = test_store();
 
-    let output = run_build(
-        &tmp.path().join("nonexistent.hod"),
-        store.root(),
-    );
+    let output = run_build(&tmp.path().join("nonexistent.hod"), store.root());
 
     assert_eq!(output.status.code(), Some(3), "missing file should exit 3");
 }
@@ -229,7 +301,11 @@ fn build_missing_dependency_exit_4() {
     let recipe_path = write_recipe_file(&tmp, &dir_recipe);
     let output = run_build(&recipe_path, store.root());
 
-    assert_eq!(output.status.code(), Some(4), "missing dependency should exit 4");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "missing dependency should exit 4"
+    );
 }
 
 #[test]
@@ -257,7 +333,15 @@ fn build_directory_with_entries() {
 
     // Pre-build the file recipe so the directory can find it
     let file_bytes = file_recipe.encode();
-    build::build(&store, &file_bytes, &BuildOptions { quiet: true, ..Default::default() }).unwrap();
+    build::build(
+        &store,
+        &file_bytes,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let dir_recipe = Recipe::Directory(RecipeDirectory {
         entries: vec![DirectoryEntry {
@@ -269,8 +353,11 @@ fn build_directory_with_entries() {
     let recipe_path = write_recipe_file(&tmp, &dir_recipe);
     let output = run_build(&recipe_path, store.root());
 
-    assert!(output.status.success(), "directory build should succeed, stderr: {}",
-        String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "directory build should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -326,7 +413,9 @@ fn ls_output_known_hash() {
     let build_output = run_build(&recipe_path, store.root());
     assert!(build_output.status.success());
 
-    let output_hash = String::from_utf8_lossy(&build_output.stdout).trim().to_string();
+    let output_hash = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
 
     // List the output
     let ls_output = run_ls_output(&output_hash, store.root());
@@ -348,7 +437,11 @@ fn ls_output_unknown_hash() {
     let fake_hash = hash_to_hex(&hash_bytes(b"nonexistent output"));
 
     let output = run_ls_output(&fake_hash, store.root());
-    assert_eq!(output.status.code(), Some(4), "unknown output should exit 4");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "unknown output should exit 4"
+    );
 }
 
 #[test]
@@ -367,7 +460,9 @@ fn ls_output_long_flag() {
 
     let recipe_path = write_recipe_file(&tmp, &recipe);
     let build_output = run_build(&recipe_path, store.root());
-    let output_hash = String::from_utf8_lossy(&build_output.stdout).trim().to_string();
+    let output_hash = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
 
     let ls_output = run_ls_output_with_args(&output_hash, store.root(), &["--long"]);
     assert!(ls_output.status.success());
@@ -394,8 +489,24 @@ fn ls_output_directory_listing() {
     // Build both files
     let bytes_a = file_a.encode();
     let bytes_b = file_b.encode();
-    build::build(&store, &bytes_a, &BuildOptions { quiet: true, ..Default::default() }).unwrap();
-    build::build(&store, &bytes_b, &BuildOptions { quiet: true, ..Default::default() }).unwrap();
+    build::build(
+        &store,
+        &bytes_a,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    build::build(
+        &store,
+        &bytes_b,
+        &BuildOptions {
+            quiet: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let dir_recipe = Recipe::Directory(RecipeDirectory {
         entries: vec![
@@ -418,15 +529,23 @@ fn ls_output_directory_listing() {
         String::from_utf8_lossy(&build_output.stderr),
     );
 
-    let output_hash = String::from_utf8_lossy(&build_output.stdout).trim().to_string();
+    let output_hash = String::from_utf8_lossy(&build_output.stdout)
+        .trim()
+        .to_string();
 
     // List the output (non-recursive)
     let ls_output = run_ls_output(&output_hash, store.root());
     assert!(ls_output.status.success());
 
     let listing = String::from_utf8_lossy(&ls_output.stdout).to_string();
-    assert!(listing.contains("alpha.txt"), "listing should contain alpha.txt, got: {listing}");
-    assert!(listing.contains("beta.sh"), "listing should contain beta.sh, got: {listing}");
+    assert!(
+        listing.contains("alpha.txt"),
+        "listing should contain alpha.txt, got: {listing}"
+    );
+    assert!(
+        listing.contains("beta.sh"),
+        "listing should contain beta.sh, got: {listing}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +608,9 @@ fn inspect_returns_valid_json_for_imported_recipe() {
         "import-recipe should succeed, stderr: {}",
         String::from_utf8_lossy(&import_output.stderr),
     );
-    let imported_hash = String::from_utf8_lossy(&import_output.stdout).trim().to_string();
+    let imported_hash = String::from_utf8_lossy(&import_output.stdout)
+        .trim()
+        .to_string();
     assert_eq!(imported_hash, recipe_hash);
 
     // Inspect it
@@ -501,8 +622,8 @@ fn inspect_returns_valid_json_for_imported_recipe() {
     );
 
     let json_str = String::from_utf8_lossy(&inspect_output.stdout).to_string();
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .expect("inspect output should be valid JSON");
+    let json: serde_json::Value =
+        serde_json::from_str(&json_str).expect("inspect output should be valid JSON");
 
     // Should be a file recipe with executable=true
     assert_eq!(json["type"], "file");
@@ -543,7 +664,10 @@ fn inspect_process_recipe_shows_dependencies() {
         platform: "x86_64-linux".to_string(),
         command: "/bin/sh".to_string(),
         args: vec!["-c".to_string(), "echo hello".to_string()],
-        env: vec![EnvVar { key: "PATH".to_string(), value: "/usr/bin".to_string() }],
+        env: vec![EnvVar {
+            key: "PATH".to_string(),
+            value: "/usr/bin".to_string(),
+        }],
         dependencies: vec![ProcessDependency {
             name: "tools".to_string(),
             recipe_hash: dep_hash,
@@ -578,7 +702,11 @@ fn inspect_unknown_hash_exits_4() {
     let fake_hash = hash_to_hex(&hash_bytes(b"nonexistent recipe"));
 
     let output = run_inspect(&fake_hash, store.root());
-    assert_eq!(output.status.code(), Some(4), "unknown recipe should exit 4");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "unknown recipe should exit 4"
+    );
 }
 
 #[test]
@@ -617,7 +745,10 @@ fn export_recipe_writes_matching_bytes() {
 
     // The exported file should be byte-for-byte identical to the original encoding
     let exported_bytes = std::fs::read(&export_path).unwrap();
-    assert_eq!(exported_bytes, recipe_bytes, "exported bytes should match original encoding");
+    assert_eq!(
+        exported_bytes, recipe_bytes,
+        "exported bytes should match original encoding"
+    );
 }
 
 #[test]
@@ -627,7 +758,11 @@ fn export_recipe_unknown_hash_exits_4() {
 
     let export_path = tmp.path().join("exported.hod");
     let output = run_export_recipe(&fake_hash, &export_path, store.root());
-    assert_eq!(output.status.code(), Some(4), "unknown recipe should exit 4");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "unknown recipe should exit 4"
+    );
 }
 
 #[test]
@@ -657,7 +792,10 @@ fn import_from_json_file_recipe() {
 
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(hash.len(), 64, "hash should be 64 hex chars");
-    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "hash should be hex: {hash}");
+    assert!(
+        hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "hash should be hex: {hash}"
+    );
 
     // Verify the recipe is in the store by inspecting it
     let inspect_output = run_inspect(&hash, store.root());
@@ -680,7 +818,9 @@ fn import_from_json_hash_matches_encode() {
         .args(["encode", json_path.to_str().unwrap()])
         .output()
         .expect("failed to run hod encode");
-    let encode_hash = String::from_utf8_lossy(&encode_output.stdout).trim().to_string();
+    let encode_hash = String::from_utf8_lossy(&encode_output.stdout)
+        .trim()
+        .to_string();
 
     // Import via `hod import-from-json`
     let output = run_import_from_json(json, store.root());
@@ -688,7 +828,10 @@ fn import_from_json_hash_matches_encode() {
     let import_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     // Same hash
-    assert_eq!(import_hash, encode_hash, "import-from-json hash should match hod encode hash");
+    assert_eq!(
+        import_hash, encode_hash,
+        "import-from-json hash should match hod encode hash"
+    );
 }
 
 #[test]
@@ -714,8 +857,10 @@ fn run_build_hash(hash: &str, store_path: &std::path::Path) -> std::process::Out
     Command::new(hod_bin())
         .args([
             "build",
-            "--hash", hash,
-            "--store", store_path.to_str().unwrap(),
+            "--hash",
+            hash,
+            "--store",
+            store_path.to_str().unwrap(),
             "--quiet",
         ])
         .output()
@@ -746,7 +891,10 @@ fn build_hash_file_recipe_succeeds() {
     // Build via --hash
     let output = run_build_hash(&hash_hex, store.root());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "build --hash should succeed, stderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "build --hash should succeed, stderr: {stderr}"
+    );
 
     // Output should be the output hash
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -779,15 +927,22 @@ fn build_hash_matches_file_build() {
     // Build via file
     let file_output = run_build(&recipe_path, store.root());
     assert!(file_output.status.success());
-    let file_hash = String::from_utf8_lossy(&file_output.stdout).trim().to_string();
+    let file_hash = String::from_utf8_lossy(&file_output.stdout)
+        .trim()
+        .to_string();
 
     // Build via --hash
     let hash_output = run_build_hash(&hash_to_hex(&recipe_hash), store.root());
     assert!(hash_output.status.success());
-    let hash_build_hash = String::from_utf8_lossy(&hash_output.stdout).trim().to_string();
+    let hash_build_hash = String::from_utf8_lossy(&hash_output.stdout)
+        .trim()
+        .to_string();
 
     // Same output hash from both methods
-    assert_eq!(file_hash, hash_build_hash, "file and hash builds should produce the same output");
+    assert_eq!(
+        file_hash, hash_build_hash,
+        "file and hash builds should produce the same output"
+    );
 }
 
 #[test]
@@ -821,13 +976,19 @@ fn build_hash_and_file_mutually_exclusive_exits_3() {
         .args([
             "build",
             recipe_path.to_str().unwrap(),
-            "--hash", &"b".repeat(64),
-            "--store", store.root().to_str().unwrap(),
+            "--hash",
+            &"b".repeat(64),
+            "--store",
+            store.root().to_str().unwrap(),
         ])
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(3), "specifying both should exit 3");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "specifying both should exit 3"
+    );
 }
 
 #[test]
@@ -835,12 +996,13 @@ fn build_neither_file_nor_hash_exits_3() {
     let (_tmp, store) = test_store();
 
     let output = Command::new(hod_bin())
-        .args([
-            "build",
-            "--store", store.root().to_str().unwrap(),
-        ])
+        .args(["build", "--store", store.root().to_str().unwrap()])
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(3), "neither file nor hash should exit 3");
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "neither file nor hash should exit 3"
+    );
 }

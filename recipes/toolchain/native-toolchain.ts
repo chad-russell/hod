@@ -4,6 +4,7 @@
 //!   - gcc-stage2 (C/C++ compiler, glibc-linked)
 //!   - binutils (as, ld, ar, ranlib, strip, etc.)
 //!   - glibc + linux-headers as a sysroot
+//!   - bindgen/clang metadata under share/hod/cc/
 //!   - bash, coreutils, make, tar, sed, grep, gawk, patch
 //!   - pkgconf (pkg-config replacement for dependency discovery)
 //!   - busybox (statically linked, musl-built, replaces seed's busybox)
@@ -128,6 +129,43 @@ mkdir -p $OUT/sysroot/include/pkgconf/libpkgconf
 cp -a /deps/pkgconf/include/pkgconf/libpkgconf/* $OUT/sysroot/include/pkgconf/libpkgconf/ 2>/dev/null || true
 cp -a /deps/pkgconf/lib/libpkgconf.a $OUT/sysroot/lib/ 2>/dev/null || true
 
+# === Bindgen / clang metadata ===
+# Emit sandbox-relative include flags for libclang/bindgen. These files are the
+# Hod equivalent of nixpkgs' compiler-wrapper metadata: consumers read them at
+# build time to construct BINDGEN_EXTRA_CLANG_ARGS without touching the host.
+mkdir -p $OUT/share/hod/cc
+
+GCC_VER=""
+for d in $OUT/lib/gcc/x86_64-linux-gnu/*; do
+  [ -d "$d" ] || continue
+  GCC_VER="\${d##*/}"
+  break
+done
+[ -n "$GCC_VER" ] || { echo "ERROR: failed to detect GCC version dir"; exit 1; }
+
+CXX_VER=""
+for d in $OUT/include/c++/*; do
+  [ -d "$d" ] || continue
+  CXX_VER="\${d##*/}"
+  break
+done
+[ -n "$CXX_VER" ] || { echo "ERROR: failed to detect libstdc++ include dir"; exit 1; }
+
+CC_CFLAGS="--sysroot=/deps/toolchain/sysroot -nostdinc -isystem /deps/toolchain/lib/gcc/x86_64-linux-gnu/$GCC_VER/include"
+[ -d "$OUT/lib/gcc/x86_64-linux-gnu/$GCC_VER/include-fixed" ] && \
+  CC_CFLAGS="$CC_CFLAGS -isystem /deps/toolchain/lib/gcc/x86_64-linux-gnu/$GCC_VER/include-fixed"
+printf '%s\n' "$CC_CFLAGS" > $OUT/share/hod/cc/cc-cflags
+
+LIBC_CFLAGS="-isystem /deps/toolchain/sysroot/include"
+printf '%s\n' "$LIBC_CFLAGS" > $OUT/share/hod/cc/libc-cflags
+
+LIBCXX_CXXFLAGS="-nostdinc++ -isystem /deps/toolchain/include/c++/$CXX_VER"
+[ -d "$OUT/include/c++/$CXX_VER/x86_64-linux-gnu" ] && \
+  LIBCXX_CXXFLAGS="$LIBCXX_CXXFLAGS -isystem /deps/toolchain/include/c++/$CXX_VER/x86_64-linux-gnu"
+[ -d "$OUT/include/c++/$CXX_VER/backward" ] && \
+  LIBCXX_CXXFLAGS="$LIBCXX_CXXFLAGS -isystem /deps/toolchain/include/c++/$CXX_VER/backward"
+printf '%s\n' "$LIBCXX_CXXFLAGS" > $OUT/share/hod/cc/libcxx-cxxflags
+
 # === Verification ===
 echo "=== Toolchain contents ==="
 ls $OUT/bin/ | head -30
@@ -136,6 +174,10 @@ echo "=== Sysroot ==="
 ls $OUT/sysroot/lib/libc.so* $OUT/sysroot/lib/crt*.o 2>&1
 echo "=== GCC internal ==="
 ls $OUT/lib/gcc/x86_64-linux-gnu/13.2.0/cc1 2>&1 || echo "cc1 not found (may need to check install)"
+echo "=== Bindgen metadata ==="
+echo "cc-cflags: $(/deps/seed/bin/busybox cat $OUT/share/hod/cc/cc-cflags)"
+echo "libc-cflags: $(/deps/seed/bin/busybox cat $OUT/share/hod/cc/libc-cflags)"
+echo "libcxx-cxxflags: $(/deps/seed/bin/busybox cat $OUT/share/hod/cc/libcxx-cxxflags)"
 echo "=== Toolchain bundle complete ==="`,
   ],
   env: [

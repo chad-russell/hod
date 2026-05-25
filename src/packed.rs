@@ -337,19 +337,19 @@ fn patch_runpath_by_extension(
         Err(e) => return Err(e),
     }
 
-    // Strategy 2: Extend the last PT_LOAD segment to hold relocated .dynstr.
-    // This does NOT need a new program header slot, so PT_GNU_STACK is preserved.
-    // Critical for shared libraries loaded via dlopen (e.g., libclang.so used by
-    // bindgen) because glibc defaults to requiring executable stack for ELFs
-    // missing PT_GNU_STACK, which mprotect(PROT_EXEC) rejects in user namespaces.
-    match patch_runpath_extend_last_load(data, new_rpath) {
+    // Strategy 2: Create a new PT_LOAD segment for the relocated .dynstr.
+    // This has proven to be the more reliable extension path for large shared
+    // libraries like Mesa where the dynamic linker consumes DT_STRTAB directly.
+    match patch_elf_with_new_segment(data, new_rpath, None) {
         Ok(true) => return Ok(true),
         Ok(false) => {}
         Err(_) => {}
     }
 
-    // Strategy 3: Create new PT_LOAD segment (may repurpose PT_GNU_STACK)
-    patch_elf_with_new_segment(data, new_rpath, None)
+    // Strategy 3: Extend the last PT_LOAD segment in-place.
+    // Keep this as a fallback so binaries that cannot spare a phdr slot still
+    // have a best-effort extension path.
+    patch_runpath_extend_last_load(data, new_rpath)
 }
 
 /// Strategy 1: Extend `.dynstr` into zero-padded space after its content.
@@ -473,8 +473,9 @@ fn patch_runpath_extend_last_load(
 
         let old_rpath_strtab_off = rpath_entry.d_val as usize;
         let old_rpath_file_off = dynstr_file_off + old_rpath_strtab_off;
-        let old_rpath_end = actual_str_end;
-        let old_rpath_len = old_rpath_end - old_rpath_file_off;
+        let old_rpath_slice = &data[old_rpath_file_off..actual_str_end];
+        let null_pos = old_rpath_slice.iter().position(|&b| b == 0).unwrap_or(old_rpath_slice.len());
+        let old_rpath_len = null_pos + 1;
 
         ExtInfo {
             last_load_idx,
@@ -495,7 +496,15 @@ fn patch_runpath_extend_last_load(
         }
     };
 
-    let old_dynstr = data[info.dynstr_file_off..info.actual_str_end].to_vec();
+    let mut old_dynstr = data[info.dynstr_file_off..info.actual_str_end].to_vec();
+
+    // Zero out the old RPATH in the COPY so the new dynstr doesn't contain
+    // stale RPATH content that could be misread as symbol names by the
+    // dynamic linker (which uses DT_STRTAB, now pointing at this copy).
+    let rpath_off_in_copy = info.old_rpath_file_off - info.dynstr_file_off;
+    let zero_end = (rpath_off_in_copy + info.old_rpath_len).min(old_dynstr.len());
+    old_dynstr[rpath_off_in_copy..zero_end].fill(0);
+
     let new_rpath_str = new_rpath;
 
     let new_dynstr_len = old_dynstr.len() + 1 + new_rpath_str.len() + 1;
@@ -1034,8 +1043,15 @@ fn patch_elf_with_new_segment(
 
     // If we have a RUNPATH entry, build new dynstr
     if info.runpath_idx.is_some() && info.strtab_vaddr != 0 {
-        let old_dynstr =
+        let mut old_dynstr =
             data[info.dynstr_file_off..info.dynstr_file_off + info.actual_str_end].to_vec();
+
+        let rpath_off_in_copy = info.old_rpath_file_off - info.dynstr_file_off;
+        if rpath_off_in_copy < old_dynstr.len() {
+            let zero_end = (rpath_off_in_copy + info.old_rpath_len).min(old_dynstr.len());
+            old_dynstr[rpath_off_in_copy..zero_end].fill(0);
+        }
+
         segment_content.extend_from_slice(&old_dynstr);
         new_rpath_offset_in_dynstr = segment_content.len();
         segment_content.extend_from_slice(new_rpath);
@@ -1112,22 +1128,17 @@ fn patch_elf_with_new_segment(
     {
         let dyn_entsize: usize = 16;
 
-        // Update DT_STRTAB → new dynstr vaddr (at start of new segment)
         let new_dynstr_vaddr = new_vaddr;
         let strtab_val_off = info.dyn_base + st_idx * dyn_entsize + 8;
-        data[strtab_val_off..strtab_val_off + 8].copy_from_slice(&new_dynstr_vaddr.to_le_bytes());
-
-        // Update DT_STRSZ → new size
         let strsz_val_off = info.dyn_base + sz_idx * dyn_entsize + 8;
+        let runpath_val_off = info.dyn_base + rp_idx * dyn_entsize + 8;
+
+        data[strtab_val_off..strtab_val_off + 8].copy_from_slice(&new_dynstr_vaddr.to_le_bytes());
         data[strsz_val_off..strsz_val_off + 8]
             .copy_from_slice(&(new_dynstr_size as u64).to_le_bytes());
-
-        // Update DT_RUNPATH d_val → offset of new string in new dynstr
-        let runpath_val_off = info.dyn_base + rp_idx * dyn_entsize + 8;
         data[runpath_val_off..runpath_val_off + 8]
             .copy_from_slice(&(new_rpath_offset_in_dynstr as u64).to_le_bytes());
 
-        // Null out old RUNPATH string in original .dynstr
         if info.old_rpath_len > 0 {
             data[info.old_rpath_file_off..info.old_rpath_file_off + info.old_rpath_len].fill(0);
         }

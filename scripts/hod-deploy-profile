@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-deploy-profile <profile.ts> <user@host[:store-path]> [profile-name]
+
+Build a Hod profile locally, copy every package closure to a remote machine,
+then activate the profile on the remote from a recipe-hash manifest.
+
+Environment:
+  HOD_BIN       Hod binary to use locally (default: hod)
+  REMOTE_HOD   Hod command to use remotely (default: hod)
+  HOD_STORE    Optional local store override; passed to local hod commands
+
+Examples:
+  scripts/hod-deploy-profile profiles/thinkpad.ts crussell@10.10.0.10
+  HOD_BIN=./target/debug/hod scripts/hod-deploy-profile profiles/thinkpad.ts crussell@10.10.0.10 thinkpad
+USAGE
+}
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  usage
+  exit 2
+fi
+
+profile_path=$1
+destination=$2
+profile_name_override=${3:-}
+
+if [[ ! -f "$profile_path" ]]; then
+  printf 'hod-deploy-profile: profile not found: %s\n' "$profile_path" >&2
+  exit 2
+fi
+
+hod_bin=${HOD_BIN:-hod}
+remote_hod=${REMOTE_HOD:-hod}
+
+if [[ "$hod_bin" == */* ]]; then
+  hod_bin=$(realpath "$hod_bin")
+else
+  hod_bin=$(command -v "$hod_bin")
+fi
+export HOD_BIN="$hod_bin"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/hod-deploy-profile.XXXXXX")
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+eval_script=$tmp_dir/eval-profile.ts
+manifest=$tmp_dir/package-hashes.txt
+closure_manifest=$tmp_dir/closure-entries.txt
+profile_abs=$(realpath "$profile_path")
+
+cat > "$eval_script" <<EOF
+import { profile } from "$profile_abs";
+const packages = profile.packages.map((p) => {
+  if (typeof p === "string") return { hash: p };
+  if (p && typeof p === "object" && "hash" in p) return { name: p.name, hash: p.hash };
+  const recipe = p?.recipe ?? p?.package;
+  if (recipe && typeof recipe === "object" && "hash" in recipe) return { name: p.name, hash: recipe.hash };
+  throw new Error("invalid profile package entry");
+});
+console.log(JSON.stringify({ name: profile.name, packages }));
+EOF
+
+printf '[hod-deploy] evaluating %s\n' "$profile_path" >&2
+json=$(HOD_BIN="$hod_bin" bun run "$eval_script" | awk '/^\{/ { line=$0 } END { print line }')
+if [[ -z "$json" ]]; then
+  printf 'hod-deploy-profile: profile evaluation produced no JSON\n' >&2
+  exit 1
+fi
+
+profile_name=$(printf '%s' "$json" | bun -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); process.stdout.write(JSON.parse(input).name);')
+if [[ -n "$profile_name_override" ]]; then
+  profile_name=$profile_name_override
+fi
+
+printf '%s' "$json" | bun -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); for (const p of JSON.parse(input).packages) console.log(p.name ? `${p.hash} ${p.name}` : p.hash);' > "$manifest"
+package_count=$(wc -l < "$manifest" | tr -d ' ')
+printf '[hod-deploy] profile %s: %s package(s)\n' "$profile_name" "$package_count" >&2
+
+printf '[hod-deploy] building profile locally\n' >&2
+"$hod_bin" profile build "$profile_path" --quiet
+
+> "$closure_manifest"
+printf '[hod-deploy] copying package closures to %s\n' "$destination" >&2
+while read -r hash _pkg_name; do
+  [[ -n "$hash" ]] || continue
+  printf '[hod-deploy] copy %s\n' "$hash" >&2
+  closure_list=$tmp_dir/closure-$hash.txt
+  "$hod_bin" copy-closure "$hash" --list --quiet > "$closure_list" 2>/dev/null
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    printf '%s\n' "$line" >> "$closure_manifest"
+  done < "$closure_list"
+  "$hod_bin" copy-closure "$hash" --to "$destination" --quiet
+done < "$manifest"
+
+remote_target=${destination%%:*}
+remote_store=""
+remote_store_arg=()
+if [[ "$destination" == *:* ]]; then
+  remote_store=${destination#*:}
+  remote_store_arg=(--store "$remote_store")
+fi
+
+remote_verify_manifest="/tmp/hod-profile-${profile_name}-closure-$$.txt"
+printf '[hod-deploy] uploading verification manifest to %s:%s\n' "$remote_target" "$remote_verify_manifest" >&2
+scp -q "$closure_manifest" "$remote_target:$remote_verify_manifest"
+
+printf '[hod-deploy] verifying copied closures on %s\n' "$remote_target" >&2
+remote_store_for_verify=${remote_store:-__default__}
+ssh "$remote_target" bash -s -- "$remote_store_for_verify" "$remote_verify_manifest" <<'REMOTE_VERIFY'
+set -euo pipefail
+
+store=${1:-}
+manifest=$2
+
+if [[ -z "$store" || "$store" == "__default__" ]]; then
+  store="${XDG_DATA_HOME:-$HOME/.local/share}/hod"
+fi
+
+failures=0
+checked=0
+
+while read -r recipe_hash output_hash expected_size _dep_name; do
+  [[ -n "${recipe_hash:-}" ]] || continue
+  [[ "$recipe_hash" == "Total:" ]] && continue
+
+  recipe_path="$store/recipes/${recipe_hash:0:2}/$recipe_hash"
+  if [[ ! -f "$recipe_path" ]]; then
+    printf '[hod-deploy] verify missing recipe: %s\n' "$recipe_path" >&2
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$output_hash" != "-" ]]; then
+    staging_path="$store/staging/${output_hash:0:2}/$output_hash"
+    if [[ ! -d "$staging_path" ]]; then
+      printf '[hod-deploy] verify missing staging dir: %s\n' "$staging_path" >&2
+      failures=$((failures + 1))
+    elif [[ "$expected_size" != "-" && "$expected_size" -gt 0 ]]; then
+      actual_size=$(du -sb "$staging_path" 2>/dev/null || true)
+      actual_size=${actual_size%%[[:space:]]*}
+      actual_size=${actual_size:-0}
+      if [[ "$actual_size" -le 0 ]]; then
+        printf '[hod-deploy] verify empty staging dir: %s expected=%s actual=%s\n' "$staging_path" "$expected_size" "$actual_size" >&2
+        failures=$((failures + 1))
+      fi
+    fi
+  fi
+
+  checked=$((checked + 1))
+done < "$manifest"
+
+if [[ "$failures" -gt 0 ]]; then
+  printf '[hod-deploy] verification failed: %s issue(s) across %s closure entries\n' "$failures" "$checked" >&2
+  exit 1
+fi
+
+printf '[hod-deploy] verified %s closure entries in %s\n' "$checked" "$store" >&2
+REMOTE_VERIFY
+
+remote_manifest="/tmp/hod-profile-${profile_name}-hashes-$$.txt"
+printf '[hod-deploy] uploading manifest to %s:%s\n' "$remote_target" "$remote_manifest" >&2
+scp -q "$manifest" "$remote_target:$remote_manifest"
+
+remote_helper=""
+if ! ssh "$remote_target" "$remote_hod" profile --help 2>/dev/null | grep -q 'activate-hashes'; then
+  remote_helper="/tmp/hod-deploy-profile-hod-$$"
+  printf '[hod-deploy] remote hod lacks activate-hashes; uploading temporary helper to %s:%s\n' "$remote_target" "$remote_helper" >&2
+  scp -q "$hod_bin" "$remote_target:$remote_helper"
+  ssh "$remote_target" chmod +x "$remote_helper"
+  remote_hod="$remote_helper"
+fi
+
+printf '[hod-deploy] activating remote profile %s\n' "$profile_name" >&2
+ssh "$remote_target" "$remote_hod" profile activate-hashes "$profile_name" --hashes-file "$remote_manifest" "${remote_store_arg[@]}"
+ssh "$remote_target" rm -f "$remote_manifest"
+ssh "$remote_target" rm -f "$remote_verify_manifest"
+if [[ -n "$remote_helper" ]]; then
+  ssh "$remote_target" rm -f "$remote_helper"
+fi
+
+printf '[hod-deploy] done\n' >&2

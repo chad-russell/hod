@@ -69,7 +69,7 @@ rm -rf $OUT/share/doc $OUT/share/info 2>/dev/null || true
     dep("ninja", ninjaRecipe),
     dep("python", pythonRecipe),
   ],
-  runtime_deps: [...waylandRuntimeDeps],
+  runtime_deps: [...waylandRuntimeDeps, "wayland"],
 });
 
 await importToStore(recipe);

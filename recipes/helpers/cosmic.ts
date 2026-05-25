@@ -96,6 +96,7 @@ import { xorgprotoRecipe } from "../native/xorgproto/xorgproto.js";
 import { libpthreadStubsRecipe } from "../native/libpthread-stubs/libpthread-stubs.js";
 import { xcbProtoRecipe } from "../native/xcb-proto/xcb-proto.js";
 import { xtransRecipe } from "../native/xtrans/xtrans.js";
+import { xkeyboardConfigRecipe } from "../native/xkeyboard-config/xkeyboard-config.js";
 
 /**
  * The standard set of C library dependencies shared by all COSMIC components.
@@ -169,6 +170,7 @@ export const cosmicBaseDeps = [
   dep("libpthread-stubs", libpthreadStubsRecipe),
   dep("xcb-proto", xcbProtoRecipe),
   dep("xtrans", xtransRecipe),
+  dep("xkeyboard-config", xkeyboardConfigRecipe),
 ];
 
 /**
@@ -227,6 +229,7 @@ export const cosmicBaseEnv: Record<string, string> = {
     "/deps/libXtst/lib/pkgconfig",
     "/deps/libxshmfence/lib/pkgconfig",
     "/deps/xorgproto/share/pkgconfig",
+    "/deps/xkeyboard-config/share/pkgconfig",
   ].join(":"),
 
   // C header search paths
@@ -412,6 +415,7 @@ export const cosmicBaseRuntimeDeps = [
   "seatd",
   "toolchain",
   "wayland",
+  "xkeyboard-config",
 ];
 
 export interface CosmicAppOptions {
@@ -438,6 +442,12 @@ export interface CosmicAppOptions {
 
   /** Shell commands to run after source extraction but before `cargo build`. */
   preBuildScript?: string;
+
+  /**
+   * Enable bindgen support for -sys crates that generate bindings at build time.
+   * Adds bindgen-clang dep and sets LIBCLANG_PATH + BINDGEN_EXTRA_CLANG_ARGS.
+   */
+  bindgen?: boolean;
 }
 
 /**
@@ -448,6 +458,11 @@ export interface CosmicAppOptions {
  * and configures the build environment accordingly.
  */
 export async function cosmicApp(opts: CosmicAppOptions): Promise<BuiltRecipe> {
+  // When bindgen is requested, add the source-built libclang dep
+  const bindgenDeps = opts.bindgen
+    ? [dep("bindgen-clang", (await import("../native/llvm/bindgen-clang.js")).bindgenClangRecipe)]
+    : [];
+
   const recipe = await cargoBuild({
     name: opts.name,
     toolchain: nativeToolchainRecipe,
@@ -457,6 +472,7 @@ export async function cosmicApp(opts: CosmicAppOptions): Promise<BuiltRecipe> {
       dep("source", opts.source),
       ...cosmicBaseDeps,
       ...(opts.extraDeps ?? []),
+      ...bindgenDeps,
     ],
     env: {
       ...cosmicBaseEnv,
@@ -470,6 +486,7 @@ export async function cosmicApp(opts: CosmicAppOptions): Promise<BuiltRecipe> {
     ].sort(),
     extraBinaries: opts.extraBinaries,
     preBuildScript: opts.preBuildScript,
+    bindgen: opts.bindgen,
   });
 
   await importToStore(recipe);

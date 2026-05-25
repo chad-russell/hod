@@ -9,7 +9,7 @@ This directory is the **current documentation authority** for Hod.
 | Task | Start here |
 |------|------------|
 | Understand the project quickly | `../README.md`, `../AGENTS.md`, this file |
-| Author or update recipes | `recipe-compiler-guide.md`, `agent-package-guide.md` |
+| Author or update recipes | `agent-package-guide.md`, `recipe-compiler-guide.md` |
 | Understand bootstrap/self-hosting | `bootstrap-pipeline.md` |
 | Debug a build | `debugging-builds.md` |
 | Understand runtime relocation / portability | `relocatable-binaries-guide.md`, `closure-transfer.md` |

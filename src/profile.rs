@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::build::{self, BuildOptions};
-use crate::hash::{hex_to_hash, hash_to_hex, Hash};
+use crate::hash::{hash_to_hex, hex_to_hash, Hash};
 use crate::store::{Store, StoreConfig};
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,23 @@ use crate::store::{Store, StoreConfig};
 #[derive(Debug, Deserialize)]
 struct ProfileOutput {
     name: String,
-    packages: Vec<String>,
+    packages: Vec<ProfilePackageOutput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfilePackageOutput {
+    name: Option<String>,
+    hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfilePackage {
+    pub name: Option<String>,
+    pub hash: Hash,
+}
+
+pub fn package_hashes(packages: &[ProfilePackage]) -> Vec<Hash> {
+    packages.iter().map(|pkg| pkg.hash).collect()
 }
 
 /// Evaluate a profile `.ts` file via Bun and return the profile name and
@@ -51,11 +67,14 @@ struct ProfileOutput {
 pub fn evaluate_profile(
     profile_path: &Path,
     _store_config: &StoreConfig,
-) -> Result<(String, Vec<Hash>), String> {
+) -> Result<(String, Vec<ProfilePackage>), String> {
     // Canonicalize to absolute path so the Bun import works from any cwd
-    let abs_path = profile_path
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve profile path {}: {e}", profile_path.display()))?;
+    let abs_path = profile_path.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve profile path {}: {e}",
+            profile_path.display()
+        )
+    })?;
 
     let profile_str = abs_path.to_string_lossy();
 
@@ -64,19 +83,29 @@ pub fn evaluate_profile(
     let script = format!(
         r#"
 import {{ profile }} from "{profile_str}";
-const pkgs = profile.packages.map(p => typeof p === 'object' && 'hash' in p ? p.hash : p);
+const pkgs = profile.packages.map((p, index) => {{
+  if (typeof p === 'string') return {{ hash: p }};
+  if (p && typeof p === 'object' && 'hash' in p) return {{ name: p.name, hash: p.hash }};
+  const recipe = p?.recipe ?? p?.package;
+  if (recipe && typeof recipe === 'object' && 'hash' in recipe) return {{ name: p.name, hash: recipe.hash }};
+  throw new Error(`invalid profile package at index ${{index}}`);
+}});
 console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
 "#,
         profile_str = profile_str,
     );
-    std::fs::write(&tmp, &script)
-        .map_err(|e| format!("cannot write eval script: {e}"))?;
+    std::fs::write(&tmp, &script).map_err(|e| format!("cannot write eval script: {e}"))?;
 
     // Run bun
     let bun = std::env::var("BUN").unwrap_or_else(|_| "bun".to_string());
-    let output = std::process::Command::new(&bun)
-        .arg("run")
-        .arg(&tmp)
+    let mut command = std::process::Command::new(&bun);
+    command.arg("run").arg(&tmp);
+    if std::env::var_os("HOD_BIN").is_none() {
+        if let Ok(current_exe) = std::env::current_exe() {
+            command.env("HOD_BIN", current_exe);
+        }
+    }
+    let output = command
         .output()
         .map_err(|e| format!("failed to run `{bun} run`: {e}"))?;
 
@@ -103,24 +132,25 @@ console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
             )
         })?;
 
-    let profile_out: ProfileOutput =
-        serde_json::from_str(json_line.trim()).map_err(|e| {
-            format!("failed to parse profile JSON: {e}\nline: {json_line}")
-        })?;
+    let profile_out: ProfileOutput = serde_json::from_str(json_line.trim())
+        .map_err(|e| format!("failed to parse profile JSON: {e}\nline: {json_line}"))?;
 
     // Parse package hashes
-    let mut hashes = Vec::with_capacity(profile_out.packages.len());
-    for (i, hex) in profile_out.packages.iter().enumerate() {
-        let hash = hex_to_hash(hex).ok_or_else(|| {
+    let mut packages = Vec::with_capacity(profile_out.packages.len());
+    for (i, pkg) in profile_out.packages.iter().enumerate() {
+        let hash = hex_to_hash(&pkg.hash).ok_or_else(|| {
             format!(
                 "package [{}] has invalid hash '{}' (expected 64 hex chars)",
-                i, hex
+                i, pkg.hash
             )
         })?;
-        hashes.push(hash);
+        packages.push(ProfilePackage {
+            name: pkg.name.clone(),
+            hash,
+        });
     }
 
-    Ok((profile_out.name, hashes))
+    Ok((profile_out.name, packages))
 }
 
 // ---------------------------------------------------------------------------
@@ -129,11 +159,7 @@ console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
 
 /// Build any unbuilt packages in the profile. Returns the number of packages
 /// that were actually built (vs already cached).
-pub fn build_profile(
-    store: &Store,
-    hashes: &[Hash],
-    quiet: bool,
-) -> Result<usize, String> {
+pub fn build_profile(store: &Store, hashes: &[Hash], quiet: bool) -> Result<usize, String> {
     // Determine which packages need building
     let mut unbuilt: Vec<Hash> = Vec::new();
     for hash in hashes {
@@ -148,14 +174,10 @@ pub fn build_profile(
         return Ok(0);
     }
 
-    eprintln!(
-        "[hod] building {} unbuilt package(s)...",
-        unbuilt.len()
-    );
+    eprintln!("[hod] building {} unbuilt package(s)...", unbuilt.len());
 
     let options = BuildOptions {
         force: false,
-        force_recursive: false,
         quiet,
         keep_failed: false,
     };
@@ -165,9 +187,9 @@ pub fn build_profile(
         let hex = hash_to_hex(hash);
         eprintln!("[hod] [{}/{}] building {}...", i + 1, unbuilt.len(), hex);
 
-        let recipe_bytes = store.get_recipe(hash).map_err(|e| {
-            format!("recipe {} not in store: {e}", hex)
-        })?;
+        let recipe_bytes = store
+            .get_recipe(hash)
+            .map_err(|e| format!("recipe {} not in store: {e}", hex))?;
 
         match build::build(store, &recipe_bytes, &options) {
             Ok(output_hash) => {
@@ -242,10 +264,21 @@ struct ResolvedPackage {
 /// preserves the store-relative paths that the bootstrap and RPATH rely on.
 /// Runtime deps are linked separately under `runtime/` for inspection and for
 /// wrapper/runtime logic outside the profile env scripts.
-pub fn create_farm(
+pub fn create_farm(store: &Store, name: &str, hashes: &[Hash]) -> Result<PathBuf, String> {
+    let packages: Vec<ProfilePackage> = hashes
+        .iter()
+        .map(|hash| ProfilePackage {
+            name: None,
+            hash: *hash,
+        })
+        .collect();
+    create_farm_from_packages(store, name, &packages)
+}
+
+pub fn create_farm_from_packages(
     store: &Store,
     name: &str,
-    hashes: &[Hash],
+    profile_packages: &[ProfilePackage],
 ) -> Result<PathBuf, String> {
     let base = profiles_dir();
     let farm_dir = base.join(name);
@@ -272,10 +305,12 @@ pub fn create_farm(
     let mut packages: Vec<ResolvedPackage> = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
 
-    for hash in hashes {
+    for package in profile_packages {
+        let hash = &package.hash;
         let hex = hash_to_hex(hash);
 
-        let output_hash = store.get_output(hash)
+        let output_hash = store
+            .get_output(hash)
             .map_err(|e| format!("store error for package {}: {e}", hex))?
             .ok_or_else(|| format!("package {} has not been built yet", hex))?;
 
@@ -288,26 +323,33 @@ pub fn create_farm(
             ));
         }
 
-        // Derive a short link name from the package's binaries
-        let link_name = derive_package_name(&staging_path, &hex, &mut seen_names);
+        let link_name = match &package.name {
+            Some(name) => unique_package_name(name, &mut seen_names),
+            None => derive_package_name(&staging_path, &hex, &mut seen_names),
+        };
 
         // Create the directory symlink
         let link_path = tmp_dir.join("pkgs").join(&link_name);
-        std::os::unix::fs::symlink(&staging_path, &link_path)
-            .map_err(|e| format!(
+        std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
+            format!(
                 "cannot symlink {} → {}: {e}",
-                link_path.display(), staging_path.display()
-            ))?;
+                link_path.display(),
+                staging_path.display()
+            )
+        })?;
 
-        packages.push(ResolvedPackage { link_name, staging_path });
+        packages.push(ResolvedPackage {
+            link_name,
+            staging_path,
+        });
     }
 
     // Resolve runtime deps (deduplicated)
     let mut runtime_deps: Vec<(String, PathBuf)> = Vec::new();
     let mut seen_runtime: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
 
-    for hash in hashes {
-        collect_runtime_deps(store, hash, &mut runtime_deps, &mut seen_runtime)?;
+    for package in profile_packages {
+        collect_runtime_deps(store, &package.hash, &mut runtime_deps, &mut seen_runtime)?;
     }
 
     // Create runtime dep symlinks
@@ -317,9 +359,7 @@ pub fn create_farm(
             let _ = std::fs::remove_file(&link_path);
         }
         std::os::unix::fs::symlink(dep_staging, &link_path)
-            .map_err(|e| format!(
-                "cannot symlink runtime dep {}: {e}", dep_name
-            ))?;
+            .map_err(|e| format!("cannot symlink runtime dep {}: {e}", dep_name))?;
     }
 
     // Write env snippets
@@ -328,8 +368,7 @@ pub fn create_farm(
     // Atomic swap
     if farm_dir.exists() {
         if old_dir.exists() {
-            std::fs::remove_dir_all(&old_dir)
-                .map_err(|e| format!("cannot remove old dir: {e}"))?;
+            std::fs::remove_dir_all(&old_dir).map_err(|e| format!("cannot remove old dir: {e}"))?;
         }
         std::fs::rename(&farm_dir, &old_dir)
             .map_err(|e| format!("cannot rename existing farm to .old: {e}"))?;
@@ -345,6 +384,37 @@ pub fn create_farm(
     Ok(farm_dir)
 }
 
+fn unique_package_name(name: &str, seen: &mut std::collections::HashSet<String>) -> String {
+    let base = sanitize_package_name(name);
+    let mut candidate = base.clone();
+    let mut counter = 2;
+    while seen.contains(&candidate) {
+        candidate = format!("{}-{}", base, counter);
+        counter += 1;
+    }
+    seen.insert(candidate.clone());
+    candidate
+}
+
+fn sanitize_package_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() || trimmed.starts_with('.') {
+        "package".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Derive a short, human-readable name for a package directory symlink.
 ///
 /// Tries, in order:
@@ -357,31 +427,32 @@ fn derive_package_name(
 ) -> String {
     let bin_dir = staging_path.join("bin");
     let candidate = if bin_dir.is_dir() {
-        std::fs::read_dir(&bin_dir)
-            .ok()
-            .and_then(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_file() || e.path().is_symlink())
-                    .filter(|e| !e.file_name().to_string_lossy().ends_with("-config"))
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .next()
-            })
+        std::fs::read_dir(&bin_dir).ok().and_then(|entries| {
+            let mut candidates: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file() || e.path().is_symlink())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.')
+                        || name.ends_with("-wrapped")
+                        || name.ends_with("-config")
+                    {
+                        None
+                    } else {
+                        Some(name)
+                    }
+                })
+                .collect();
+            candidates.sort();
+            candidates.into_iter().next()
+        })
     } else {
         None
     };
 
     let base = candidate.unwrap_or_else(|| hex[..12].to_string());
 
-    // Ensure uniqueness
-    let mut name = base.clone();
-    let mut counter = 2;
-    while seen.contains(&name) {
-        name = format!("{}-{}", base, counter);
-        counter += 1;
-    }
-    seen.insert(name.clone());
-    name
+    unique_package_name(&base, seen)
 }
 
 /// Collect runtime dependencies for a package by decoding its recipe.
@@ -394,13 +465,12 @@ fn collect_runtime_deps(
     runtime_deps: &mut Vec<(String, PathBuf)>,
     seen: &mut std::collections::HashSet<[u8; 32]>,
 ) -> Result<(), String> {
-    let recipe_bytes = store.get_recipe(recipe_hash).map_err(|e| {
-        format!("cannot load recipe {}: {e}", hash_to_hex(recipe_hash))
-    })?;
+    let recipe_bytes = store
+        .get_recipe(recipe_hash)
+        .map_err(|e| format!("cannot load recipe {}: {e}", hash_to_hex(recipe_hash)))?;
 
-    let recipe = crate::recipe::Recipe::decode(&recipe_bytes).map_err(|e| {
-        format!("cannot decode recipe {}: {e}", hash_to_hex(recipe_hash))
-    })?;
+    let recipe = crate::recipe::Recipe::decode(&recipe_bytes)
+        .map_err(|e| format!("cannot decode recipe {}: {e}", hash_to_hex(recipe_hash)))?;
 
     let process = match recipe {
         crate::recipe::Recipe::Process(p) => p,

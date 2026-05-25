@@ -107,6 +107,20 @@ export interface CargoBuildOptions {
   /** Additional Cargo build flags (e.g., "--features", "feature1"). */
   cargoFlags?: string[];
 
+  /**
+   * Enable generic bindgen support.
+   *
+   * When true, `cargoBuild()` exports:
+   *   - `LIBCLANG_PATH=/deps/bindgen-clang/lib`
+   *   - `BINDGEN_EXTRA_CLANG_ARGS=...`
+   *
+   * The flags are built from toolchain metadata under
+   * `/deps/toolchain/share/hod/cc/` plus the bindgen-clang resource dir.
+   *
+   * Callers must still include a dependency mounted at `/deps/bindgen-clang/`.
+   */
+  bindgen?: boolean;
+
   /** Bitmask of unsafe flags. Bit 0 = allow networking. */
   unsafe_flags?: number;
 
@@ -248,6 +262,33 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
 
   const cargoFlags = opts.cargoFlags ? ` ${opts.cargoFlags.join(" ")}` : "";
 
+  const bindgenSetup = opts.bindgen ? [
+    "# Generic bindgen environment",
+    'if [ ! -d "/deps/bindgen-clang/lib" ]; then',
+    '  echo "ERROR: bindgen requested but /deps/bindgen-clang/lib is missing" >&2',
+    "  exit 1",
+    "fi",
+    'if [ ! -f "/deps/toolchain/share/hod/cc/cc-cflags" ]; then',
+    '  echo "ERROR: bindgen requested but toolchain metadata is missing" >&2',
+    "  exit 1",
+    "fi",
+    `BINDGEN_CC_CFLAGS=$(/deps/${tc}/bin/busybox cat /deps/${tc}/share/hod/cc/cc-cflags)`,
+    `BINDGEN_LIBC_CFLAGS=$(/deps/${tc}/bin/busybox cat /deps/${tc}/share/hod/cc/libc-cflags)`,
+    `BINDGEN_LIBCXX_CXXFLAGS=$(/deps/${tc}/bin/busybox cat /deps/${tc}/share/hod/cc/libcxx-cxxflags)`,
+    'BINDGEN_CLANG_RESOURCE_DIR=""',
+    'for d in /deps/bindgen-clang/lib/clang/*; do',
+    '  [ -d "$d/include" ] || continue',
+    '  BINDGEN_CLANG_RESOURCE_DIR="$d"',
+    '  break',
+    'done',
+    'if [ -z "$BINDGEN_CLANG_RESOURCE_DIR" ]; then',
+    '  echo "ERROR: bindgen requested but no clang resource dir was found under /deps/bindgen-clang/lib/clang" >&2',
+    '  exit 1',
+    'fi',
+    "export LIBCLANG_PATH=/deps/bindgen-clang/lib",
+    'export BINDGEN_EXTRA_CLANG_ARGS="$BINDGEN_CC_CFLAGS $BINDGEN_LIBCXX_CXXFLAGS $BINDGEN_LIBC_CFLAGS -resource-dir $BINDGEN_CLANG_RESOURCE_DIR"',
+  ].join("\n") : "";
+
   // Build LD_LIBRARY_PATH from all deps that have a lib/ directory.
   const libPathParts = [
     `/deps/${rust}/lib`,
@@ -269,6 +310,7 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
   const buildCmd = [
     "cd /tmp/build",
     `export LD_LIBRARY_PATH=${libPathParts.join(":")}`,
+    ...(opts.bindgen ? [bindgenSetup] : []),
     ...(opts.preBuildScript ? [opts.preBuildScript] : []),
     `cargo build --release --target x86_64-unknown-linux-gnu${cargoFlags}`,
     "",

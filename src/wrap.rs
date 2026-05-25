@@ -61,7 +61,9 @@ pub fn generate_wrappers(
         let staging = store.root().join("staging").join(shard).join(hex);
         let candidate = staging.join("libexec/gio-launch-desktop");
         if candidate.exists() {
-            Some(format!("$staging_root/{shard}/{hex}/libexec/gio-launch-desktop"))
+            Some(format!(
+                "$staging_root/{shard}/{hex}/libexec/gio-launch-desktop"
+            ))
         } else {
             None
         }
@@ -73,18 +75,65 @@ pub fn generate_wrappers(
     };
 
     // Detect XKB config root from runtime deps (e.g., xkeyboard-config)
-    let xkb_root: Option<String> = runtime_dep_outputs
+    let xkb_root: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
+        let shard = hash_shard(hash);
+        let hex = hash_to_hex(hash);
+        let staging = store.root().join("staging").join(&shard).join(&hex);
+        if staging.join("share/X11/xkb").is_dir() {
+            Some(format!("$staging_root/{shard}/{hex}/share/X11/xkb"))
+        } else {
+            None
+        }
+    });
+
+    // Detect X11 locale directory from runtime deps (e.g., libX11).
+    // xkbcommon uses XLOCALEDIR to find Compose files for input method support.
+    let xlocale_dir: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
+        let shard = hash_shard(hash);
+        let hex = hash_to_hex(hash);
+        let staging = store.root().join("staging").join(&shard).join(&hex);
+        if staging.join("share/X11/locale").is_dir() {
+            Some(format!("$staging_root/{shard}/{hex}/share/X11/locale"))
+        } else {
+            None
+        }
+    });
+
+    // Detect Mesa DRI drivers directory from runtime deps.
+    // Needed so Mesa's EGL/GL implementation can find its DRI drivers
+    // for software rendering when hardware drivers aren't available.
+    let mesa_dri_dir: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
+        let shard = hash_shard(hash);
+        let hex = hash_to_hex(hash);
+        let staging = store.root().join("staging").join(&shard).join(&hex);
+        if staging.join("lib/dri").is_dir() {
+            Some(format!("$staging_root/{shard}/{hex}/lib/dri"))
+        } else {
+            None
+        }
+    });
+
+    // Detect EGL vendor ICD directories from runtime deps.
+    // libglvnd loads vendor libraries (e.g., Mesa's libEGL_mesa.so) by reading
+    // JSON files from directories listed in __EGL_VENDOR_LIBRARY_DIRS. Without
+    // this, libglvnd can't find the vendor ICD at runtime and EGL platform
+    // display creation fails silently, causing "display handle not supported"
+    // errors in applications like Alacritty.
+    let egl_vendor_dirs: Vec<String> = runtime_dep_outputs
         .iter()
-        .find_map(|(_name, hash)| {
+        .filter_map(|(_name, hash)| {
             let shard = hash_shard(hash);
             let hex = hash_to_hex(hash);
             let staging = store.root().join("staging").join(&shard).join(&hex);
-            if staging.join("share/X11/xkb").is_dir() {
-                Some(format!("$staging_root/{shard}/{hex}/share/X11/xkb"))
+            if staging.join("share/glvnd/egl_vendor.d").is_dir() {
+                Some(format!(
+                    "$staging_root/{shard}/{hex}/share/glvnd/egl_vendor.d"
+                ))
             } else {
                 None
             }
-        });
+        })
+        .collect();
 
     // Detect whether the runtime deps include GTK4 (via dep names or
     // the presence of libgtk-4.so in staging dirs). When GTK4 is present
@@ -99,11 +148,7 @@ pub fn generate_wrappers(
                 .map(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .any(|e| {
-                            e.file_name()
-                                .to_string_lossy()
-                                .starts_with("libgtk-4.so")
-                        })
+                        .any(|e| e.file_name().to_string_lossy().starts_with("libgtk-4.so"))
                 })
                 .unwrap_or(false)
     });
@@ -120,6 +165,29 @@ pub fn generate_wrappers(
     let xkb_export = match &xkb_root {
         Some(path) => format!("export XKB_CONFIG_ROOT=\"{path}\"\n"),
         None => String::new(),
+    };
+
+    let xlocale_export = match &xlocale_dir {
+        Some(path) => format!("export XLOCALEDIR=\"{path}\"\n"),
+        None => String::new(),
+    };
+
+    let mesa_dri_export = match &mesa_dri_dir {
+        Some(path) => {
+            format!(
+                "if [ -z \"${{LIBGL_DRIVERS_PATH:-}}\" ]; then export LIBGL_DRIVERS_PATH=\"{path}\"; fi\n"
+            )
+        }
+        None => String::new(),
+    };
+
+    let egl_vendor_export = if egl_vendor_dirs.is_empty() {
+        String::new()
+    } else {
+        let dirs = egl_vendor_dirs.join(":");
+        format!(
+            "if [ -z \"${{__EGL_VENDOR_LIBRARY_DIRS:-}}\" ]; then export __EGL_VENDOR_LIBRARY_DIRS=\"{dirs}\"; fi\n"
+        )
     };
 
     let mut count = 0;
@@ -166,7 +234,17 @@ pub fn generate_wrappers(
         std::fs::rename(&path, &wrapped_path).map_err(WrapError::Io)?;
 
         // Generate the wrapper script
-        let wrapper_content = generate_wrapper_script(&name, &wrapped_name, &dep_shard_hex, &gsk_export, &gio_launch_export, &xkb_export);
+        let wrapper_content = generate_wrapper_script(
+            &name,
+            &wrapped_name,
+            &dep_shard_hex,
+            &gsk_export,
+            &gio_launch_export,
+            &xkb_export,
+            &xlocale_export,
+            &mesa_dri_export,
+            &egl_vendor_export,
+        );
 
         std::fs::write(&path, &wrapper_content).map_err(WrapError::Io)?;
 
@@ -216,12 +294,15 @@ impl std::error::Error for WrapError {
 /// 3. Constructs environment variable lists from the runtime dep staging dirs.
 /// 4. Execs the wrapped binary with the computed environment.
 fn generate_wrapper_script(
-    _name: &str,
+    name: &str,
     wrapped_name: &str,
     dep_shard_hex: &[(String, String)],
     gsk_export: &str,
     gio_launch_export: &str,
     xkb_export: &str,
+    xlocale_export: &str,
+    mesa_dri_export: &str,
+    egl_vendor_export: &str,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
     // Each path is: $staging_root/<shard>/<hex>/share
@@ -241,6 +322,13 @@ fn generate_wrapper_script(
         .map(|(shard, hex)| format!("$staging_root/{shard}/{hex}/share"))
         .collect();
 
+    // Collect lib/ directories from runtime deps for wrappers that still need
+    // LD_LIBRARY_PATH for dlopen()-loaded libraries.
+    let ld_lib_parts: Vec<String> = dep_shard_hex
+        .iter()
+        .map(|(shard, hex)| format!("$staging_root/{shard}/{hex}/lib"))
+        .collect();
+
     // Collect share/glib-2.0/schemas/ for GSETTINGS_SCHEMA_PATH
     let gsettings_parts: Vec<String> = dep_shard_hex
         .iter()
@@ -251,7 +339,29 @@ fn generate_wrapper_script(
     let own_gsettings = "$prefix/share/glib-2.0/schemas";
 
     let xdg_data_str = xdg_data_parts.join(":");
+    let ld_lib_str = ld_lib_parts.join(":");
     let gsettings_str = format!("{}:{}", own_gsettings, gsettings_parts.join(":"));
+
+    // Most Hod binaries should not leak Hod's runtime library path to child
+    // processes. Tools such as bat spawn system/Nix pagers, and those children
+    // can break if they inherit Hod's libc path. Keep LD_LIBRARY_PATH only for
+    // GUI/runtime-heavy apps that need dlopen() lookups after startup.
+    let keep_ld_library_path = matches!(name, "alacritty");
+
+    let ld_export = if keep_ld_library_path {
+        format!(
+            "# Build LD_LIBRARY_PATH from all runtime deps for dlopen() resolution\nexport LD_LIBRARY_PATH=\"{ld_lib_str}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n"
+        )
+    } else {
+        "# Hod RUNPATH relocation handles linked libraries; do not export Hod LD_LIBRARY_PATH.\n"
+            .to_string()
+    };
+
+    let extra_exec_args = if name == "alacritty" {
+        " --option 'env.LD_LIBRARY_PATH=\"\"'"
+    } else {
+        ""
+    };
 
     format!(
         r#"#!/bin/sh
@@ -264,6 +374,8 @@ bin_dir="$(dirname "$self")"
 prefix="$(cd "$bin_dir/.." && pwd)"
 staging_root="$(cd "$bin_dir/../../.." && pwd)"
 
+{ld_export}
+
 # Build XDG_DATA_DIRS from own prefix and all runtime deps
 if [ -d "$prefix/share" ]; then
     _xdg_data="$prefix/share:{xdg_data_str}"
@@ -275,7 +387,43 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
-{gsk_export}{gio_launch_export}{xkb_export}exec "$bin_dir/{wrapped_name}" "$@"
+{gsk_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}exec "$bin_dir/{wrapped_name}"{extra_exec_args} "$@"
 "#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_wrapper_script;
+
+    fn script_for(name: &str) -> String {
+        generate_wrapper_script(
+            name,
+            &format!(".{name}-wrapped"),
+            &[("aa".to_string(), "aabbcc".to_string())],
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+    }
+
+    #[test]
+    fn cli_wrapper_does_not_export_hod_ld_library_path() {
+        let script = script_for("bat");
+
+        assert!(!script.contains("export LD_LIBRARY_PATH="));
+        assert!(script.contains("do not export Hod LD_LIBRARY_PATH"));
+        assert!(script.contains("exec \"$bin_dir/.bat-wrapped\" \"$@\""));
+    }
+
+    #[test]
+    fn alacritty_wrapper_keeps_runtime_ld_library_path_and_scrubs_children() {
+        let script = script_for("alacritty");
+
+        assert!(script.contains("export LD_LIBRARY_PATH="));
+        assert!(script.contains("--option 'env.LD_LIBRARY_PATH=\"\"'"));
+    }
 }

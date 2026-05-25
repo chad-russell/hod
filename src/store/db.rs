@@ -16,10 +16,11 @@ pub fn migrate(conn: &Connection) -> Result<(), StoreError> {
         );
 
         CREATE TABLE IF NOT EXISTS outputs (
-            recipe_hash  TEXT PRIMARY KEY,
-            output_hash  TEXT NOT NULL,
-            built_at     TEXT NOT NULL,
-            build_ms     INTEGER NOT NULL
+            recipe_hash       TEXT PRIMARY KEY,
+            output_hash       TEXT NOT NULL,
+            built_at          TEXT NOT NULL,
+            build_ms          INTEGER NOT NULL,
+            build_output_hash TEXT
         );
 
         CREATE TABLE IF NOT EXISTS build_logs (
@@ -46,5 +47,16 @@ pub fn migrate(conn: &Connection) -> Result<(), StoreError> {
         );
         ",
     )?;
+
+    // Migration: add build_output_hash column if missing (existing databases)
+    let has_col: bool = conn
+        .prepare("SELECT build_output_hash FROM outputs LIMIT 0")
+        .is_ok();
+    if !has_col {
+        conn.execute_batch(
+            "ALTER TABLE outputs ADD COLUMN build_output_hash TEXT;",
+        )?;
+    }
+
     Ok(())
 }

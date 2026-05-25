@@ -29,8 +29,6 @@ use crate::store::Store;
 pub struct BuildOptions {
     /// Force rebuild of the top-level recipe only (dependencies use cache normally).
     pub force: bool,
-    /// Force rebuild of all recipes recursively, including all transitive dependencies.
-    pub force_recursive: bool,
     /// Suppress streaming stdout/stderr from build processes to the terminal.
     pub quiet: bool,
     /// Keep the sandbox working directory on build failure (for debugging).
@@ -41,7 +39,6 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             force: false,
-            force_recursive: false,
             quiet: false,
             keep_failed: false,
         }
@@ -146,6 +143,12 @@ impl From<std::io::Error> for BuildError {
     }
 }
 
+impl From<crate::relocate::RelocateError> for BuildError {
+    fn from(e: crate::relocate::RelocateError) -> Self {
+        Self::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }
+}
+
 impl BuildError {
     /// Return the process exit code for this error.
     pub fn exit_code(&self) -> i32 {
@@ -240,8 +243,8 @@ fn do_build(
     }
     building.insert(recipe_hash);
 
-    // 3. Check cache (unless --force or --force-recursive)
-    if !options.force && !options.force_recursive {
+    // 3. Check cache (unless --force)
+    if !options.force {
         if let Some(cached) = store.get_output(&recipe_hash)? {
             eprintln!(
                 "[hod] cache hit for {} ({})",
@@ -281,6 +284,9 @@ fn do_build(
     // Stage the artifact to disk (for materialization by downstream recipes)
     stage_artifact(store, &artifact, &output_hash)?;
 
+    // Record the pre-relocation hash before any fixup modifies the staging dir.
+    let build_output_hash = output_hash;
+
     // Apply platform-appropriate post-build fixup if this recipe declares
     // runtime_deps. The fixup phase is platform-specific (ELF RUNPATH patching
     // on Linux, potentially Mach-O install_name editing on macOS in the
@@ -305,11 +311,20 @@ fn do_build(
                 }
             }
 
-            let output_staging_dir = artifact_staging_path(store, &output_hash);
+            let pre_reloc_dir = artifact_staging_path(store, &output_hash);
+
+            // Copy the pre-relocation staging dir before modifying it in-place.
+            // This preserves the raw build output for `hod restage`.
+            let reloc_dir = pre_reloc_dir.with_extension("reloc");
+            if reloc_dir.exists() {
+                let _ = std::fs::remove_dir_all(&reloc_dir);
+            }
+            copy_dir_recursive(&pre_reloc_dir, &reloc_dir)?;
+
             match apply_runtime_fixup(
                 &p.platform,
                 store,
-                &output_staging_dir,
+                &reloc_dir,
                 &runtime_dep_outputs,
             ) {
                 Ok(count) if count > 0 => {
@@ -318,20 +333,23 @@ fn do_build(
                         count, p.platform,
                     );
 
-                    let fixed_artifact = capture_output(&output_staging_dir, store)?;
+                    let fixed_artifact = capture_output(&reloc_dir, store)?;
                     let fixed_hash = artifact_to_hash(&fixed_artifact);
                     stage_artifact(store, &fixed_artifact, &fixed_hash)?;
 
-                    // Only remove the original staging if the fixed hash is
-                    // different — otherwise we'd delete the only copy.
+                    let _ = std::fs::remove_dir_all(&reloc_dir);
+
                     if fixed_hash != output_hash {
-                        let _ = std::fs::remove_dir_all(&output_staging_dir);
+                        let _ = std::fs::remove_dir_all(&pre_reloc_dir);
                     }
                     output_hash = fixed_hash;
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    let _ = std::fs::remove_dir_all(&reloc_dir);
+                }
                 Err(e) => {
                     eprintln!("[hod] warning: runtime fixup failed: {e}");
+                    let _ = std::fs::remove_dir_all(&reloc_dir);
                 }
             }
 
@@ -339,7 +357,14 @@ fn do_build(
             // This runs after relocation so that the wrappers replace the
             // already-relocated ELF binaries.
             if !runtime_dep_outputs.is_empty() {
-                let wrap_dir = artifact_staging_path(store, &output_hash);
+                let wrap_src_dir = artifact_staging_path(store, &output_hash);
+
+                let wrap_dir = wrap_src_dir.with_extension("wrap");
+                if wrap_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&wrap_dir);
+                }
+                copy_dir_recursive(&wrap_src_dir, &wrap_dir)?;
+
                 match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
                     Ok(count) if count > 0 => {
                         eprintln!("[hod] generated {} wrapper script(s)", count,);
@@ -348,21 +373,26 @@ fn do_build(
                         let wrapped_hash = artifact_to_hash(&wrapped_artifact);
                         stage_artifact(store, &wrapped_artifact, &wrapped_hash)?;
 
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
+
                         if wrapped_hash != output_hash {
-                            let _ = std::fs::remove_dir_all(&wrap_dir);
+                            let _ = std::fs::remove_dir_all(&wrap_src_dir);
                         }
                         output_hash = wrapped_hash;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
+                    }
                     Err(e) => {
                         eprintln!("[hod] warning: wrapper generation failed: {e}");
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
                     }
                 }
             }
         }
     }
 
-    store.store_output(&recipe_hash, &output_hash, elapsed.as_millis() as u64)?;
+    store.store_output(&recipe_hash, &output_hash, elapsed.as_millis() as u64, Some(&build_output_hash))?;
 
     // Record dependency edges
     let dep_edges = collect_dep_edges(&recipe, &dep_outputs);
@@ -418,27 +448,22 @@ fn build_dependencies(
                 let output_hash = build_dependency(store, dep.recipe_hash, options, building)?;
                 outputs.named.push((dep.name.clone(), output_hash));
             }
-            // Build workdir if present
             if let Some(wd_hash) = p.workdir_hash {
                 let output_hash = build_dependency(store, wd_hash, options, building)?;
                 outputs.named.push(("<workdir>".to_string(), output_hash));
             }
-            // Build output scaffold if present
             if let Some(scaffold_hash) = p.output_scaffold_hash {
                 let output_hash = build_dependency(store, scaffold_hash, options, building)?;
                 outputs.named.push(("<scaffold>".to_string(), output_hash));
             }
         }
         Recipe::File(f) => {
-            // File may have a resources dependency
             if let Some(res_hash) = f.resources_hash {
                 let output_hash = build_dependency(store, res_hash, options, building)?;
                 outputs.named.push(("<resources>".to_string(), output_hash));
             }
         }
         Recipe::Unpack(u) => {
-            // Unpack may have a download dependency that must be built first
-            // to ensure the archive blob is in the store.
             if let Some(archive_recipe_hash) = u.archive_recipe_hash {
                 let output_hash = build_dependency(store, archive_recipe_hash, options, building)?;
                 outputs.named.push(("<archive>".to_string(), output_hash));
@@ -461,13 +486,8 @@ fn build_dependency(
     options: &BuildOptions,
     building: &mut std::collections::HashSet<Hash>,
 ) -> Result<Hash> {
-    // Check if already built (output cache).
-    // Only skip cache when --force-recursive is set (--force only applies to
-    // the top-level recipe, so dependencies still use the cache).
-    if !options.force_recursive {
-        if let Some(cached) = store.get_output(&dep_recipe_hash)? {
-            return Ok(cached);
-        }
+    if let Some(cached) = store.get_output(&dep_recipe_hash)? {
+        return Ok(cached);
     }
 
     // The recipe bytes must be in the store
@@ -548,6 +568,160 @@ fn apply_runtime_fixup(
         // packed executable bundlers, etc.).
         _ => Ok(0),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Restage — re-run relocation + wrapping on a pre-relocation build output
+// ---------------------------------------------------------------------------
+
+/// Re-run the staging relocation and wrapper generation for a recipe whose
+/// build output is already in the store.
+///
+/// This is useful when the relocation code in `packed.rs` has been fixed or
+/// changed and you want to re-derive the final output without rebuilding.
+pub fn restage_output(
+    store: &Store,
+    recipe_hash: &Hash,
+) -> Result<Hash> {
+    let recipe_bytes = store.get_recipe(recipe_hash)?;
+    let recipe = Recipe::decode(&recipe_bytes)
+        .map_err(|e| crate::store::StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("failed to decode recipe: {e}"),
+        )))?;
+
+    let build_output_hash = match store.get_build_output_hash(recipe_hash)? {
+        Some(h) => h,
+        None => {
+            eprintln!(
+                "[hod] restage: no build_output_hash for {}, falling back to full rebuild",
+                hash_to_hex(recipe_hash),
+            );
+            let options = BuildOptions {
+                force: true,
+                quiet: false,
+                keep_failed: false,
+            };
+            return build(store, &recipe_bytes, &options);
+        }
+    };
+
+    let pre_reloc_dir = artifact_staging_path(store, &build_output_hash);
+    if !pre_reloc_dir.exists() {
+        eprintln!(
+            "[hod] restage: pre-relocation staging dir not found for {}, falling back to full rebuild",
+            hash_to_hex(recipe_hash),
+        );
+        let options = BuildOptions {
+            force: true,
+            quiet: false,
+            keep_failed: false,
+        };
+        return build(store, &recipe_bytes, &options);
+    }
+
+    // Resolve runtime deps the same way do_build does.
+    let p = match &recipe {
+        Recipe::Process(p) => p,
+        _ => {
+            return Err(crate::store::StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "restage only applies to Process recipes",
+            )).into());
+        }
+    };
+
+    let runtime_dep_names = p.runtime_deps.as_ref()
+        .ok_or_else(|| crate::store::StoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "recipe has no runtime_deps — nothing to restage",
+        )))?;
+
+    let dep_edges = store.get_dependencies(recipe_hash)?;
+    let mut runtime_dep_outputs = std::collections::BTreeMap::new();
+    for dep_name in runtime_dep_names {
+        for (dep_name_opt, dep_hash) in &dep_edges {
+            if dep_name_opt.as_deref() == Some(dep_name.as_str()) {
+                if let Some(dep_out) = store.get_output(dep_hash)? {
+                    runtime_dep_outputs.insert(dep_name.clone(), dep_out);
+                }
+                break;
+            }
+        }
+    }
+
+    // Remove the old final output staging dir(s) so restage is idempotent.
+    if let Some(old_output) = store.get_output(recipe_hash)? {
+        let old_dir = artifact_staging_path(store, &old_output);
+        let _ = std::fs::remove_dir_all(&old_dir);
+    }
+
+    // Copy pre-relocation staging dir for relocation.
+    let reloc_dir = pre_reloc_dir.with_extension("reloc");
+    if reloc_dir.exists() {
+        let _ = std::fs::remove_dir_all(&reloc_dir);
+    }
+    copy_dir_recursive(&pre_reloc_dir, &reloc_dir)?;
+
+    let mut output_hash = build_output_hash;
+
+    match apply_runtime_fixup(&p.platform, store, &reloc_dir, &runtime_dep_outputs) {
+        Ok(count) if count > 0 => {
+            eprintln!("[hod] restage: applied {} runtime fixup(s)", count);
+            let fixed_artifact = capture_output(&reloc_dir, store)?;
+            let fixed_hash = artifact_to_hash(&fixed_artifact);
+            stage_artifact(store, &fixed_artifact, &fixed_hash)?;
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+            output_hash = fixed_hash;
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+            return Err(e.into());
+        }
+    }
+
+    if !runtime_dep_outputs.is_empty() {
+        let wrap_src_dir = artifact_staging_path(store, &output_hash);
+        let wrap_dir = wrap_src_dir.with_extension("wrap");
+        if wrap_dir.exists() {
+            let _ = std::fs::remove_dir_all(&wrap_dir);
+        }
+        copy_dir_recursive(&wrap_src_dir, &wrap_dir)?;
+
+        match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
+            Ok(count) if count > 0 => {
+                eprintln!("[hod] restage: generated {} wrapper script(s)", count);
+                let wrapped_artifact = capture_output(&wrap_dir, store)?;
+                let wrapped_hash = artifact_to_hash(&wrapped_artifact);
+                stage_artifact(store, &wrapped_artifact, &wrapped_hash)?;
+                let _ = std::fs::remove_dir_all(&wrap_dir);
+                if wrapped_hash != output_hash {
+                    let _ = std::fs::remove_dir_all(&wrap_src_dir);
+                }
+                output_hash = wrapped_hash;
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&wrap_dir);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&wrap_dir);
+                eprintln!("[hod] warning: wrapper generation failed: {e}");
+            }
+        }
+    }
+
+    store.store_output(recipe_hash, &output_hash, 0, Some(&build_output_hash))?;
+
+    eprintln!(
+        "[hod] restaged {} → {}",
+        hash_to_hex(recipe_hash),
+        hash_to_hex(&output_hash),
+    );
+
+    Ok(output_hash)
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,20 +1202,27 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
     let artifact = path_to_artifact(out_dir, store)?;
     let output_hash = artifact_to_hash(&artifact);
 
-    // Store the materialized output in staging
+    // Store the materialized output in staging. Replace any existing path for
+    // this hash: older Hod versions may have materialized an incomplete tree
+    // for the same artifact hash, and post-build fixups use this path as the
+    // source for closure transfer.
     let staging_path = artifact_staging_path(store, &output_hash);
-    if !staging_path.exists() {
-        if let Some(parent) = staging_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if out_dir.is_file() || out_dir.is_symlink() {
-            std::fs::copy(out_dir, &staging_path)?;
-            canonicalize_mtime(&staging_path)?;
-        } else if out_dir.is_dir() {
-            copy_dir_recursive(out_dir, &staging_path)?;
-        }
-        canonicalize_mtimes_recursive(&staging_path)?;
+    if staging_path.exists() || std::fs::symlink_metadata(&staging_path).is_ok() {
+        remove_path(&staging_path)?;
     }
+    if let Some(parent) = staging_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if out_dir.is_symlink() {
+        let target = std::fs::read_link(out_dir)?;
+        std::os::unix::fs::symlink(&target, &staging_path)?;
+    } else if out_dir.is_file() {
+        std::fs::copy(out_dir, &staging_path)?;
+        canonicalize_mtime(&staging_path)?;
+    } else if out_dir.is_dir() {
+        copy_dir_recursive(out_dir, &staging_path)?;
+    }
+    canonicalize_mtimes_recursive(&staging_path)?;
 
     // Set executable bit if needed
     if let Artifact::File { executable, .. } = &artifact {
@@ -1053,6 +1234,15 @@ fn capture_output(out_dir: &Path, store: &Store) -> Result<Artifact> {
     }
 
     Ok(artifact)
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// Convert a filesystem path to an Artifact, storing blobs as needed.

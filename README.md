@@ -34,10 +34,10 @@ Start here:
 # enter the dev environment
 nix develop --accept-flake-config
 
-# evaluate a recipe file (imports recipes into the store)
-bun run recipes/native/jq/jq.ts
+# build directly from a TypeScript recipe file
+hod build recipes/native/jq/jq.ts
 
-# build by store hash
+# or build by store hash
 hod build --hash <recipe-hash>
 
 # or run directly from a recipe .ts file
@@ -78,7 +78,6 @@ tests/             Rust unit/integration tests
 
 After the Nautilus + closure-transfer milestone, the strongest next front is:
 
-1. **COSMIC desktop environment** — build the full COSMIC DE (compositor, panel, apps) from source, culminating in a bootable VM running COSMIC from the hod store. See `plans/cosmic-desktop-roadmap.md`.
 2. **GUI runtime metadata/wrappers** — generalize the Nautilus work so more desktop apps run directly after transfer.
 3. **Closure distribution UX** — `copy-closure --from`, cache workflows, and smoother multi-machine use.
 4. **Bootstrap trust reduction** — seed minimization from the current bootstrap pipeline.

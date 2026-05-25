@@ -16,9 +16,11 @@
 | File | Status | Notes |
 |------|--------|-------|
 | `copy-closure-design.md` | Implemented | Current behavior is in `docs/closure-transfer.md` and `src/closure.rs`. |
+| `bindgen-infrastructure.md` | Active | General, hermetic bindgen support for sandboxed Rust builds. Needed to unblock upstream `bindgen` users like `xdg-desktop-portal-cosmic`. |
 | `end-user-runtime.md` | Superseded | Early runtime/profile design; current implementation uses TS profiles, `src/run.rs`, and `src/profile.rs`. |
 | `geany-wrapper-handoff.md` | Historical / resolved | Records the Geany portability investigation and fix path. |
 | `go-language-support.md` | Implemented | Go helper/toolchain work now exists in `recipes/helpers/go.ts` and `recipes/native/go/`. |
+| `thinkpad-hod-migration.md` | Active | Plan to migrate ThinkPad user packages from Nix/Home Manager to Hod profiles with remote build/deploy workflows. |
 | `cosmic-desktop-roadmap.md` | **Active — top priority** | Build COSMIC DE from source (Mesa → C deps → Rust apps → bootable VM). See below. |
 | `gtk-gui-roadmap.md` | Superseded by `cosmic-desktop-roadmap.md` | The GTK3/GTK4 GUI stack is complete and working. COSMIC is the new desktop frontier. |
 | `merge-rpath-bootstrap-segment.md` | Implemented | Current authority is `src/packed.rs` and `docs/relocatable-binaries-guide.md`. |

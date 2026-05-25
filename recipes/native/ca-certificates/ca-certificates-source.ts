@@ -11,7 +11,7 @@ import { download, importToStore } from "../../../js/src/index.js";
 
 const dl = await download({
   url: "https://curl.se/ca/cacert.pem",
-  hash: "d4fa062695f9036fdea31af9b4305b9d2e6cb941b80e89c49d5e6780bd0bed01",
+  hash: "2b49b17ae05fa7bf9120268dbdb9f10228bb220e792406fc5f664b7a3009d933",
 });
 await importToStore(dl);
 

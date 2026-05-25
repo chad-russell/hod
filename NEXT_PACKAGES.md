@@ -38,7 +38,6 @@ Stress-tests deeper dependency chains and more complex build systems.
 These would be major milestones beyond Geany, exercising GTK4, libadwaita, or Zig.
 
 - [ ] **nautilus** (GNOME Files) — File manager, deep GTK4/libadwaita stack (Meson/C — hard)
-- [ ] **ghostty** — Terminal emulator (Zig + C — requires Zig toolchain first)
 
 ## Tier 5: Wayland compositor ecosystem
 

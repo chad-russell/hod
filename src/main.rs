@@ -3,7 +3,8 @@
 //! This file defines the clap surface and dispatches to the Rust modules that
 //! implement each subcommand.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -30,7 +31,7 @@ struct Cli {
 enum Commands {
     /// Build a recipe and all its transitive dependencies.
     Build {
-        /// Path to the `.hod` recipe file to build. Mutually exclusive with --hash.
+        /// Path to a `.hod` recipe file or `.ts` recipe module to build. Mutually exclusive with --hash.
         recipe_file: Option<PathBuf>,
 
         /// BLAKE3 hash (hex, 64 characters) of a recipe already in the store.
@@ -43,14 +44,8 @@ enum Commands {
         store: Option<PathBuf>,
 
         /// Rebuild the specified recipe even if output is cached.
-        /// Dependencies are still served from cache. Use --force-recursive
-        /// to also rebuild all transitive dependencies.
         #[arg(long)]
         force: bool,
-
-        /// Rebuild the recipe and all transitive dependencies unconditionally.
-        #[arg(long)]
-        force_recursive: bool,
 
         /// Keep the sandbox working directory on build failure (for debugging).
         #[arg(long)]
@@ -172,6 +167,26 @@ enum Commands {
         store: Option<PathBuf>,
     },
 
+    /// Re-run relocation + wrapping on a built recipe.
+    ///
+    /// Re-applies the ELF RUNPATH patching and wrapper generation using the
+    /// current hod binary, without rebuilding the recipe. Requires that the
+    /// pre-relocation build output is still in the staging directory.
+    ///
+    /// Useful after fixing a bug in hod's relocation code.
+    ///
+    /// Examples:
+    ///   hod restage 29d529cad00387beb158f426a7e4f9f96db23710a3a6c7836265fd16d70ae15d
+    ///   hod restage ./recipes/native/alacritty/alacritty.ts
+    Restage {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
     /// Build all recipes in the store that have no cached output yet.
     ///
     /// Discovers unbuilt recipes via topological sort of the dependency
@@ -266,12 +281,12 @@ enum Commands {
         arg: Vec<String>,
     },
 
-    /// Garbage-collect store objects unreachable from an explicit roots file.
+    /// Garbage-collect store objects unreachable from configured roots.
     #[command(name = "gc")]
     Gc {
-        /// File containing one recipe hash per line. Text after whitespace or # is ignored.
-        #[arg(long)]
-        roots_file: PathBuf,
+        /// Additional roots file. May be passed more than once.
+        #[arg(long = "roots-file")]
+        roots_files: Vec<PathBuf>,
 
         /// Override store location.
         #[arg(long)]
@@ -388,11 +403,67 @@ enum ProfileAction {
         profile_file: PathBuf,
     },
 
+    /// Activate a profile from an explicit recipe-hash list.
+    #[command(name = "activate-hashes")]
+    ActivateHashes {
+        /// Profile name for the symlink farm.
+        name: String,
+
+        /// File containing one package recipe hash per line. Text after whitespace or # is ignored.
+        #[arg(long)]
+        hashes_file: PathBuf,
+    },
+
     /// Build all packages in a profile without activating.
     Build {
         /// Path to the profile .ts file.
         profile_file: PathBuf,
     },
+
+    /// Build, copy, verify, and activate a profile on a remote machine.
+    Copy {
+        /// Path to the profile .ts file.
+        profile_file: PathBuf,
+
+        /// Remote destination. Formats: user@host or user@host:/store/path.
+        #[arg(long)]
+        to: String,
+
+        /// Override the remote profile name.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Remote hod command to use for activation.
+        #[arg(long, default_value = "hod")]
+        remote_hod: String,
+
+        /// Overwrite existing store files on the destination.
+        #[arg(long)]
+        force: bool,
+
+        /// Pin the deployed profile as a GC root on the destination.
+        #[arg(long)]
+        pin: bool,
+    },
+
+    /// Pin a profile's package recipe hashes as GC roots.
+    Pin {
+        /// Path to the profile .ts file.
+        profile_file: PathBuf,
+
+        /// Override the roots file profile name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Remove a pinned profile roots file.
+    Unpin {
+        /// Profile name to unpin.
+        name: String,
+    },
+
+    /// List roots files under ~/.hod/roots/.
+    Roots,
 }
 
 // ---------------------------------------------------------------------------
@@ -408,20 +479,10 @@ fn main() {
             hash,
             store,
             force,
-            force_recursive,
             keep_failed,
             quiet,
             verbose,
-        } => cmd_build(
-            recipe_file,
-            hash,
-            store,
-            force,
-            force_recursive,
-            keep_failed,
-            quiet,
-            verbose,
-        ),
+        } => cmd_build(recipe_file, hash, store, force, keep_failed, quiet, verbose),
         Commands::LsOutput {
             hash,
             store,
@@ -441,6 +502,7 @@ fn main() {
             store,
         } => cmd_export_recipe(hash, output, store),
         Commands::Reset { store } => cmd_reset(store),
+        Commands::Restage { specifier, store } => cmd_restage(specifier, store),
         Commands::BuildRemaining {
             store,
             quiet,
@@ -464,10 +526,10 @@ fn main() {
             arg,
         } => cmd_shell(specifier, store, command, arg),
         Commands::Gc {
-            roots_file,
+            roots_files,
             store,
             dry_run,
-        } => cmd_gc(roots_file, store, dry_run),
+        } => cmd_gc(roots_files, store, dry_run),
         Commands::Profile {
             action,
             store,
@@ -511,7 +573,6 @@ fn cmd_build(
     hash_str: Option<String>,
     store_path: Option<PathBuf>,
     force: bool,
-    force_recursive: bool,
     keep_failed: bool,
     quiet: bool,
     verbose: bool,
@@ -539,13 +600,33 @@ fn cmd_build(
         }
     };
 
-    // Obtain recipe bytes from file or store
+    // Obtain recipe bytes from a .hod file, a .ts module, or the store.
+    let mut resolved_ts_hash: Option<String> = None;
     let recipe_bytes = if let Some(ref path) = recipe_file {
-        match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("hod: error reading {}: {e}", path.display());
-                process::exit(3);
+        if path.extension().and_then(|ext| ext.to_str()) == Some("ts") {
+            let specifier = path.to_string_lossy();
+            let recipe_hash = match hod::run::resolve_specifier_no_build(&specifier, &config) {
+                Ok(resolved) => resolved.recipe_hash,
+                Err(e) => {
+                    eprintln!("hod: {e}");
+                    process::exit(4);
+                }
+            };
+            resolved_ts_hash = Some(hash_to_hex(&recipe_hash));
+            match store.get_recipe(&recipe_hash) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("hod: {e}");
+                    process::exit(4);
+                }
+            }
+        } else {
+            match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("hod: error reading {}: {e}", path.display());
+                    process::exit(3);
+                }
             }
         }
     } else {
@@ -572,11 +653,20 @@ fn cmd_build(
     if verbose {
         eprintln!("[hod] store: {}", store.root().display(),);
         if let Some(ref path) = recipe_file {
-            eprintln!(
-                "[hod] recipe file: {} ({} bytes)",
-                path.display(),
-                recipe_bytes.len(),
-            );
+            if let Some(hash) = resolved_ts_hash.as_ref() {
+                eprintln!(
+                    "[hod] recipe module: {} → {} ({} bytes from store)",
+                    path.display(),
+                    hash,
+                    recipe_bytes.len(),
+                );
+            } else {
+                eprintln!(
+                    "[hod] recipe file: {} ({} bytes)",
+                    path.display(),
+                    recipe_bytes.len(),
+                );
+            }
         } else {
             eprintln!(
                 "[hod] recipe hash: {} ({} bytes from store)",
@@ -588,7 +678,6 @@ fn cmd_build(
 
     let options = BuildOptions {
         force,
-        force_recursive,
         quiet,
         keep_failed,
     };
@@ -948,6 +1037,40 @@ fn cmd_reset(store_path: Option<PathBuf>) -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// `hod restage`
+// ---------------------------------------------------------------------------
+
+fn cmd_restage(specifier: String, store_path: Option<PathBuf>) {
+    let store_config = StoreConfig {
+        path: store_path.clone(),
+    };
+
+    let recipe_hash = match hod::run::resolve_specifier(&specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: error opening store: {e}");
+            process::exit(10);
+        }
+    };
+
+    match crate::build::restage_output(&store, &recipe_hash) {
+        Ok(_hash) => {}
+        Err(e) => {
+            eprintln!("hod: restage failed: {e}");
+            process::exit(10);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // `hod run`
@@ -1085,6 +1208,85 @@ fn read_roots_file(path: &Path) -> std::result::Result<Vec<[u8; 32]>, String> {
     Ok(roots)
 }
 
+fn read_profile_packages_file(
+    path: &Path,
+) -> std::result::Result<Vec<hod::profile::ProfilePackage>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("error reading {}: {e}", path.display()))?;
+    let mut packages = Vec::new();
+    let mut seen = HashSet::new();
+    for (idx, line) in text.lines().enumerate() {
+        let before_comment = line.split('#').next().unwrap_or("").trim();
+        if before_comment.is_empty() {
+            continue;
+        }
+        let mut parts = before_comment.split_whitespace();
+        let hash_text = parts.next().unwrap_or(before_comment);
+        let hash = hex_to_hash(hash_text).ok_or_else(|| {
+            format!(
+                "{}:{}: invalid recipe hash '{}'; expected 64 lowercase hex chars",
+                path.display(),
+                idx + 1,
+                hash_text,
+            )
+        })?;
+        if seen.insert(hash) {
+            packages.push(hod::profile::ProfilePackage {
+                name: parts.next().map(|s| s.to_string()),
+                hash,
+            });
+        }
+    }
+    if packages.is_empty() {
+        return Err(format!("{} contains no profile packages", path.display()));
+    }
+    Ok(packages)
+}
+
+fn roots_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("HOD_ROOTS_DIR") {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".hod/roots")
+}
+
+fn profile_roots_path(name: &str) -> PathBuf {
+    roots_dir().join(format!("profile-{name}.txt"))
+}
+
+fn read_default_roots_files() -> std::result::Result<Vec<PathBuf>, String> {
+    let dir = roots_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .map_err(|e| format!("error reading roots dir {}: {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("error reading roots dir {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("txt") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn read_roots_files(paths: &[PathBuf]) -> std::result::Result<Vec<[u8; 32]>, String> {
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        for root in read_roots_file(path)? {
+            if seen.insert(root) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 fn recipe_dependencies(recipe: &Recipe) -> Vec<[u8; 32]> {
     match recipe {
         Recipe::File(f) => f.resources_hash.iter().copied().collect(),
@@ -1109,29 +1311,54 @@ fn recipe_blob_references(recipe: &Recipe) -> Vec<[u8; 32]> {
         Recipe::File(f) => vec![f.content_blob_hash],
         Recipe::Download(d) => vec![d.expected_hash],
         Recipe::Unpack(u) => vec![u.archive_hash],
-        Recipe::Directory(_) | Recipe::Symlink(_) | Recipe::Process(_) | Recipe::GitFetch(_) => Vec::new(),
+        Recipe::Directory(_) | Recipe::Symlink(_) | Recipe::Process(_) | Recipe::GitFetch(_) => {
+            Vec::new()
+        }
     }
 }
 
-fn reachable_recipes(
+fn reachable_runtime_closure_recipes(
     store: &Store,
     roots: &[[u8; 32]],
 ) -> std::result::Result<HashSet<[u8; 32]>, String> {
     let mut seen = HashSet::new();
     let mut queue: VecDeque<[u8; 32]> = roots.iter().copied().collect();
+
     while let Some(hash) = queue.pop_front() {
         if !seen.insert(hash) {
             continue;
         }
+
         let bytes = store
             .get_recipe(&hash)
             .map_err(|e| format!("error loading recipe {}: {e}", hash_to_hex(&hash)))?;
         let recipe = Recipe::decode(&bytes)
             .map_err(|e| format!("invalid recipe {}: {e}", hash_to_hex(&hash)))?;
+
         for dep in recipe_dependencies(&recipe) {
             queue.push_back(dep);
         }
+
+        if let Recipe::Process(p) = &recipe {
+            if let Some(runtime_dep_names) = &p.runtime_deps {
+                for dep_name in runtime_dep_names {
+                    let dep = p
+                        .dependencies
+                        .iter()
+                        .find(|d| d.name == *dep_name)
+                        .ok_or_else(|| {
+                            format!(
+                                "runtime_dep '{}' not found in dependencies of {}",
+                                dep_name,
+                                hash_to_hex(&hash),
+                            )
+                        })?;
+                    queue.push_back(dep.recipe_hash);
+                }
+            }
+        }
     }
+
     Ok(seen)
 }
 
@@ -1157,7 +1384,6 @@ fn cmd_build_roots(
     };
     let options = BuildOptions {
         force: false,
-        force_recursive: false,
         quiet,
         keep_failed,
     };
@@ -1247,8 +1473,25 @@ fn remove_path(path: &Path, dry_run: bool) -> std::io::Result<()> {
     }
 }
 
-fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! {
-    let roots = match read_roots_file(&roots_file) {
+fn cmd_gc(roots_files: Vec<PathBuf>, store_path: Option<PathBuf>, dry_run: bool) -> ! {
+    let mut all_roots_files = match read_default_roots_files() {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    };
+    all_roots_files.extend(roots_files);
+
+    if all_roots_files.is_empty() {
+        eprintln!(
+            "hod: no roots files found. Add *.txt roots under {} or pass --roots-file.",
+            roots_dir().display()
+        );
+        process::exit(1);
+    }
+
+    let roots = match read_roots_files(&all_roots_files) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hod: {e}");
@@ -1262,13 +1505,19 @@ fn cmd_gc(roots_file: PathBuf, store_path: Option<PathBuf>, dry_run: bool) -> ! 
             process::exit(10);
         }
     };
-    let live_recipes = match reachable_recipes(&store, &roots) {
+    let live_recipes = match reachable_runtime_closure_recipes(&store, &roots) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("hod: {e}");
             process::exit(10);
         }
     };
+
+    eprintln!(
+        "[hod] gc roots: {} recipe root(s) from {} roots file(s)",
+        roots.len(),
+        all_roots_files.len(),
+    );
 
     let mut live_outputs = HashSet::new();
     let mut live_blobs = HashSet::new();
@@ -1469,18 +1718,71 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
 
     let (profile_file, activate) = match action {
         ProfileAction::Activate { profile_file } => (profile_file, true),
+        ProfileAction::ActivateHashes { name, hashes_file } => {
+            let packages = match read_profile_packages_file(&hashes_file) {
+                Ok(packages) => packages,
+                Err(e) => {
+                    eprintln!("hod: {e}");
+                    process::exit(3);
+                }
+            };
+
+            let store = match Store::open(&store_config) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("hod: store error: {e}");
+                    process::exit(10);
+                }
+            };
+
+            let farm_dir = match hod::profile::create_farm_from_packages(&store, &name, &packages) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    eprintln!("hod: {e}");
+                    process::exit(10);
+                }
+            };
+
+            eprintln!("[hod] symlink farm: {}/", farm_dir.display());
+            eprintln!("[hod] activated. Add to your shell config:");
+            eprintln!("    source {}/env.sh", farm_dir.display());
+            process::exit(0);
+        }
         ProfileAction::Build { profile_file } => (profile_file, false),
+        ProfileAction::Copy {
+            profile_file,
+            to,
+            name,
+            remote_hod,
+            force,
+            pin,
+        } => cmd_profile_copy(
+            profile_file,
+            to,
+            name,
+            remote_hod,
+            store_config,
+            quiet,
+            force,
+            pin,
+        ),
+        ProfileAction::Pin { profile_file, name } => {
+            cmd_profile_pin(profile_file, name, store_config)
+        }
+        ProfileAction::Unpin { name } => cmd_profile_unpin(name),
+        ProfileAction::Roots => cmd_profile_roots(),
     };
 
     // Evaluate the profile module via Bun
     eprintln!("[hod] evaluating profile {}", profile_file.display());
-    let (name, hashes) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
+    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("hod: {e}");
             process::exit(4);
         }
     };
+    let hashes = hod::profile::package_hashes(&packages);
 
     eprintln!("[hod] profile '{}': {} package(s)", name, hashes.len());
 
@@ -1507,7 +1809,7 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
 
     if activate {
         // Create symlink farm
-        let farm_dir = match hod::profile::create_farm(&store, &name, &hashes) {
+        let farm_dir = match hod::profile::create_farm_from_packages(&store, &name, &packages) {
             Ok(dir) => dir,
             Err(e) => {
                 eprintln!("hod: {e}");
@@ -1524,6 +1826,564 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
     }
 
     process::exit(0);
+}
+
+fn cmd_profile_copy(
+    profile_file: PathBuf,
+    destination: String,
+    name_override: Option<String>,
+    remote_hod: String,
+    store_config: StoreConfig,
+    quiet: bool,
+    force: bool,
+    pin: bool,
+) -> ! {
+    eprintln!("[hod] evaluating profile {}", profile_file.display());
+    let (profile_name, packages) =
+        match hod::profile::evaluate_profile(&profile_file, &store_config) {
+            Ok((name, packages)) => (name_override.unwrap_or(name), packages),
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(4);
+            }
+        };
+    let hashes = hod::profile::package_hashes(&packages);
+
+    eprintln!(
+        "[hod] profile '{}': {} package(s)",
+        profile_name,
+        hashes.len()
+    );
+
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    match hod::profile::build_profile(&store, &hashes, quiet) {
+        Ok(built) => {
+            if built > 0 {
+                eprintln!("[hod] built {} package(s)", built);
+            }
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+
+    let dest = match hod::closure::parse_destination(&destination, None) {
+        Ok(hod::closure::Destination::Ssh {
+            user_host,
+            remote_store,
+        }) => (user_host, remote_store),
+        Ok(hod::closure::Destination::Local { .. }) => {
+            eprintln!("hod: profile copy currently requires an SSH destination");
+            process::exit(3);
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(3);
+        }
+    };
+
+    let (remote_target, remote_store) = dest;
+    let mut verify_entries: BTreeMap<String, (String, Option<u64>)> = BTreeMap::new();
+
+    eprintln!("[hod] copying package closures to {destination}");
+    for hash in &hashes {
+        let hex = hash_to_hex(hash);
+        if !quiet {
+            eprintln!("[hod] copy {hex}");
+        }
+
+        let closure = match hod::closure::resolve_closure(&store, hash) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(10);
+            }
+        };
+
+        let unbuilt: Vec<_> = closure
+            .entries
+            .iter()
+            .filter(|e| e.output_hash.is_none())
+            .collect();
+        if !unbuilt.is_empty() {
+            eprintln!("hod: closure for {hex} contains unbuilt entries");
+            process::exit(4);
+        }
+
+        for entry in &closure.entries {
+            if let Some(output_hash) = entry.output_hash {
+                verify_entries.insert(
+                    hash_to_hex(&entry.recipe_hash),
+                    (hash_to_hex(&output_hash), entry.staging_size),
+                );
+            }
+        }
+
+        let copy_dest = hod::closure::Destination::Ssh {
+            user_host: remote_target.clone(),
+            remote_store: remote_store.clone(),
+        };
+        if let Err(e) =
+            hod::closure::copy_closure(&store, &closure, &copy_dest, false, force, quiet)
+        {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    }
+
+    if let Err(e) = verify_remote_profile_copy(&remote_target, &remote_store, &verify_entries) {
+        eprintln!("hod: {e}");
+        process::exit(10);
+    }
+
+    if let Err(e) = activate_remote_profile(
+        &remote_target,
+        &remote_store,
+        &remote_hod,
+        &profile_name,
+        &packages,
+        pin,
+    ) {
+        eprintln!("hod: {e}");
+        process::exit(10);
+    }
+
+    eprintln!("[hod] deployed profile '{profile_name}' to {remote_target}");
+    process::exit(0);
+}
+
+fn profile_roots_content(name: &str, source: Option<&Path>, hashes: &[[u8; 32]]) -> String {
+    let mut content = String::new();
+    content.push_str(&format!("# hod roots: profile {name}\n"));
+    if let Some(source) = source {
+        content.push_str(&format!("# generated from: {}\n", source.display()));
+    }
+    content.push_str("# one recipe hash per line\n");
+    for hash in hashes {
+        content.push_str(&hash_to_hex(hash));
+        content.push('\n');
+    }
+    content
+}
+
+fn cmd_profile_pin(
+    profile_file: PathBuf,
+    name_override: Option<String>,
+    store_config: StoreConfig,
+) -> ! {
+    eprintln!("[hod] evaluating profile {}", profile_file.display());
+    let (profile_name, packages) =
+        match hod::profile::evaluate_profile(&profile_file, &store_config) {
+            Ok((name, packages)) => (name_override.unwrap_or(name), packages),
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(4);
+            }
+        };
+    let hashes = hod::profile::package_hashes(&packages);
+
+    let path = profile_roots_path(&profile_name);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("hod: cannot create roots dir {}: {e}", parent.display());
+            process::exit(10);
+        }
+    }
+
+    let content = profile_roots_content(&profile_name, Some(&profile_file), &hashes);
+    if let Err(e) = std::fs::write(&path, content) {
+        eprintln!("hod: cannot write roots file {}: {e}", path.display());
+        process::exit(10);
+    }
+
+    eprintln!(
+        "[hod] pinned profile '{}' with {} root(s): {}",
+        profile_name,
+        hashes.len(),
+        path.display(),
+    );
+    process::exit(0);
+}
+
+fn cmd_profile_unpin(name: String) -> ! {
+    let path = profile_roots_path(&name);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            eprintln!("[hod] unpinned profile '{}': {}", name, path.display());
+            process::exit(0);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("hod: profile '{}' is not pinned ({})", name, path.display());
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("hod: cannot remove roots file {}: {e}", path.display());
+            process::exit(10);
+        }
+    }
+}
+
+fn cmd_profile_roots() -> ! {
+    let files = match read_default_roots_files() {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    };
+
+    if files.is_empty() {
+        eprintln!("[hod] no roots files in {}", roots_dir().display());
+        process::exit(0);
+    }
+
+    for file in files {
+        match read_roots_file(&file) {
+            Ok(roots) => println!("{} {} root(s)", file.display(), roots.len()),
+            Err(e) => {
+                eprintln!("hod: {e}");
+                process::exit(1);
+            }
+        }
+    }
+    process::exit(0);
+}
+
+fn verify_remote_profile_copy(
+    remote_target: &str,
+    remote_store: &Path,
+    entries: &BTreeMap<String, (String, Option<u64>)>,
+) -> Result<(), String> {
+    let mut manifest = String::new();
+    for (recipe_hash, (output_hash, size)) in entries {
+        let size = size
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        manifest.push_str(&format!("{recipe_hash} {output_hash} {size}\n"));
+    }
+
+    let mut local_manifest = tempfile_path("hod-profile-verify".to_string());
+    local_manifest.set_extension("txt");
+    std::fs::write(&local_manifest, manifest)
+        .map_err(|e| format!("failed to write verification manifest: {e}"))?;
+
+    let remote_manifest = format!("/tmp/hod-profile-verify-{}.txt", process::id());
+    let scp_target = format!("{remote_target}:{remote_manifest}");
+    let scp_status = process::Command::new("scp")
+        .arg("-q")
+        .arg(&local_manifest)
+        .arg(&scp_target)
+        .status()
+        .map_err(|e| format!("failed to upload verification manifest: {e}"))?;
+    let _ = std::fs::remove_file(&local_manifest);
+    if !scp_status.success() {
+        return Err(format!(
+            "failed to upload verification manifest to {scp_target}"
+        ));
+    }
+
+    let script = r#"
+set -euo pipefail
+store=$1
+manifest=$2
+failures=0
+checked=0
+
+while read -r recipe_hash output_hash expected_size; do
+  [[ -n "${recipe_hash:-}" ]] || continue
+
+  recipe_path="$store/recipes/${recipe_hash:0:2}/$recipe_hash"
+  if [[ ! -f "$recipe_path" ]]; then
+    printf '[hod] verify missing recipe: %s\n' "$recipe_path" >&2
+    failures=$((failures + 1))
+  fi
+
+  staging_path="$store/staging/${output_hash:0:2}/$output_hash"
+  if [[ ! -d "$staging_path" ]]; then
+    printf '[hod] verify missing staging dir: %s\n' "$staging_path" >&2
+    failures=$((failures + 1))
+  elif [[ "$expected_size" != "-" && "$expected_size" -gt 0 ]]; then
+    actual_size=$(du -sb "$staging_path" 2>/dev/null || true)
+    actual_size=${actual_size%%[[:space:]]*}
+    actual_size=${actual_size:-0}
+    if [[ "$actual_size" -le 0 ]]; then
+      printf '[hod] verify empty staging dir: %s expected=%s actual=%s\n' "$staging_path" "$expected_size" "$actual_size" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+
+  checked=$((checked + 1))
+done < "$manifest"
+
+if [[ "$failures" -gt 0 ]]; then
+  printf '[hod] verification failed: %s issue(s) across %s closure entries\n' "$failures" "$checked" >&2
+  exit 1
+fi
+
+printf '[hod] verified %s closure entries in %s\n' "$checked" "$store" >&2
+"#;
+
+    let mut child = process::Command::new("ssh")
+        .args([
+            remote_target,
+            "bash",
+            "-s",
+            "--",
+            &remote_store.to_string_lossy(),
+            &remote_manifest,
+        ])
+        .stdin(process::Stdio::piped())
+        .stdout(process::Stdio::inherit())
+        .stderr(process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("failed to run ssh verification: {e}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "failed to open ssh stdin".to_string())?;
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("failed to write verification script: {e}"))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed to wait for ssh verification: {e}"))?;
+
+    let _ = process::Command::new("ssh")
+        .arg(remote_target)
+        .arg("rm")
+        .arg("-f")
+        .arg(&remote_manifest)
+        .status();
+
+    if !status.success() {
+        return Err(format!(
+            "remote verification failed for {remote_target}:{}",
+            remote_store.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn activate_remote_profile(
+    remote_target: &str,
+    remote_store: &Path,
+    remote_hod: &str,
+    profile_name: &str,
+    packages: &[hod::profile::ProfilePackage],
+    pin: bool,
+) -> Result<(), String> {
+    let mut manifest = tempfile_path(format!("hod-profile-{profile_name}-hashes"));
+    manifest.set_extension("txt");
+
+    let mut content = String::new();
+    for package in packages {
+        content.push_str(&hash_to_hex(&package.hash));
+        if let Some(name) = &package.name {
+            content.push(' ');
+            content.push_str(name);
+        }
+        content.push('\n');
+    }
+    std::fs::write(&manifest, content)
+        .map_err(|e| format!("failed to write temporary hash manifest: {e}"))?;
+
+    let remote_manifest = format!(
+        "/tmp/hod-profile-{}-hashes-{}.txt",
+        profile_name,
+        process::id()
+    );
+
+    let mut remote_hod_command = remote_hod.to_string();
+    let mut remote_helper: Option<String> = None;
+
+    let help_output = process::Command::new("ssh")
+        .arg(remote_target)
+        .arg(remote_hod)
+        .arg("profile")
+        .arg("--help")
+        .output()
+        .map_err(|e| format!("failed to inspect remote hod: {e}"))?;
+
+    let remote_has_activate_hashes = help_output.status.success()
+        && String::from_utf8_lossy(&help_output.stdout).contains("activate-hashes");
+
+    if !remote_has_activate_hashes {
+        let helper = format!("/tmp/hod-profile-copy-hod-{}", process::id());
+        let current_exe = std::env::current_exe()
+            .map_err(|e| format!("failed to resolve current hod binary: {e}"))?;
+        let helper_target = format!("{remote_target}:{helper}");
+        let helper_status = process::Command::new("scp")
+            .arg("-q")
+            .arg(&current_exe)
+            .arg(&helper_target)
+            .status()
+            .map_err(|e| format!("failed to upload temporary remote hod helper: {e}"))?;
+        if !helper_status.success() {
+            return Err(format!(
+                "failed to upload temporary remote hod helper to {helper_target}"
+            ));
+        }
+
+        let chmod_status = process::Command::new("ssh")
+            .arg(remote_target)
+            .arg("chmod")
+            .arg("+x")
+            .arg(&helper)
+            .status()
+            .map_err(|e| format!("failed to chmod temporary remote hod helper: {e}"))?;
+        if !chmod_status.success() {
+            return Err(format!(
+                "failed to chmod temporary remote hod helper {helper}"
+            ));
+        }
+
+        remote_hod_command = helper.clone();
+        remote_helper = Some(helper);
+    }
+
+    let scp_target = format!("{remote_target}:{remote_manifest}");
+    let scp_status = process::Command::new("scp")
+        .arg("-q")
+        .arg(&manifest)
+        .arg(&scp_target)
+        .status()
+        .map_err(|e| format!("failed to upload profile hash manifest: {e}"))?;
+    let _ = std::fs::remove_file(&manifest);
+    if !scp_status.success() {
+        return Err(format!(
+            "failed to upload profile hash manifest to {scp_target}"
+        ));
+    }
+
+    let status = process::Command::new("ssh")
+        .arg(remote_target)
+        .arg(&remote_hod_command)
+        .arg("profile")
+        .arg("activate-hashes")
+        .arg(profile_name)
+        .arg("--hashes-file")
+        .arg(&remote_manifest)
+        .arg("--store")
+        .arg(remote_store)
+        .status()
+        .map_err(|e| format!("failed to run remote profile activation: {e}"))?;
+
+    let _ = process::Command::new("ssh")
+        .arg(remote_target)
+        .arg("rm")
+        .arg("-f")
+        .arg(&remote_manifest)
+        .status();
+
+    if let Some(helper) = remote_helper {
+        let _ = process::Command::new("ssh")
+            .arg(remote_target)
+            .arg("rm")
+            .arg("-f")
+            .arg(&helper)
+            .status();
+    }
+
+    if !status.success() {
+        return Err(format!(
+            "remote profile activation failed on {remote_target}"
+        ));
+    }
+
+    if pin {
+        let hashes = hod::profile::package_hashes(packages);
+        write_remote_profile_roots(remote_target, profile_name, &hashes)?;
+    }
+
+    Ok(())
+}
+
+fn write_remote_profile_roots(
+    remote_target: &str,
+    profile_name: &str,
+    hashes: &[hod::hash::Hash],
+) -> Result<(), String> {
+    let content = profile_roots_content(profile_name, None, hashes);
+    let mut local_roots = tempfile_path(format!("hod-profile-{profile_name}-roots"));
+    local_roots.set_extension("txt");
+    std::fs::write(&local_roots, content)
+        .map_err(|e| format!("failed to write temporary profile roots: {e}"))?;
+
+    let remote_tmp = format!(
+        "/tmp/hod-profile-{}-roots-{}.txt",
+        profile_name,
+        process::id()
+    );
+    let scp_target = format!("{remote_target}:{remote_tmp}");
+    let scp_status = process::Command::new("scp")
+        .arg("-q")
+        .arg(&local_roots)
+        .arg(&scp_target)
+        .status()
+        .map_err(|e| format!("failed to upload profile roots file: {e}"))?;
+    let _ = std::fs::remove_file(&local_roots);
+    if !scp_status.success() {
+        return Err(format!(
+            "failed to upload profile roots file to {scp_target}"
+        ));
+    }
+
+    let remote_name = format!("profile-{profile_name}.txt");
+    let script = r#"
+set -euo pipefail
+remote_tmp=$1
+remote_name=$2
+roots_dir="${HOD_ROOTS_DIR:-$HOME/.hod/roots}"
+mkdir -p "$roots_dir"
+mv "$remote_tmp" "$roots_dir/$remote_name"
+"#;
+
+    let mut child = process::Command::new("ssh")
+        .args([remote_target, "bash", "-s", "--", &remote_tmp, &remote_name])
+        .stdin(process::Stdio::piped())
+        .stdout(process::Stdio::inherit())
+        .stderr(process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("failed to install remote profile roots file: {e}"))?;
+
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "failed to open ssh stdin".to_string())?;
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("failed to write remote roots install script: {e}"))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed to wait for remote roots install: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "failed to install remote profile roots file on {remote_target}"
+        ));
+    }
+
+    eprintln!("[hod] pinned remote profile '{profile_name}' on {remote_target}");
+    Ok(())
+}
+
+fn tempfile_path(prefix: String) -> PathBuf {
+    std::env::temp_dir().join(format!("{}-{}", prefix, process::id()))
 }
 
 // `hod build-remaining`
@@ -1589,7 +2449,6 @@ fn cmd_build_remaining(store_path: Option<PathBuf>, quiet: bool, keep_failed: bo
     // 4. Build each unbuilt recipe in topological order.
     let options = BuildOptions {
         force: false,
-        force_recursive: false,
         quiet,
         keep_failed,
     };

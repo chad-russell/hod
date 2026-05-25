@@ -18,7 +18,7 @@ TS SDK helpers (importToStore)
 Hod store (SQLite + sharded blobs)
     │  recipe bytes stored by BLAKE3 hash
     ▼
-hod build --hash <hex>
+hod build <file.ts> or hod build --hash <hex>
     │  reads recipe from store, builds recursively
     ▼
 build output (also in the store)
@@ -288,16 +288,16 @@ await importToStore(recipe);
 export const helloRecipe = recipe;
 ```
 
-Run with Bun (imports recipe to store):
+Build directly from the TypeScript recipe:
+
+```bash
+hod build recipes/native/hello/hello.ts
+```
+
+You can still split import and build manually when debugging:
 
 ```bash
 bun run recipes/native/hello/hello.ts
-```
-
-Then build by hash:
-
-```bash
-# Get the hash from the TS output or inspect
 hod build --hash <recipe-hash>
 ```
 
@@ -333,8 +333,9 @@ recipes/
 2. Use SDK constructors (`download()`, `process()`, `fileFromHash()`, `unpack()`, `fetchTarball()`) to define the recipe.
 3. Call `importToStore(recipe)` to import the recipe into the Hod store.
 4. Export the recipe for downstream `.ts` files to import.
-5. Run with `bun run <file>.ts` to import recipes to the store.
-6. Build with `hod build --hash <hash>` or `hod build <file.hod>`.
+5. Build with `hod build <file>.ts`.
+6. Use `bun run <file>.ts` plus `hod build --hash <hash>` only when you need to debug the import/build split.
+7. Use `hod build <file.hod>` only for exported binary recipe debugging.
 
 Useful commands for verification:
 
@@ -355,6 +356,7 @@ Implemented:
 - `hod import-from-json` (reads JSON from stdin, imports to store)
 - `hod inspect <hash>` (reads recipe from store, prints JSON)
 - `hod export-recipe <hash> -o <path>` (writes raw recipe bytes to file)
+- `hod build <file.ts>` (evaluate/import TypeScript recipe, then build it)
 - `hod build --hash <hex>` (build from store by recipe hash)
 - TS `fileFromPath()`
 - TS `fileFromHash()`

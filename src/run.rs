@@ -34,6 +34,28 @@ pub fn resolve_specifier(
     specifier: &str,
     store_config: &StoreConfig,
 ) -> Result<ResolvedRecipe, String> {
+    let resolved = resolve_specifier_no_build(specifier, store_config)?;
+
+    // For `.ts` files, build the target recipe so runtime commands can resolve
+    // a staging path immediately. Hash specifiers are assumed to already refer
+    // to a built recipe, preserving the existing hash behavior.
+    let path = Path::new(specifier);
+    if path.exists() {
+        let store = Store::open(store_config).map_err(|e| format!("store error: {e}"))?;
+        build_remaining_for(&store, &resolved.recipe_hash)?;
+    }
+
+    Ok(resolved)
+}
+
+/// Resolve a recipe specifier to a recipe hash without building it.
+///
+/// This is used by `hod build <file.ts>`, where the build command itself needs
+/// to apply the user's `--quiet`, `--force`, and `--keep-failed` options.
+pub fn resolve_specifier_no_build(
+    specifier: &str,
+    store_config: &StoreConfig,
+) -> Result<ResolvedRecipe, String> {
     // Try as a hex hash first
     if specifier.len() == 64 && specifier.chars().all(|c| c.is_ascii_hexdigit()) {
         let hash = hex_to_hash(specifier)
@@ -44,7 +66,7 @@ pub fn resolve_specifier(
     // Try as a file path
     let path = Path::new(specifier);
     if path.exists() {
-        return resolve_file(path, store_config);
+        return resolve_file_no_build(path, store_config);
     }
 
     Err(format!(
@@ -55,13 +77,21 @@ pub fn resolve_specifier(
 
 /// Resolve a `.ts` file by evaluating it with `bun run` and capturing the
 /// last imported recipe hash.
-fn resolve_file(path: &Path, store_config: &StoreConfig) -> Result<ResolvedRecipe, String> {
+fn resolve_file_no_build(
+    path: &Path,
+    store_config: &StoreConfig,
+) -> Result<ResolvedRecipe, String> {
     let file_str = path.to_string_lossy();
 
     // Run `bun run <file>` and capture stdout+stderr
-    let output = std::process::Command::new("bun")
-        .arg("run")
-        .arg(path)
+    let mut command = std::process::Command::new("bun");
+    command.arg("run").arg(path);
+
+    if let Some(store_path) = &store_config.path {
+        command.env("HOD_STORE", store_path);
+    }
+
+    let output = command
         .output()
         .map_err(|e| format!("failed to run `bun run {file_str}`: {e}"))?;
 
@@ -91,10 +121,6 @@ fn resolve_file(path: &Path, store_config: &StoreConfig) -> Result<ResolvedRecip
     let recipe_hash = hex_to_hash(&hash_hex)
         .ok_or_else(|| format!("corrupt hash from bun output: '{hash_hex}'"))?;
 
-    // Now build any remaining unbuilt recipes in the store
-    let store = Store::open(store_config).map_err(|e| format!("store error: {e}"))?;
-    build_remaining_for(&store, &recipe_hash)?;
-
     Ok(ResolvedRecipe { recipe_hash })
 }
 
@@ -123,7 +149,6 @@ fn build_remaining_for(store: &Store, recipe_hash: &Hash) -> Result<(), String> 
 
     let options = BuildOptions {
         force: false,
-        force_recursive: false,
         quiet: true,
         keep_failed: false,
     };

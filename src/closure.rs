@@ -5,7 +5,7 @@
 //! to collect all recipes, outputs, and staging paths needed for inspection
 //! or transfer to another store.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::build;
@@ -342,16 +342,20 @@ pub fn archive_closure(
 /// transfer for a closure.
 fn build_content_file_list(store: &Store, closure: &Closure, quiet: bool) -> Vec<String> {
     let store_root = store.root();
-    let mut rel_paths: Vec<String> = Vec::new();
+    let mut rel_paths: BTreeSet<String> = BTreeSet::new();
 
-    // 1. Staging directories for each output
+    // 1. Staging trees for each output. List every directory entry explicitly
+    // so incremental transfers repair incomplete outputs and include dotfiles
+    // such as generated wrapper payloads (`bin/.foo-wrapped`).
     for entry in &closure.entries {
         if let Some(ref staging) = entry.staging_path {
             if staging.exists() {
-                if let Ok(rel) = staging.strip_prefix(store_root) {
-                    let rel_str = rel.to_string_lossy().to_string();
-                    if !rel_str.is_empty() {
-                        rel_paths.push(rel_str);
+                if let Err(e) = collect_relative_paths(store_root, staging, &mut rel_paths) {
+                    if !quiet {
+                        eprintln!(
+                            "[hod] warning: could not enumerate staging dir for {}: {e}",
+                            hash_to_hex(&entry.recipe_hash),
+                        );
                     }
                 }
             } else if !quiet {
@@ -375,11 +379,35 @@ fn build_content_file_list(store: &Store, closure: &Closure, quiet: bool) -> Vec
         let recipe_rel = format!("recipes/{shard}/{hex}");
         let recipe_full = store_root.join(&recipe_rel);
         if recipe_full.exists() {
-            rel_paths.push(recipe_rel);
+            rel_paths.insert(recipe_rel);
         }
     }
 
-    rel_paths
+    rel_paths.into_iter().collect()
+}
+
+fn collect_relative_paths(
+    store_root: &Path,
+    path: &Path,
+    rel_paths: &mut BTreeSet<String>,
+) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if let Ok(rel) = path.strip_prefix(store_root) {
+        let rel_str = rel.to_string_lossy().to_string();
+        if !rel_str.is_empty() {
+            rel_paths.insert(rel_str);
+        }
+    }
+
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        let mut entries: Vec<_> = std::fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            collect_relative_paths(store_root, &entry.path(), rel_paths)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Mutable store metadata paths that must be refreshed separately from the
@@ -584,8 +612,53 @@ fn transfer_local(
         let src = store_root.join(rel);
         let dst = dest.join(rel);
 
-        if !src.exists() {
-            continue; // Source doesn't exist, skip
+        let src_meta = match std::fs::symlink_metadata(&src) {
+            Ok(meta) => meta,
+            Err(_) => {
+                continue; // Source doesn't exist, skip
+            }
+        };
+
+        if src_meta.file_type().is_symlink() {
+            let always_refresh = rel == "hod.db";
+            if dst.exists() && !force && !always_refresh {
+                skipped += 1;
+                continue;
+            }
+
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("error creating dir {}: {e}", parent.display()))?;
+            }
+
+            if dst.exists() || std::fs::symlink_metadata(&dst).is_ok() {
+                remove_existing_path(&dst)
+                    .map_err(|e| format!("error removing {}: {e}", dst.display()))?;
+            }
+
+            let target = std::fs::read_link(&src)
+                .map_err(|e| format!("error reading symlink {rel}: {e}"))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dst)
+                .map_err(|e| format!("error copying symlink {rel}: {e}"))?;
+            #[cfg(not(unix))]
+            return Err(format!(
+                "copying symlink {rel} is unsupported on this platform"
+            ));
+
+            copied += 1;
+            continue;
+        }
+
+        if src_meta.is_dir() {
+            if dst.exists() && !force {
+                skipped += 1;
+                continue;
+            }
+            std::fs::create_dir_all(&dst)
+                .map_err(|e| format!("error creating dir {}: {e}", dst.display()))?;
+            copied += 1;
+            continue;
         }
 
         let always_refresh = rel == "hod.db";
@@ -600,34 +673,7 @@ fn transfer_local(
                 .map_err(|e| format!("error creating dir {}: {e}", parent.display()))?;
         }
 
-        if src.is_dir() {
-            // Use cp -r for directories (preserves symlinks, permissions)
-            let mut cp_args = vec!["-r", "--no-dereference"];
-            if force && dst.exists() {
-                // Remove existing before copy
-                if dst.is_dir() {
-                    std::fs::remove_dir_all(&dst)
-                        .map_err(|e| format!("error removing {}: {e}", dst.display()))?;
-                } else {
-                    std::fs::remove_file(&dst)
-                        .map_err(|e| format!("error removing {}: {e}", dst.display()))?;
-                }
-            }
-            cp_args.push(src.to_str().unwrap_or_default());
-            cp_args.push(dst.to_str().unwrap_or_default());
-
-            let cp_output = std::process::Command::new("cp")
-                .args(&cp_args)
-                .output()
-                .map_err(|e| format!("failed to run cp: {e}"))?;
-
-            if !cp_output.status.success() {
-                let stderr = String::from_utf8_lossy(&cp_output.stderr);
-                return Err(format!("cp failed for {rel}: {}", stderr.trim()));
-            }
-        } else {
-            std::fs::copy(&src, &dst).map_err(|e| format!("error copying {rel}: {e}"))?;
-        }
+        std::fs::copy(&src, &dst).map_err(|e| format!("error copying {rel}: {e}"))?;
 
         copied += 1;
     }
@@ -640,6 +686,15 @@ fn transfer_local(
     }
 
     Ok(())
+}
+
+fn remove_existing_path(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,5 +874,23 @@ mod tests {
             }
             _ => panic!("expected SSH destination"),
         }
+    }
+
+    #[test]
+    fn collect_relative_paths_includes_hidden_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        let output = root.join("staging/f4/output/bin");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("alacritty"), b"wrapper").unwrap();
+        std::fs::write(output.join(".alacritty-wrapped"), b"elf").unwrap();
+
+        let mut paths = BTreeSet::new();
+        collect_relative_paths(root, &root.join("staging/f4/output"), &mut paths).unwrap();
+
+        assert!(paths.contains("staging/f4/output"));
+        assert!(paths.contains("staging/f4/output/bin"));
+        assert!(paths.contains("staging/f4/output/bin/alacritty"));
+        assert!(paths.contains("staging/f4/output/bin/.alacritty-wrapped"));
     }
 }

@@ -22,13 +22,25 @@ import { treeRecipe } from "../recipes/native/tree/tree.js";
 
 export const profile = {
   name: "default",
-  packages: [jqRecipe, pvRecipe, treeRecipe],
+  packages: [
+    { name: "jq", recipe: jqRecipe },
+    { name: "pv", recipe: pvRecipe },
+    { name: "tree", recipe: treeRecipe },
+  ],
 };
 ```
 
-`packages` is a flat array of `BuiltRecipe` objects (the same type returned by
-`download()`, `process()`, `shellBuild()`, etc.). Each has a `.hash` field that
-is the BLAKE3 recipe hash.
+`packages` is a flat array. Each entry can be either a `BuiltRecipe` object (the
+same type returned by `download()`, `process()`, `shellBuild()`, etc.) or an
+object with an explicit profile link name:
+
+```typescript
+{ name: "openssh", recipe: opensshRecipe }
+```
+
+Explicit names control the directory created under `pkgs/`. Without an explicit
+name, Hod falls back to deriving a name from the first binary in the package's
+`bin/` directory.
 
 Profiles compose via normal TypeScript imports:
 
@@ -39,7 +51,7 @@ import { opensshRecipe } from "../recipes/native/openssh/openssh.js";
 
 export const profile = {
   name: "work",
-  packages: [...baseProfile.packages, opensshRecipe],
+  packages: [...baseProfile.packages, { name: "openssh", recipe: opensshRecipe }],
 };
 ```
 
@@ -56,7 +68,71 @@ export const profile = {
 
 Same as activate, but stops after building. Does not create the symlink farm.
 
-Both commands accept `--store <path>` and `--quiet` flags.
+### `hod profile activate-hashes <name> --hashes-file <path>`
+
+Create a profile farm from an explicit list of package recipe hashes. Each line
+may be either `<hash>` or `<hash> <name>`. This is mainly for deployment
+workflows where a build machine evaluates and copies a profile closure to
+another machine, then the destination activates without needing the TypeScript
+profile source checkout.
+
+These commands accept `--store <path>` and `--quiet` flags.
+
+### `hod profile copy <path.ts> --to <user@host[:store]> [--name <name>] [--pin]`
+
+Build a profile locally, copy each package closure to a remote machine, verify
+the copied recipe/staging entries, upload a temporary hash manifest, and run
+`hod profile activate-hashes` on the remote.
+
+```bash
+hod profile copy profiles/thinkpad.ts --to crussell@10.10.0.10
+```
+
+Pass `--pin` to also write a remote roots file under
+`~/.hod/roots/profile-<name>.txt` so future `hod gc` keeps the deployed profile
+closure alive:
+
+```bash
+hod profile copy profiles/thinkpad.ts --to crussell@10.10.0.10 --pin
+```
+
+If the remote `hod` is older and lacks `activate-hashes`, the command uploads
+the local `hod` binary as a temporary helper for the activation step.
+
+Verification happens before activation. The helper derives a manifest from
+`hod copy-closure --list` for each package and checks, over SSH, that each
+expected `recipes/<shard>/<recipe_hash>` file and
+`staging/<shard>/<output_hash>` directory exists in the remote store. This keeps
+bad or partial transfers from becoming the active profile.
+
+`scripts/hod-deploy-profile` remains as a transitional wrapper for the same
+workflow, but new docs and guides should prefer `hod profile copy`.
+
+### `hod profile pin <path.ts> [--name <name>]`
+
+Evaluate a profile and write its current package recipe hashes to
+`~/.hod/roots/profile-<name>.txt`. This is explicit on purpose: activating a
+profile does not automatically make every package a GC root.
+
+```bash
+hod profile pin profiles/thinkpad.ts
+```
+
+The roots file is a snapshot of the evaluated profile. If the profile changes,
+rerun `hod profile pin` to update the roots file.
+
+### `hod profile unpin <name>`
+
+Remove the profile roots file:
+
+```bash
+hod profile unpin thinkpad
+```
+
+### `hod profile roots`
+
+List `*.txt` roots files under `~/.hod/roots/` and their root counts. Malformed
+roots files fail closed instead of being ignored.
 
 ## Farm Layout
 
@@ -93,7 +169,10 @@ to any environment variable.
 ### `pkgs/` — package outputs
 
 Each package is linked as a single directory symlink. The link name is derived
-from the first binary in the package's `bin/` (e.g., `jq`, `pv`, `tree`).
+from the first non-hidden, non-wrapper binary in the package's `bin/` (e.g.,
+`jq`, `pv`, `tree`). Multi-binary packages still use a heuristic, so packages
+like OpenSSH may get a link name such as `scp` until explicit profile package
+names are implemented.
 
 ### `runtime/` — runtime dependencies
 
@@ -134,10 +213,29 @@ This is separate from the store (`~/.local/share/hod/`) to avoid the `hod
 reset` footgun (which does `remove_dir_all` on the store). Profile farms are
 user-facing runtime state, not store internals.
 
+## GC Roots
+
+Default roots directory: `~/.hod/roots/`. Override via `$HOD_ROOTS_DIR`.
+
+Any `*.txt` file in this directory is a roots file. Each non-comment line
+contains one recipe hash. Comments are allowed with `#`:
+
+```text
+# hod roots: profile thinkpad
+# one recipe hash per line
+943eaf3fa26848b5d3acfc2a85b084a2d4cf5c9fe64621e3ef0d23285f2442f5
+```
+
+`hod gc` reads all `~/.hod/roots/*.txt` files by default, unions their recipe
+hashes, and preserves the full runtime closure of every root. Additional roots
+can be supplied with repeated `--roots-file` flags.
+
+Parsing is fail-closed: an invalid or empty roots file causes GC to stop rather
+than collecting data the user expected to keep.
+
 ## What Is Out of Scope
 
 - **Ephemeral dev shells** (`hod shell` with a profile) — deferred.
-- **GC integration** — profiles are not registered as GC roots.
 - **CLI add/remove commands** — profiles are edited as TypeScript files.
 - **Multiple active profiles** — one farm per profile name; user sources
   whichever `env.sh` they want.

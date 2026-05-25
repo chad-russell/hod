@@ -59,7 +59,6 @@ fn default_opts() -> BuildOptions {
 fn force_opts() -> BuildOptions {
     BuildOptions {
         force: true,
-        force_recursive: false,
         quiet: true,
         keep_failed: false,
     }
@@ -462,7 +461,7 @@ fn build_process_hello_world() {
         runtime_deps: None,
     });
 
-    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false });
+    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
     assert!(output.is_ok(), "process build failed: {:?}", output.err());
 
     let output_hash = output.unwrap();
@@ -525,7 +524,7 @@ fn build_process_exits_nonzero() {
         runtime_deps: None,
     });
 
-    let result = build_recipe(&store, &process_recipe, &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false });
+    let result = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
     assert!(result.is_err());
     match result.unwrap_err() {
         BuildError::ProcessFailed { exit_code, .. } => {
@@ -555,7 +554,7 @@ fn build_process_with_env_vars() {
         runtime_deps: None,
     });
 
-    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false });
+    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
     assert!(output.is_ok(), "process build failed: {:?}", output.err());
 
     let output_hash = output.unwrap();
@@ -588,7 +587,7 @@ fn build_process_writes_to_out() {
         runtime_deps: None,
     });
 
-    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false });
+    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
     assert!(output.is_ok(), "process build should succeed: {:?}", output.err());
 }
 
@@ -623,7 +622,7 @@ fn build_process_with_dependency() {
         runtime_deps: None,
     });
 
-    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false });
+    let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
     assert!(output.is_ok(), "process with deps should succeed: {:?}", output.err());
 }
 
@@ -689,7 +688,7 @@ fn sandbox_hello_world_writes_to_out() {
     let output_hash = build_recipe(
         &store,
         &process_recipe,
-        &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false },
+        &BuildOptions { force: false, quiet: true, keep_failed: false },
     )
     .unwrap();
 
@@ -735,7 +734,7 @@ fn sandbox_env_vars_set_correctly() {
     let output_hash = build_recipe(
         &store,
         &process_recipe,
-        &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false },
+        &BuildOptions { force: false, quiet: true, keep_failed: false },
     )
     .unwrap();
 
@@ -791,7 +790,7 @@ fn sandbox_user_env_vars_set() {
     let output_hash = build_recipe(
         &store,
         &process_recipe,
-        &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false },
+        &BuildOptions { force: false, quiet: true, keep_failed: false },
     )
     .unwrap();
 
@@ -836,7 +835,7 @@ fn sandbox_build_failure_captures_logs() {
     let result = build_recipe(
         &store,
         &process_recipe,
-        &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false },
+        &BuildOptions { force: false, quiet: true, keep_failed: false },
     );
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -897,7 +896,7 @@ fn sandbox_deps_populated() {
     let output_hash = build_recipe(
         &store,
         &process_recipe,
-        &BuildOptions { force: false, force_recursive: false, quiet: true, keep_failed: false },
+        &BuildOptions { force: false, quiet: true, keep_failed: false },
     )
     .unwrap();
 

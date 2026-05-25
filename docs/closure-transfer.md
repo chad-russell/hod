@@ -90,6 +90,23 @@ hod copy-closure 76930b... --to user@thinkpad --dry-run
 hod copy-closure 76930b... --list
 ```
 
+For profile deployment, use `hod profile copy` instead of manually copying each
+package closure:
+
+```bash
+hod profile copy profiles/thinkpad.ts --to user@thinkpad
+```
+
+The command builds the profile locally, runs `copy-closure` for each package
+recipe hash, verifies the expected recipe/staging entries on the destination,
+and activates the profile from a hash manifest.
+
+Use `--pin` when the deployed profile should be kept alive by remote GC:
+
+```bash
+hod profile copy profiles/thinkpad.ts --to user@thinkpad --pin
+```
+
 ### What gets transferred
 
 For each entry in the closure:
@@ -135,6 +152,17 @@ The `--list` flag prints one line per closure entry:
 ```
 <recipe_hash> <output_hash> <staging_size_bytes> <dep_name>
 ```
+
+Profile deployment uses this listing as a post-copy verification manifest. For
+each copied closure entry, the deploy helper checks that the destination has:
+
+- `recipes/<shard>/<recipe_hash>` as a regular recipe file
+- `staging/<shard>/<output_hash>` as a staging directory
+- a staging size greater than zero when the source reported a nonzero size
+
+This is intentionally a lightweight sanity check. Full content verification can
+be added later, but this catches incomplete transfers, stale metadata, and
+missing staging outputs before a remote profile is activated.
 
 Example:
 ```

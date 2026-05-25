@@ -5,8 +5,19 @@ target/
 node_modules/
 js/node_modules/
 
+# Debugger UI local artifacts
+debugger-ui/node_modules/
+debugger-ui/dist/
+debugger-ui/build/
+debugger-ui/.vite/
+debugger-ui/coverage/
+debugger-ui/.env
+debugger-ui/.env.*
+!debugger-ui/.env.example
+
 # Downloaded source tarballs and binaries (reproducible from upstream URLs)
 recipes/sources/
+/zlib-*/
 
 # Nix / direnv local state
 .direnv/

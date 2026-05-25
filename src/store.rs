@@ -183,19 +183,22 @@ impl Store {
     // -- Output storage --
 
     /// Record a build output: maps `recipe_hash` → `output_hash`.
+    /// Optionally stores the pre-relocation build output hash.
     pub fn store_output(
         &self,
         recipe_hash: &Hash,
         output_hash: &Hash,
         build_ms: u64,
+        build_output_hash: Option<&Hash>,
     ) -> Result<()> {
         let hex_recipe = hash_to_hex(recipe_hash);
         let hex_output = hash_to_hex(output_hash);
         let now = now_iso8601();
+        let hex_build = build_output_hash.map(hash_to_hex);
         self.conn.execute(
-            "INSERT OR REPLACE INTO outputs (recipe_hash, output_hash, built_at, build_ms)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![hex_recipe, hex_output, now, build_ms as i64],
+            "INSERT OR REPLACE INTO outputs (recipe_hash, output_hash, built_at, build_ms, build_output_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![hex_recipe, hex_output, now, build_ms as i64, hex_build],
         )?;
         Ok(())
     }
@@ -217,6 +220,33 @@ impl Store {
                     ))
                 })?;
                 Ok(Some(h))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Look up the pre-relocation build output hash for a recipe.
+    pub fn get_build_output_hash(&self, recipe_hash: &Hash) -> Result<Option<Hash>> {
+        let hex_recipe = hash_to_hex(recipe_hash);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT build_output_hash FROM outputs WHERE recipe_hash = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![hex_recipe])?;
+        match rows.next()? {
+            Some(row) => {
+                let hex_build: Option<String> = row.get(0)?;
+                match hex_build {
+                    Some(hex) => {
+                        let h = crate::hash::hex_to_hash(&hex).ok_or_else(|| {
+                            StoreError::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("corrupt build output hash in DB: {hex}"),
+                            ))
+                        })?;
+                        Ok(Some(h))
+                    }
+                    None => Ok(None),
+                }
             }
             None => Ok(None),
         }

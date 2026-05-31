@@ -8,6 +8,7 @@ profile := env_var_or_default("HOD_PROFILE", "profiles/cosmic-desktop.ts")
 remote := env_var_or_default("HOD_REMOTE", "")
 remote_dir := env_var_or_default("HOD_REMOTE_DIR", "/home/crussell/hod")
 ssh_port := env_var_or_default("HOD_SSH_PORT", "2223")
+bind_addr := env_var_or_default("HOD_VM_BIND_ADDR", "127.0.0.1")
 memory := env_var_or_default("HOD_VM_MEMORY", "4096")
 cpus := env_var_or_default("HOD_VM_CPUS", "2")
 nix := "nix develop --accept-flake-config --command"
@@ -29,15 +30,15 @@ build-base:
 
 # Run the VM locally with a QEMU graphics window. Best option on the ThinkPad.
 run-local:
-    {{nix}} scripts/hod-arch-run --graphics --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
+    HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-arch-run --graphics --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
 
 # Run the VM with VNC exposed on localhost:5900. Best option for remote smoke tests.
 run-vnc:
-    {{nix}} scripts/hod-arch-run --vnc --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
+    HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-arch-run --vnc --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
 
 # Run without graphics, using the serial console in the terminal.
 run-headless:
-    {{nix}} scripts/hod-arch-run --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
+    HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-arch-run --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
 
 # Copy VM artifacts from a remote builder into this checkout.
 sync-from-remote:
@@ -64,6 +65,7 @@ info:
     @printf 'remote:     %s\n' "{{remote}}"
     @printf 'remote_dir: %s\n' "{{remote_dir}}"
     @printf 'ssh_port:   %s\n' "{{ssh_port}}"
+    @printf 'bind_addr:  %s\n' "{{bind_addr}}"
     @printf 'memory:     %s MiB\n' "{{memory}}"
     @printf 'cpus:       %s\n' "{{cpus}}"
     @ls -lh "{{state_dir}}"/hod-arch.qcow2 "{{state_dir}}"/vmlinuz "{{state_dir}}"/initramfs.img 2>/dev/null || true

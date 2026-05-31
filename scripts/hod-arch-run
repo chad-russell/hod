@@ -18,7 +18,7 @@ Options:
   -h, --help          Show this help
 
 Environment:
-  HOD_VM_BIND_ADDR    Address for forwarded ports (default: 10.10.0.6)
+  HOD_VM_BIND_ADDR    Address for forwarded ports (default: 127.0.0.1)
   HOD_VM_EXTRA_QEMU   Extra QEMU arguments (space-separated)
 
 Requirements:
@@ -57,7 +57,7 @@ need() {
 need qemu-system-x86_64
 
 state_dir=${state_dir:-.hod-vm/arch}
-bind_addr=${HOD_VM_BIND_ADDR:-10.10.0.6}
+bind_addr=${HOD_VM_BIND_ADDR:-127.0.0.1}
 
 kernel=$state_dir/vmlinuz
 initrd=$state_dir/initramfs.img

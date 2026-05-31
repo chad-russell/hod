@@ -32,6 +32,10 @@ build-base:
 run-local:
     HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-arch-run --graphics --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
 
+# Run locally with virtio OpenGL acceleration. Try this if plain virtio-vga is blank.
+run-local-gl:
+    HOD_VM_BIND_ADDR={{bind_addr}} HOD_VM_GL=1 {{nix}} scripts/hod-arch-run --graphics --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}
+
 # Run the VM with VNC exposed on localhost:5900. Best option for remote smoke tests.
 run-vnc:
     HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-arch-run --vnc --state-dir {{state_dir}} --ssh-port {{ssh_port}} --memory {{memory}} --cpus {{cpus}}

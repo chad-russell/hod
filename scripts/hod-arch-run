@@ -14,11 +14,13 @@ Options:
   --cpus <n>          Guest vCPUs (default: 2)
   --ssh-port <port>   Host port forwarded to guest SSH 22 (default: 2223)
   --graphics          Enable graphical display (virtio-vga, QEMU window)
+  --gl                Use virtio-vga-gl + GTK OpenGL display (local graphics only)
   --vnc               Enable VNC display on :0 (port 5900)
   -h, --help          Show this help
 
 Environment:
   HOD_VM_BIND_ADDR    Address for forwarded ports (default: 127.0.0.1)
+  HOD_VM_GL           Use OpenGL virtio GPU for --graphics (1/true/yes)
   HOD_VM_EXTRA_QEMU   Extra QEMU arguments (space-separated)
 
 Requirements:
@@ -32,6 +34,7 @@ memory=4096
 cpus=2
 ssh_port=2223
 graphics=false
+gl=false
 vnc=false
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --cpus)      cpus="$2"; shift 2 ;;
     --ssh-port)  ssh_port="$2"; shift 2 ;;
     --graphics)  graphics=true; shift ;;
+    --gl)        gl=true; shift ;;
     --vnc)       vnc=true; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
@@ -58,6 +62,9 @@ need qemu-system-x86_64
 
 state_dir=${state_dir:-.hod-vm/arch}
 bind_addr=${HOD_VM_BIND_ADDR:-127.0.0.1}
+case "${HOD_VM_GL:-}" in
+  1|true|yes|on) gl=true ;;
+esac
 
 kernel=$state_dir/vmlinuz
 initrd=$state_dir/initramfs.img
@@ -86,11 +93,20 @@ fi
 
 display_args=()
 if [[ "$graphics" == true ]]; then
-  display_args=(
-    -device virtio-vga
-    -serial mon:stdio
-  )
-  printf '[hod-arch] graphics mode enabled (virtio-vga)\n' >&2
+  if [[ "$gl" == true ]]; then
+    display_args=(
+      -display gtk,gl=on
+      -device virtio-vga-gl
+      -serial mon:stdio
+    )
+    printf '[hod-arch] graphics mode enabled (virtio-vga-gl, GTK GL)\n' >&2
+  else
+    display_args=(
+      -device virtio-vga
+      -serial mon:stdio
+    )
+    printf '[hod-arch] graphics mode enabled (virtio-vga)\n' >&2
+  fi
 elif [[ "$vnc" == true ]]; then
   display_args=(
     -device virtio-vga

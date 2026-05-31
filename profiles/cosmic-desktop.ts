@@ -46,6 +46,8 @@ import { cosmicAppletsRecipe } from "../recipes/native/cosmic-applets/cosmic-app
 import { cosmicApplibraryRecipe } from "../recipes/native/cosmic-applibrary/cosmic-applibrary.js";
 import { cosmicIconsRecipe } from "../recipes/native/cosmic-icons/cosmic-icons.js";
 import { popLauncherRecipe } from "../recipes/native/pop-launcher/pop-launcher.js";
+import { xdgDesktopPortalStubRecipe } from "../recipes/native/xdg-desktop-portal-stub/xdg-desktop-portal-stub.js";
+import { xdgDesktopPortalCosmicRecipe } from "../recipes/native/xdg-desktop-portal-cosmic/xdg-desktop-portal-cosmic.js";
 
 export const profile = {
   name: "cosmic-desktop",
@@ -91,5 +93,7 @@ export const profile = {
     { name: "cosmic-applibrary", recipe: cosmicApplibraryRecipe },
     { name: "cosmic-icons", recipe: cosmicIconsRecipe },
     { name: "pop-launcher", recipe: popLauncherRecipe },
+    { name: "xdg-desktop-portal", recipe: xdgDesktopPortalStubRecipe },
+    { name: "xdg-desktop-portal-cosmic", recipe: xdgDesktopPortalCosmicRecipe },
   ],
 };

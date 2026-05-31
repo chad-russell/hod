@@ -443,6 +443,9 @@ export interface CosmicAppOptions {
   /** Shell commands to run after source extraction but before `cargo build`. */
   preBuildScript?: string;
 
+  /** Shell commands to run after binaries are copied into $OUT/bin. */
+  postInstallScript?: string;
+
   /**
    * Enable bindgen support for -sys crates that generate bindings at build time.
    * Adds bindgen-clang dep and sets LIBCLANG_PATH + BINDGEN_EXTRA_CLANG_ARGS.
@@ -462,6 +465,23 @@ export async function cosmicApp(opts: CosmicAppOptions): Promise<BuiltRecipe> {
   const bindgenDeps = opts.bindgen
     ? [dep("bindgen-clang", (await import("../native/llvm/bindgen-clang.js")).bindgenClangRecipe)]
     : [];
+
+  const postInstallScript = [
+    `
+if [ -d /tmp/build/data/default_schema ]; then
+  mkdir -p $OUT/share/cosmic
+  cp -a /tmp/build/data/default_schema/. $OUT/share/cosmic/
+  for _hod_panel in \
+    $OUT/share/cosmic/com.system76.CosmicPanel.Panel/v1 \
+    $OUT/share/cosmic/com.system76.CosmicPanel.Dock/v1; do
+    [ -d "$_hod_panel" ] || continue
+    [ -e "$_hod_panel/padding_overlap" ] || printf '0\n' > "$_hod_panel/padding_overlap"
+  done
+  unset _hod_panel
+fi
+`,
+    opts.postInstallScript,
+  ].filter(Boolean).join("\n");
 
   const recipe = await cargoBuild({
     name: opts.name,
@@ -486,6 +506,7 @@ export async function cosmicApp(opts: CosmicAppOptions): Promise<BuiltRecipe> {
     ].sort(),
     extraBinaries: opts.extraBinaries,
     preBuildScript: opts.preBuildScript,
+    postInstallScript,
     bindgen: opts.bindgen,
   });
 

@@ -126,6 +126,9 @@ export interface CargoBuildOptions {
 
   /** Shell commands to run after source extraction but before `cargo build`. */
   preBuildScript?: string;
+
+  /** Shell commands to run after binaries are copied into $OUT/bin. */
+  postInstallScript?: string;
 }
 
 /**
@@ -316,6 +319,7 @@ export async function cargoBuild(opts: CargoBuildOptions): Promise<BuiltRecipe> 
     "",
     "mkdir -p $OUT/bin",
     copyCmds,
+    ...(opts.postInstallScript ? [opts.postInstallScript] : []),
   ].join("\n");
 
   // shellBuild handles set -e, the preamble, and sets env vars from rustProfile.

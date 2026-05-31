@@ -425,6 +425,18 @@ if [[ -n "$dbus_bin" ]]; then
   printf '[hod-arch]   dbus-daemon found at %s\n' "$dbus_img" >&2
 fi
 
+pop_launcher_link="$rootfs/usr/hod/system/generations/$gen_number/pkgs/pop-launcher"
+pop_launcher_target=""
+if [[ -L "$pop_launcher_link" ]]; then
+  pop_launcher_target="$rootfs$(readlink "$pop_launcher_link")"
+fi
+if [[ -n "$pop_launcher_target" && -d "$pop_launcher_target/lib/pop-launcher" ]]; then
+  rm -rf "$rootfs/usr/lib/pop-launcher"
+  ln -s /usr/hod/system/current/pkgs/pop-launcher/lib/pop-launcher \
+    "$rootfs/usr/lib/pop-launcher"
+  printf '[hod-arch]   linked /usr/lib/pop-launcher plugin directory\n' >&2
+fi
+
 # ---------------------------------------------------------------------------
 # 5c. COSMIC desktop auto-login
 # ---------------------------------------------------------------------------
@@ -451,8 +463,26 @@ AUTOEOF
 # to avoid poisoning system binaries with Hod-built glibc.
 if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+  export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
   export XDG_SESSION_TYPE=wayland
+  export XDG_CURRENT_DESKTOP=COSMIC
+  export XDG_SESSION_DESKTOP=COSMIC
+  export DESKTOP_SESSION=COSMIC
+  export XDG_MENU_PREFIX=cosmic-
+  export _JAVA_AWT_WM_NONREPARENTING=1
+  export GDK_BACKEND=wayland,x11
+  export MOZ_ENABLE_WAYLAND=1
+  export QT_QPA_PLATFORM="wayland;xcb"
+  export QT_AUTO_SCREEN_SCALE_FACTOR=1
+  export QT_ENABLE_HIGHDPI_SCALING=1
+  export DCONF_PROFILE=cosmic
+  export LIBSEAT_BACKEND=seatd
+  export COSMIC_DISABLE_SYNCOBJ=1
   mkdir -p "$XDG_RUNTIME_DIR"
+  mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+  chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
   _HOD_LD=""
   for _hod_gl in \
     /usr/hod/store/staging/*/*/lib/libEGL.so.1 \
@@ -505,18 +535,33 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     _HOD_DATA="$_hod_s${_HOD_DATA:+:$_HOD_DATA}"
   done
   unset _hod_s
-  exec env \
-    LD_LIBRARY_PATH="$_HOD_LD" \
-    LIBGL_DRIVERS_PATH="$_HOD_DRI" \
-    GBM_BACKENDS_PATH="$_HOD_GBM" \
-    __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
-    XKB_CONFIG_ROOT="$_HOD_XKB" \
-    XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
-    MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
-    LIBGL_ALWAYS_SOFTWARE=1 \
-    WGPU_BACKEND=gl \
-    GSK_RENDERER=cairo \
-    cosmic-session
+  if command -v dbus-run-session >/dev/null 2>&1; then
+    exec env \
+      LD_LIBRARY_PATH="$_HOD_LD" \
+      LIBGL_DRIVERS_PATH="$_HOD_DRI" \
+      GBM_BACKENDS_PATH="$_HOD_GBM" \
+      __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
+      XKB_CONFIG_ROOT="$_HOD_XKB" \
+      XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
+      MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
+      LIBGL_ALWAYS_SOFTWARE=1 \
+      WGPU_BACKEND=gl \
+      GSK_RENDERER=cairo \
+      dbus-run-session -- sh -lc 'dbus-update-activation-environment --systemd --all 2>/dev/null || dbus-update-activation-environment --all 2>/dev/null || true; exec cosmic-session'
+  else
+    exec env \
+      LD_LIBRARY_PATH="$_HOD_LD" \
+      LIBGL_DRIVERS_PATH="$_HOD_DRI" \
+      GBM_BACKENDS_PATH="$_HOD_GBM" \
+      __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
+      XKB_CONFIG_ROOT="$_HOD_XKB" \
+      XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
+      MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
+      LIBGL_ALWAYS_SOFTWARE=1 \
+      WGPU_BACKEND=gl \
+      GSK_RENDERER=cairo \
+      cosmic-session
+  fi
   unset _HOD_LD _HOD_DRI _HOD_GBM _HOD_EGL _HOD_XKB _HOD_DATA
 fi
 BPEOF

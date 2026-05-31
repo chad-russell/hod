@@ -9,4 +9,19 @@ import { CosmicSettingsDaemonSourceRecipe } from "./cosmic-settings-daemon-sourc
 export const cosmicSettingsDaemonRecipe = await cosmicApp({
   name: "cosmic-settings-daemon",
   source: CosmicSettingsDaemonSourceRecipe,
+  postInstallScript: `
+mkdir -p \
+  $OUT/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1 \
+  $OUT/share/cosmic/com.system76.CosmicSettings.WindowRules/v1
+cp /tmp/build/data/system_actions.ron \
+  $OUT/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions
+printf '{}\n' > \
+  $OUT/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
+printf '{}\n' > \
+  $OUT/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom
+printf '[]\n' > \
+  $OUT/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
+printf '[]\n' > \
+  $OUT/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_custom
+`,
 });

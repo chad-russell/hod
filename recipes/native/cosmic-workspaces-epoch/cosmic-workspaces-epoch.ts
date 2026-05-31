@@ -9,4 +9,5 @@ import { CosmicWorkspacesEpochSourceRecipe } from "./cosmic-workspaces-epoch-sou
 export const cosmicWorkspacesEpochRecipe = await cosmicApp({
   name: "cosmic-workspaces",  // binary name differs from repo name
   source: CosmicWorkspacesEpochSourceRecipe,
+  cargoFlags: [],
 });

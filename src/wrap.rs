@@ -3,8 +3,8 @@
 //! After a Process build completes, this module generates POSIX shell wrapper
 //! scripts for every executable in `$OUT/bin/`. The wrappers:
 //!
-//! 1. Discover their own output prefix from `$0` (using `readlink -f`
-//!    and `dirname`) and the enclosing staging root.
+//! 1. Discover their own output prefix from `$0` using pure shell parameter
+//!    expansion (no external commands like `readlink` or `dirname`).
 //! 2. Build `XDG_DATA_DIRS`, `GSETTINGS_SCHEMA_PATH`, and other environment
 //!    variables from the runtime dependency staging directories.
 //! 3. Exec the real (renamed) binary with the constructed environment.
@@ -12,9 +12,9 @@
 //! This makes built applications work when invoked directly (e.g., after
 //! `hod copy-closure`), without needing `hod run` as an intermediary.
 //!
-//! The wrapper scripts use only POSIX shell constructs and `readlink -f`
-//! (available on all Linux distributions), so they work without any hod
-//! runtime dependency.
+//! The wrapper scripts use only POSIX shell builtins — no external commands
+//! from PATH — so they work even when PATH is entirely Hod-managed
+//! (e.g., inside an Alpine/musl VM where coreutils come from Hod).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -227,6 +227,22 @@ pub fn generate_wrappers(
             continue;
         }
 
+        // Skip statically-linked ELFs (no PT_INTERP). Wrapping a static
+        // binary in a shell script is harmful because:
+        //   1. The wrapper requires /bin/sh to exist before the wrapper
+        //      runs, which doesn't hold for sandbox-entry-point binaries
+        //      (e.g., the toolchain's musl-static busybox is invoked by
+        //      the kernel as the very first command, before any preamble
+        //      can set up /bin/sh).
+        //   2. Static binaries don't need any of the env-var setup the
+        //      wrapper provides — they have no dynamic linker, no DT_RPATH,
+        //      and no XDG_DATA_DIRS-style runtime concerns.
+        // Static ELFs have no PT_INTERP, which `crate::packed::parse_interp`
+        // returns as `None`.
+        if crate::packed::parse_interp(&data).is_none() {
+            continue;
+        }
+
         let wrapped_name = format!(".{name}-wrapped");
         let wrapped_path = bin_dir.join(&wrapped_name);
 
@@ -368,11 +384,17 @@ fn generate_wrapper_script(
 # Hod wrapper — sets up runtime environment and execs the real binary.
 # Generated automatically by the hod build system.
 
-# Resolve canonical path (handles symlinks, relative paths, etc.)
-self="$(readlink -f "$0")"
-bin_dir="$(dirname "$self")"
-prefix="$(cd "$bin_dir/.." && pwd)"
-staging_root="$(cd "$bin_dir/../../.." && pwd)"
+# Resolve paths using only shell builtins — no readlink/dirname from PATH.
+# This ensures the wrapper works even when PATH is entirely Hod-managed
+# (e.g., inside an Alpine/musl VM where coreutils come from Hod).
+case "$0" in
+    /*) _wrapper="$0" ;;
+    *)  _wrapper="$(pwd)/$0" ;;
+esac
+bin_dir="${{_wrapper%/*}}"
+prefix="${{bin_dir%/*}}"
+_staging="${{prefix%/*}}"
+staging_root="${{_staging%/*}}"
 
 {ld_export}
 

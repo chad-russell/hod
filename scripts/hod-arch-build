@@ -1,0 +1,609 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-arch-build [options]
+
+Build a Hod OS disk image from an Arch Linux seed with direct kernel boot.
+No bootloader, no partition table, no ostree, no composefs.
+
+Steps:
+  1. podman run archlinux:latest -> pacstrap minimal rootfs
+  2. Configure rootfs (os-release, networkd, sshd, hostname, hide pacman)
+  3. Build and activate a Hod system profile
+  4. Bake Hod layer into rootfs (store, generation, env, systemd units)
+  5. Generate initramfs (mkinitcpio in container)
+  6. Create bare ext4 disk image (no partition table)
+
+Options:
+  --profile <path>         System profile .ts file (default: profiles/system-base.ts)
+  --ssh-pubkey <path>      SSH public key for root (default: first ~/.ssh/id_*.pub)
+  --root-password <pw>     Root password (default: hod)
+  --disk-size <size>       Disk image size (default: 4G)
+  --skip-rootfs            Skip rootfs creation, reuse existing
+  --skip-profile-build     Skip building/activating the Hod system profile
+  --state-dir <dir>        Build state directory (default: .hod-vm/arch)
+  --hod-bin <path>         Path to hod binary (default: target/debug/hod or hod)
+  -h, --help               Show this help
+
+Examples:
+  # Full build from scratch
+  scripts/hod-arch-build
+
+  # Rebuild after profile change (reuses rootfs)
+  scripts/hod-arch-build --skip-rootfs
+USAGE
+}
+
+profile_path=""
+ssh_pubkey=""
+root_password=""
+disk_size="4G"
+skip_rootfs=false
+skip_profile_build=false
+state_dir=""
+hod_bin_override=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)           profile_path="$2"; shift 2 ;;
+    --ssh-pubkey)        ssh_pubkey="$2"; shift 2 ;;
+    --root-password)     root_password="$2"; shift 2 ;;
+    --disk-size)         disk_size="$2"; shift 2 ;;
+    --skip-rootfs)       skip_rootfs=true; shift ;;
+    --skip-profile-build) skip_profile_build=true; shift ;;
+    --state-dir)         state_dir="$2"; shift 2 ;;
+    --hod-bin)           hod_bin_override="$2"; shift 2 ;;
+    -h|--help)           usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+resolve_hod() {
+  if [[ -n "${hod_bin_override:-}" ]]; then
+    realpath "$hod_bin_override"
+  elif [[ -x target/debug/hod ]]; then
+    realpath target/debug/hod
+  else
+    command -v hod
+  fi
+}
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'hod-arch-build: missing %s; run inside `nix develop --accept-flake-config`\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need podman
+need mkfs.ext4
+need qemu-img
+need truncate
+
+hod_bin=$(resolve_hod)
+state_dir=${state_dir:-.hod-vm/arch}
+profile_path=${profile_path:-profiles/system-base.ts}
+root_password=${root_password:-hod}
+rootfs=$state_dir/rootfs
+image_store=/usr/hod/store
+
+mkdir -p "$state_dir"
+
+host_store_root=$("$hod_bin" store-root)
+
+ssh_pubkey_text=""
+if [[ -n "$ssh_pubkey" && -f "$ssh_pubkey" ]]; then
+  ssh_pubkey_text=$(<"$ssh_pubkey")
+else
+  for candidate in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    if [[ -f "$candidate" ]]; then
+      ssh_pubkey_text=$(<"$candidate")
+      break
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# 1. pacstrap minimal rootfs
+# ---------------------------------------------------------------------------
+if [[ "$skip_rootfs" == false ]]; then
+  printf '[hod-arch] creating rootfs with pacman --root\n' >&2
+  sudo rm -rf "$rootfs"
+  mkdir -p "$rootfs"
+
+  podman run --rm \
+    --dns 8.8.8.8 --dns 1.1.1.1 \
+    -v "$(realpath "$rootfs")":/mnt:Z \
+    archlinux:latest \
+    bash -c '
+      set -euo pipefail
+      mkdir -p /mnt/var/lib/pacman /mnt/var/cache/pacman/pkg
+  pacman -Sy --noconfirm --root /mnt --cachedir /mnt/var/cache/pacman/pkg \
+    base linux systemd openssh mkinitcpio ttf-dejavu
+      # Minimal post-install that pacstrap normally handles
+      printf "" > /mnt/etc/machine-id
+      rm -f /mnt/etc/localtime
+      ln -sf ../usr/share/zoneinfo/UTC /mnt/etc/localtime
+    '
+
+  printf '[hod-arch] stripping docs and cache\n' >&2
+  rm -rf "$rootfs"/usr/share/man/* \
+         "$rootfs"/usr/share/doc/* \
+         "$rootfs"/usr/share/info/* \
+         "$rootfs"/var/cache/pacman/pkg/*
+
+  printf '[hod-arch] rootfs created (%s)\n' \
+    "$(du -sh "$rootfs" | cut -f1)" >&2
+else
+  printf '[hod-arch] reusing existing rootfs (--skip-rootfs)\n' >&2
+  if [[ ! -d "$rootfs" ]]; then
+    printf 'hod-arch-build: rootfs not found at %s; remove --skip-rootfs\n' "$rootfs" >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Configure rootfs
+# ---------------------------------------------------------------------------
+if [[ "$skip_rootfs" == false ]]; then
+  printf '[hod-arch] configuring rootfs\n' >&2
+
+  cat > "$rootfs/etc/os-release" << 'EOF'
+NAME="Hod OS"
+VERSION="0.1"
+ID=hod
+VERSION_ID="0.1"
+PRETTY_NAME="Hod OS 0.1"
+EOF
+
+  cat > "$rootfs/etc/hostname" << 'EOF'
+hod
+EOF
+
+  cat > "$rootfs/etc/locale.conf" << 'EOF'
+LANG=en_US.UTF-8
+EOF
+
+  mkdir -p "$rootfs/etc/systemd/network"
+  cat > "$rootfs/etc/systemd/network/50-dhcp.network" << 'EOF'
+[Match]
+Name=en*
+
+[Network]
+DHCP=yes
+EOF
+
+  mkdir -p "$rootfs/etc/systemd/system/multi-user.target.wants"
+
+  rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
+  ln -s /usr/lib/systemd/system/systemd-networkd.service \
+    "$rootfs/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
+
+  rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
+  ln -s /usr/lib/systemd/system/systemd-resolved.service \
+    "$rootfs/etc/systemd/system/multi-user.target.wants/systemd-resolved.service"
+
+  rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
+  ln -s /usr/lib/systemd/system/sshd.service \
+    "$rootfs/etc/systemd/system/multi-user.target.wants/sshd.service"
+
+  rm -f "$rootfs/etc/resolv.conf"
+  ln -s /run/systemd/resolve/stub-resolv.conf \
+    "$rootfs/etc/resolv.conf"
+
+  if [[ -n "$ssh_pubkey_text" ]]; then
+    mkdir -p "$rootfs/root/.ssh"
+    printf '%s\n' "$ssh_pubkey_text" > "$rootfs/root/.ssh/authorized_keys"
+    chmod 700 "$rootfs/root/.ssh"
+    chmod 600 "$rootfs/root/.ssh/authorized_keys"
+  fi
+
+  chmod -x "$rootfs/usr/bin/pacman" 2>/dev/null || true
+  chmod -x "$rootfs/usr/bin/pacman-conf" 2>/dev/null || true
+  chmod -x "$rootfs/usr/bin/makepkg" 2>/dev/null || true
+
+  # Create sshd user/group (openssh install script needs /dev/null which
+  # doesn't exist in rootless podman, so it was skipped)
+  if ! grep -q '^sshd:' "$rootfs/etc/group" 2>/dev/null; then
+    echo 'sshd:x:74:' >> "$rootfs/etc/group"
+  fi
+  if ! grep -q '^sshd:' "$rootfs/etc/passwd" 2>/dev/null; then
+    echo 'sshd:x:74:74:Privilege-separated SSH:/var/empty:/usr/bin/nologin' >> "$rootfs/etc/passwd"
+  fi
+  if ! grep -q '^sshd:' "$rootfs/etc/shadow" 2>/dev/null; then
+    echo 'sshd:!!:1:0:99999:7:::' >> "$rootfs/etc/shadow"
+  fi
+  mkdir -p "$rootfs/var/empty"
+  mkdir -p "$rootfs/etc/ssh"
+
+  # Create hod user for desktop session (Wayland compositors refuse root)
+  # Add hod to video and render groups for DRM/seatd access
+  sed -i '/^video:/ s/:$/:hod/' "$rootfs/etc/group"
+  sed -i '/^render:/ s/:$/:hod/' "$rootfs/etc/group" 2>/dev/null || true
+  if ! grep -q '^hod:' "$rootfs/etc/group" 2>/dev/null; then
+    echo 'hod:x:1000:' >> "$rootfs/etc/group"
+  fi
+  if ! grep -q '^hod:' "$rootfs/etc/passwd" 2>/dev/null; then
+    echo 'hod:x:1000:1000:Hod Desktop:/home/hod:/bin/bash' >> "$rootfs/etc/passwd"
+  fi
+  if ! grep -q '^hod:' "$rootfs/etc/shadow" 2>/dev/null; then
+    hod_hash=$(printf "%s" "$root_password" | openssl passwd -6 -stdin)
+    echo "hod:${hod_hash}:1:0:99999:7:::" >> "$rootfs/etc/shadow"
+  fi
+  mkdir -p "$rootfs/home/hod"
+  printf '\n[ -f /etc/profile.d/hod.sh ] && . /etc/profile.d/hod.sh\n' \
+    >> "$rootfs/home/hod/.bashrc"
+
+  printf '\n[ -f /etc/profile.d/hod.sh ] && . /etc/profile.d/hod.sh\n' \
+    >> "$rootfs/root/.bashrc"
+
+  # Copy kernel to /boot (install hook may have failed without /dev)
+  kver=$(ls "$rootfs/usr/lib/modules/" | head -1)
+  mkdir -p "$rootfs/boot"
+  cp "$rootfs/usr/lib/modules/$kver/vmlinuz" "$rootfs/boot/vmlinuz-linux"
+
+  printf '[hod-arch] rootfs configured\n' >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Build and activate Hod system profile
+# ---------------------------------------------------------------------------
+if [[ "$skip_profile_build" == false ]]; then
+  if [[ ! -f "$profile_path" ]]; then
+    printf 'hod-arch-build: profile not found: %s\n' "$profile_path" >&2
+    exit 1
+  fi
+
+  printf '[hod-arch] building system profile from %s\n' "$profile_path" >&2
+  "$hod_bin" system activate "$profile_path" --quiet
+  printf '[hod-arch] system profile activated\n' >&2
+else
+  printf '[hod-arch] skipping profile build (--skip-profile-build)\n' >&2
+fi
+
+gen_number=$("$hod_bin" system list 2>/dev/null | awk '/^\*/ { print $2 }' | head -1)
+if [[ -z "$gen_number" ]]; then
+  printf 'hod-arch-build: no active system generation; run hod system activate first\n' >&2
+  exit 1
+fi
+
+hod_sys_dir=${HOD_SYSTEM_DIR:-}
+if [[ -z "$hod_sys_dir" ]]; then
+  xdg=${XDG_DATA_HOME:-$HOME/.local/share}
+  hod_sys_dir=$xdg/hod/system
+fi
+gen_dir=$hod_sys_dir/generations/$gen_number
+
+if [[ ! -d "$gen_dir" ]]; then
+  printf 'hod-arch-build: generation directory not found: %s\n' "$gen_dir" >&2
+  exit 1
+fi
+
+printf '[hod-arch] using generation %s\n' "$gen_number" >&2
+
+# ---------------------------------------------------------------------------
+# 4. Collect closure hashes from generation metadata
+# ---------------------------------------------------------------------------
+metadata=$gen_dir/metadata.json
+if [[ ! -f "$metadata" ]]; then
+  printf 'hod-arch-build: metadata.json not found in generation %s\n' "$gen_number" >&2
+  exit 1
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  recipe_hashes=$(jq -r '.recipe_hashes[]' "$metadata")
+else
+  recipe_hashes=$(python3 -c "import json,sys; [print(h) for h in json.load(open('$metadata'))['recipe_hashes']]")
+fi
+
+if [[ -z "$recipe_hashes" ]]; then
+  printf 'hod-arch-build: no recipe hashes in generation metadata\n' >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Bake Hod layer into rootfs
+# ---------------------------------------------------------------------------
+printf '[hod-arch] baking Hod layer into rootfs\n' >&2
+
+rm -rf "$rootfs/usr/hod" 2>/dev/null || sudo rm -rf "$rootfs/usr/hod"
+
+printf '[hod-arch] copying closure (%d packages)\n' \
+  "$(echo "$recipe_hashes" | wc -l)" >&2
+mkdir -p "$rootfs$image_store"
+for hash in $recipe_hashes; do
+  printf '[hod-arch]   %s\n' "${hash:0:12}" >&2
+  "$hod_bin" copy-closure "$hash" --to "$rootfs$image_store" --force --quiet
+done
+
+printf '[hod-arch] staging system generation\n' >&2
+gen_dst="$rootfs/usr/hod/system/generations/$gen_number"
+mkdir -p "$gen_dst"
+cp -a "$gen_dir"/* "$gen_dst"/
+
+rm -f "$rootfs/usr/hod/system/current"
+ln -s "generations/$gen_number" "$rootfs/usr/hod/system/current"
+
+rewrite_count=0
+while IFS= read -r -d '' link; do
+  target=$(readlink "$link")
+  if [[ "$target" == "$host_store_root"* ]]; then
+    new_target="${image_store}${target#"$host_store_root"}"
+    rm -f "$link"
+    ln -s "$new_target" "$link"
+    rewrite_count=$((rewrite_count + 1))
+  fi
+done < <(find "$rootfs/usr/hod/system" -type l -print0)
+
+printf '[hod-arch] rewrote %d symlinks to image paths\n' "$rewrite_count" >&2
+
+cat > "$rootfs/etc/profile.d/hod.sh" << 'ENVEOF'
+# Generated by hod-arch-build.
+HOD_SYSTEM_CURRENT=/usr/hod/system/current
+for _hod_pkg in "$HOD_SYSTEM_CURRENT"/pkgs/*; do
+  if [ -d "$_hod_pkg/bin" ]; then
+    PATH="$_hod_pkg/bin${PATH:+:$PATH}"
+  fi
+  if [ -d "$_hod_pkg/share/man" ]; then
+    MANPATH="$_hod_pkg/share/man${MANPATH:+:$MANPATH}"
+  fi
+  if [ -d "$_hod_pkg/share" ]; then
+    XDG_DATA_DIRS="$_hod_pkg/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+  fi
+done
+export PATH MANPATH XDG_DATA_DIRS HOD_SYSTEM_CURRENT
+unset _hod_pkg
+ENVEOF
+
+unit_count=0
+for pkg_link in "$rootfs/usr/hod/system/generations/$gen_number/pkgs"/*; do
+  [[ -L "$pkg_link" ]] || continue
+  store_rel=$(readlink "$pkg_link")
+  actual_pkg="$rootfs$store_rel"
+  unit_dir="$actual_pkg/lib/systemd/system"
+  if [[ -d "$unit_dir" ]]; then
+    for unit in "$unit_dir"/*.service; do
+      [[ -f "$unit" ]] || continue
+      unit_name=$(basename "$unit")
+      cp "$unit" "$rootfs/usr/lib/systemd/system/$unit_name"
+      rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/$unit_name"
+      ln -s "/usr/lib/systemd/system/$unit_name" \
+        "$rootfs/etc/systemd/system/multi-user.target.wants/$unit_name"
+      unit_count=$((unit_count + 1))
+      printf '[hod-arch]   enabled %s\n' "$unit_name" >&2
+    done
+  fi
+done
+printf '[hod-arch] installed %d systemd unit(s)\n' "$unit_count" >&2
+
+# ---------------------------------------------------------------------------
+# 5b. Generate runtime-dep systemd units (seatd, dbus)
+# ---------------------------------------------------------------------------
+# These services are for Hod-built runtime deps that aren't top-level packages.
+# The binaries live in the store at content-hashed paths, so we discover them
+# dynamically after the closure is copied.
+
+seatd_bin=$(find "$rootfs$image_store" -name seatd -type f -path '*/bin/*' 2>/dev/null | head -1)
+if [[ -n "$seatd_bin" ]]; then
+  seatd_img=${seatd_bin#"$rootfs"}
+  cat > "$rootfs/usr/lib/systemd/system/seatd.service" << SEATEOF
+[Unit]
+Description=Seatd seat management daemon
+Before=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=$seatd_img -g video
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+SEATEOF
+  rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/seatd.service"
+  ln -s /usr/lib/systemd/system/seatd.service \
+    "$rootfs/etc/systemd/system/multi-user.target.wants/seatd.service"
+  printf '[hod-arch]   enabled seatd.service (%s)\n' "$seatd_img" >&2
+fi
+
+dbus_bin=$(find "$rootfs$image_store" -name dbus-daemon -type f -path '*/bin/*' 2>/dev/null | head -1)
+if [[ -n "$dbus_bin" ]]; then
+  dbus_img=${dbus_bin#"$rootfs"}
+  dbus_dir=$(dirname "$(dirname "$dbus_bin")")
+  dbus_conf=$(find "$dbus_dir" -name session.conf -path '*/share/dbus-1/*' 2>/dev/null | head -1)
+  if [[ -z "$dbus_conf" ]]; then
+    dbus_conf=$(find "$dbus_dir" -name session.conf 2>/dev/null | head -1)
+  fi
+  dbus_conf_img=${dbus_conf#"$rootfs"}
+
+  mkdir -p "$rootfs/usr/share/dbus-1"
+  if [[ -n "$dbus_conf" && -f "$dbus_conf" ]]; then
+    cp "$dbus_conf" "$rootfs/usr/share/dbus-1/session.conf"
+  fi
+
+  printf '[hod-arch]   dbus-daemon found at %s\n' "$dbus_img" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 5c. COSMIC desktop auto-login
+# ---------------------------------------------------------------------------
+# Auto-login the hod user on tty1 and launch cosmic-session.
+cosmic_session_bin=$(find "$rootfs$image_store" -name cosmic-session -type f -path '*/bin/*' 2>/dev/null | head -1)
+if [[ -n "$cosmic_session_bin" ]]; then
+  cosmic_session_img=${cosmic_session_bin#"$rootfs"}
+
+  # Override getty@tty1 to auto-login hod
+  mkdir -p "$rootfs/etc/systemd/system/getty@tty1.service.d"
+  cat > "$rootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'AUTOEOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin hod --noclear %I $TERM
+AUTOEOF
+
+  # .bash_profile for hod user: launch cosmic-session when on tty1
+  cat > "$rootfs/home/hod/.bash_profile" << 'BPEOF'
+# Source profile
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Auto-launch COSMIC desktop on tty1
+# Build LD_LIBRARY_PATH only inside the cosmic-session launch
+# to avoid poisoning system binaries with Hod-built glibc.
+if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export XDG_SESSION_TYPE=wayland
+  mkdir -p "$XDG_RUNTIME_DIR"
+  _HOD_LD=""
+  for _hod_gl in \
+    /usr/hod/store/staging/*/*/lib/libEGL.so.1 \
+    /usr/hod/store/staging/*/*/lib/libGLdispatch.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgbm.so.1 \
+    /usr/hod/store/staging/*/*/lib/libEGL_mesa.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgallium-*.so \
+    /usr/hod/store/staging/*/*/lib/libwayland-client.so.0 \
+    /usr/hod/store/staging/*/*/lib/libwayland-cursor.so.0 \
+    /usr/hod/store/staging/*/*/lib/libwayland-egl.so.1 \
+    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0; do
+    [ -e "$_hod_gl" ] || continue
+    _hod_lib=$(dirname "$_hod_gl")
+    case ":$_HOD_LD:" in
+      *:"$_hod_lib":*) ;;
+      *) _HOD_LD="$_hod_lib${_HOD_LD:+:$_HOD_LD}" ;;
+    esac
+  done
+  # Do not append /usr/lib here: LD_LIBRARY_PATH takes precedence over
+  # Hod-patched RUNPATH entries and can make Hod binaries load Arch libs.
+  unset _hod_gl _hod_lib
+  _HOD_DRI=""
+  for _hod_d in /usr/hod/store/staging/*/*/lib/dri; do
+    [ -d "$_hod_d" ] || continue
+    _HOD_DRI="$_hod_d${_HOD_DRI:+:$_HOD_DRI}"
+  done
+  unset _hod_d
+  _HOD_GBM=""
+  for _hod_g in /usr/hod/store/staging/*/*/lib/gbm; do
+    [ -d "$_hod_g" ] || continue
+    _HOD_GBM="$_hod_g${_HOD_GBM:+:$_HOD_GBM}"
+  done
+  unset _hod_g
+  _HOD_EGL=""
+  for _hod_e in /usr/hod/store/staging/*/*/share/glvnd/egl_vendor.d; do
+    [ -d "$_hod_e" ] || continue
+    _HOD_EGL="$_hod_e${_HOD_EGL:+:$_HOD_EGL}"
+  done
+  unset _hod_e
+  _HOD_XKB=""
+  for _hod_x in /usr/hod/store/staging/*/*/share/X11/xkb; do
+    [ -d "$_hod_x" ] || continue
+    _HOD_XKB="$_hod_x"
+    break
+  done
+  unset _hod_x
+  _HOD_DATA=""
+  for _hod_s in /usr/hod/store/staging/*/*/share; do
+    [ -d "$_hod_s" ] || continue
+    _HOD_DATA="$_hod_s${_HOD_DATA:+:$_HOD_DATA}"
+  done
+  unset _hod_s
+  exec env \
+    LD_LIBRARY_PATH="$_HOD_LD" \
+    LIBGL_DRIVERS_PATH="$_HOD_DRI" \
+    GBM_BACKENDS_PATH="$_HOD_GBM" \
+    __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
+    XKB_CONFIG_ROOT="$_HOD_XKB" \
+    XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
+    MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    WGPU_BACKEND=gl \
+    GSK_RENDERER=cairo \
+    cosmic-session
+  unset _HOD_LD _HOD_DRI _HOD_GBM _HOD_EGL _HOD_XKB _HOD_DATA
+fi
+BPEOF
+  chown 1000:1000 "$rootfs/home/hod/.bash_profile" 2>/dev/null || true
+
+  printf '[hod-arch]   configured COSMIC auto-login (tty1 -> cosmic-session)\n' >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Generate initramfs + set root password
+# ---------------------------------------------------------------------------
+if [[ "$skip_rootfs" == false ]]; then
+  printf '[hod-arch] generating initramfs\n' >&2
+
+  cat > "$rootfs/etc/mkinitcpio.conf" << 'MKEOF'
+MODULES=(virtio virtio_blk virtio_net virtio_pci drm drm_kms_helper virtio_gpu ext4)
+BINARIES=()
+FILES=()
+HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)
+MKEOF
+
+  podman run --rm \
+    --dns 8.8.8.8 --dns 1.1.1.1 \
+    -v "$(realpath "$rootfs")":/mnt:Z \
+    -e ROOT_PW="$root_password" \
+    archlinux:latest \
+    bash -c '
+      set -euo pipefail
+
+      # Install mkinitcpio in the container (needed to run it)
+      pacman -Sy --noconfirm mkinitcpio >/dev/null 2>&1
+
+      # Set root password via shadow file (no chroot needed)
+      hash=$(printf "%s" "$ROOT_PW" | openssl passwd -6 -stdin)
+      sed -i "s|^root:[^:]*|root:${hash}|" /mnt/etc/shadow
+
+      # Generate initramfs — symlink kernel modules into container paths
+      # so mkinitcpio can find them without chrooting
+      kver=$(ls /mnt/usr/lib/modules/ | head -1)
+      mkdir -p /usr/lib/modules /boot
+      ln -sf "/mnt/usr/lib/modules/$kver" "/usr/lib/modules/$kver"
+      ln -sf /mnt/boot/vmlinuz-linux /boot/vmlinuz-linux
+      mkinitcpio -k "$kver" -g /mnt/boot/initramfs-linux.img \
+        -c /mnt/etc/mkinitcpio.conf
+    '
+fi
+
+if [[ ! -f "$state_dir/vmlinuz" ]] || [[ "$skip_rootfs" == false ]]; then
+  printf '[hod-arch] extracting kernel and initramfs\n' >&2
+  cp "$rootfs/boot/vmlinuz-linux" "$state_dir/vmlinuz"
+  cp "$rootfs/boot/initramfs-linux.img" "$state_dir/initramfs.img"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Create disk image (bare ext4, no partition table)
+# ---------------------------------------------------------------------------
+printf '[hod-arch] creating disk image\n' >&2
+
+raw_image=$state_dir/hod-arch.raw
+disk_image=$state_dir/hod-arch.qcow2
+mount_point=$state_dir/mnt
+
+rm -f "$raw_image" "$disk_image"
+truncate -s "$disk_size" "$raw_image"
+
+printf '[hod-arch] formatting ext4 (%s)\n' "$disk_size" >&2
+mkfs.ext4 -F -L hod "$raw_image" >/dev/null
+
+mkdir -p "$mount_point"
+sudo mount -o loop "$raw_image" "$mount_point"
+
+printf '[hod-arch] copying rootfs into disk image\n' >&2
+sudo mkdir -p "$mount_point/dev"
+sudo tar -C "$rootfs" -cf - --exclude='./dev/*' --owner=0 --group=0 . | sudo tar -C "$mount_point" -xf -
+
+# Fix ownership for hod user's home directory (remapped to root by --owner=0)
+sudo chown -R 1000:1000 "$mount_point/home/hod"
+
+sudo umount "$mount_point"
+rmdir "$mount_point" 2>/dev/null || true
+
+printf '[hod-arch] converting to qcow2\n' >&2
+qemu-img convert -f raw -O qcow2 "$raw_image" "$disk_image"
+rm -f "$raw_image"
+
+printf '[hod-arch] done!\n' >&2
+printf '  disk:   %s (%s)\n' "$disk_image" "$(du -sh "$disk_image" | cut -f1)" >&2
+printf '  kernel: %s\n' "$state_dir/vmlinuz" >&2
+printf '  initrd: %s\n' "$state_dir/initramfs.img" >&2
+printf '  run:    scripts/hod-arch-run\n' >&2

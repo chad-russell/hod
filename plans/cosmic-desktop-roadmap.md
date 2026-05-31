@@ -1,12 +1,17 @@
 # COSMIC Desktop Environment Roadmap
 
-**Status:** Active
+**Status:** Active sub-plan
 **Date:** 2026-05-19
 **Current authority:** This document; implementation will live in `recipes/native/mesa/`, `recipes/native/cosmic/`, etc.
 
 ## Goal
 
 Build the COSMIC desktop environment from source using Hod, and produce a bootable VM where the entire COSMIC desktop runs from the hod content-addressed store.
+
+**Current note:** COSMIC is now the full desktop phase of
+`minimal-hod-vm-roadmap.md`. Start with that roadmap when working on VM boot,
+rootfs, base distro boundaries, and image harnessing. Use this document for the
+COSMIC-specific dependency and component build plan.
 
 ## End State
 

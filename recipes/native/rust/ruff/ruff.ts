@@ -24,7 +24,8 @@ const recipe = await cargoBuild({
   },
   preBuildScript: `
 # The default Linux build enables tikv-jemallocator, whose configure test
-# binaries do not run under Hod's current sandbox. Use the system allocator.
+# binaries do not run under Hod's current sandbox. Use Rust's platform default
+# allocator for now; this still resolves to Hod's glibc via runtime_deps.
 sed -i '/tikv-jemallocator/d' crates/ruff/Cargo.toml
 sed -i '15,28d' crates/ruff/src/main.rs
 `,

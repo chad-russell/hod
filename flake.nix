@@ -45,6 +45,19 @@
             git
             curl
 
+            # VM harness tooling used by scripts/hod-vm-*.
+            qemu
+            cdrkit
+            OVMF
+
+            # Bootc image builder tooling used by scripts/hod-bootc-*.
+            just
+            podman
+            skopeo
+            buildah
+            bootc
+            ostree
+
             # TypeScript recipe SDK.
             bun
           ];

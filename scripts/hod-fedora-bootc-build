@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-fedora-bootc-build [options]
+
+Build a derived Fedora bootc image containing a baked Hod store + system
+profile generation.
+
+Steps:
+  1. Pull or reuse the Fedora bootc base image.
+  2. Build a Hod system profile and materialize a generation.
+  3. Copy the closure into a staging tree.
+  4. Rewrite symlinks so they point at /usr/hod/store/... inside the image.
+  5. Generate a derived Containerfile (with user/SSH setup).
+  6. Build the derived OCI image with rootless podman.
+
+Options:
+  --profile <path>       Hod system profile .ts file (default: profiles/system-base.ts)
+  --base-tag <tag>       Tag for the Fedora base image (default: fedora-bootc:41)
+  --image-tag <tag>      Tag for the derived image (default: hod-fedora-bootc:latest)
+  --ssh-pubkey <path>    SSH public key to authorize for root (default: first id_*.pub)
+  --skip-base-pull       Skip pulling the base image (reuse existing)
+  --skip-profile-build   Skip building/activating the Hod system profile
+  --state-dir <dir>      Build state directory (default: .hod-vm/fedora)
+  --hod-bin <path>       Path to hod binary (default: target/debug/hod or hod)
+  -h, --help             Show this help
+
+Examples:
+  # Full build from scratch
+  scripts/hod-fedora-bootc-build
+
+  # Rebuild after profile change
+  scripts/hod-fedora-bootc-build --skip-base-pull
+USAGE
+}
+
+profile_path=""
+base_tag="fedora-bootc:41"
+image_tag="hod-fedora-bootc:latest"
+skip_base_pull=false
+skip_profile_build=false
+state_dir=""
+hod_bin_override=""
+ssh_pubkey=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)       profile_path="$2"; shift 2 ;;
+    --base-tag)      base_tag="$2"; shift 2 ;;
+    --image-tag)     image_tag="$2"; shift 2 ;;
+    --ssh-pubkey)    ssh_pubkey="$2"; shift 2 ;;
+    --skip-base-pull)     skip_base_pull=true; shift ;;
+    --skip-profile-build) skip_profile_build=true; shift ;;
+    --state-dir)     state_dir="$2"; shift 2 ;;
+    --hod-bin)       hod_bin_override="$2"; shift 2 ;;
+    -h|--help)       usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+resolve_hod() {
+  if [[ -n "${hod_bin_override:-}" ]]; then
+    realpath "$hod_bin_override"
+  elif [[ -x target/debug/hod ]]; then
+    realpath target/debug/hod
+  else
+    command -v hod
+  fi
+}
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'hod-fedora-bootc-build: missing %s; run inside `nix develop --accept-flake-config`\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need podman
+
+hod_bin=$(resolve_hod)
+state_dir=${state_dir:-.hod-vm/fedora}
+profile_path=${profile_path:-profiles/system-base.ts}
+staging_dir=$state_dir/staging
+store_staging=$staging_dir/hod-store
+system_staging=$staging_dir/hod-system
+tmpfiles_staging=$staging_dir/tmpfiles
+setup_staging=$staging_dir/setup
+containerfile=$staging_dir/Containerfile
+image_store=/usr/hod/store
+
+mkdir -p "$state_dir" "$staging_dir"
+
+host_store_root=$("$hod_bin" store-root)
+
+ssh_pubkey_text=""
+if [[ -n "$ssh_pubkey" && -f "$ssh_pubkey" ]]; then
+  ssh_pubkey_text=$(<"$ssh_pubkey")
+else
+  for candidate in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    if [[ -f "$candidate" ]]; then
+      ssh_pubkey_text=$(<"$candidate")
+      break
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Fedora bootc base image
+# ---------------------------------------------------------------------------
+base_ref="quay.io/fedora/fedora-bootc:41"
+
+if [[ "$skip_base_pull" == false ]]; then
+  printf '[hod-fedora] pulling %s\n' "$base_ref" >&2
+  podman pull --dns 8.8.8.8 --dns 1.1.1.1 "$base_ref" || \
+    podman pull "$base_ref"
+fi
+
+# Tag it locally if not already tagged
+if ! podman image exists "$base_tag" 2>/dev/null; then
+  podman tag "$base_ref" "$base_tag"
+fi
+
+printf '[hod-fedora] base image: %s\n' "$base_tag" >&2
+
+# ---------------------------------------------------------------------------
+# 2. Build and activate Hod system profile
+# ---------------------------------------------------------------------------
+if [[ "$skip_profile_build" == false ]]; then
+  if [[ ! -f "$profile_path" ]]; then
+    printf 'hod-fedora-bootc-build: profile not found: %s\n' "$profile_path" >&2
+    exit 1
+  fi
+
+  printf '[hod-fedora] building system profile from %s\n' "$profile_path" >&2
+  "$hod_bin" system activate "$profile_path" --quiet
+  printf '[hod-fedora] system profile activated\n' >&2
+else
+  printf '[hod-fedora] skipping profile build (--skip-profile-build)\n' >&2
+fi
+
+gen_number=$("$hod_bin" system list 2>/dev/null | awk '/^\*/ { print $2 }' | head -1)
+if [[ -z "$gen_number" ]]; then
+  printf 'hod-fedora-bootc-build: no active system generation; run hod system activate first\n' >&2
+  exit 1
+fi
+
+hod_sys_dir=${HOD_SYSTEM_DIR:-}
+if [[ -z "$hod_sys_dir" ]]; then
+  xdg=${XDG_DATA_HOME:-$HOME/.local/share}
+  hod_sys_dir=$xdg/hod/system
+fi
+gen_dir=$hod_sys_dir/generations/$gen_number
+
+if [[ ! -d "$gen_dir" ]]; then
+  printf 'hod-fedora-bootc-build: generation directory not found: %s\n' "$gen_dir" >&2
+  exit 1
+fi
+
+printf '[hod-fedora] using generation %s at %s\n' "$gen_number" "$gen_dir" >&2
+
+# ---------------------------------------------------------------------------
+# 3. Collect closure hashes from the generation metadata
+# ---------------------------------------------------------------------------
+metadata=$gen_dir/metadata.json
+if [[ ! -f "$metadata" ]]; then
+  printf 'hod-fedora-bootc-build: metadata.json not found in generation %s\n' "$gen_number" >&2
+  exit 1
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  recipe_hashes=$(jq -r '.recipe_hashes[]' "$metadata")
+else
+  recipe_hashes=$(python3 -c "import json,sys; [print(h) for h in json.load(open('$metadata'))['recipe_hashes']]")
+fi
+
+if [[ -z "$recipe_hashes" ]]; then
+  printf 'hod-fedora-bootc-build: no recipe hashes in generation metadata\n' >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Copy closure into staging
+# ---------------------------------------------------------------------------
+printf '[hod-fedora] staging closure into %s\n' "$store_staging" >&2
+rm -rf "$store_staging" "$system_staging" "$tmpfiles_staging" "$setup_staging"
+mkdir -p "$store_staging" "$system_staging" "$tmpfiles_staging" "$setup_staging"
+
+for hash in $recipe_hashes; do
+  printf '[hod-fedora] copying closure for %s\n' "${hash:0:12}" >&2
+  "$hod_bin" copy-closure "$hash" --to "$store_staging" --force --quiet
+done
+
+# ---------------------------------------------------------------------------
+# 5. Copy system generation and rewrite symlinks
+# ---------------------------------------------------------------------------
+printf '[hod-fedora] staging system generation\n' >&2
+
+gen_dst=$system_staging/generations/$gen_number
+mkdir -p "$gen_dst"
+cp -a "$gen_dir"/* "$gen_dst"/
+
+ln -sf "generations/$gen_number" "$system_staging/current"
+
+rewrite_count=0
+while IFS= read -r -d '' link; do
+  target=$(readlink "$link")
+  if [[ "$target" == "$host_store_root"* ]]; then
+    new_target="${image_store}${target#"$host_store_root"}"
+    rm -f "$link"
+    ln -s "$new_target" "$link"
+    rewrite_count=$((rewrite_count + 1))
+  fi
+done < <(find "$system_staging" -type l -print0)
+
+printf '[hod-fedora] rewrote %d symlinks to image paths\n' "$rewrite_count" >&2
+
+# ---------------------------------------------------------------------------
+# 6. tmpfiles.d config
+# ---------------------------------------------------------------------------
+cat > "$tmpfiles_staging/hod.conf" <<'EOF'
+# Hod runtime directories
+d /var/hod 0755 root root -
+d /var/hod/system 0755 root root -
+L /var/hod/store - - - - /usr/hod/store
+EOF
+
+# ---------------------------------------------------------------------------
+# 7. Setup script
+# ---------------------------------------------------------------------------
+cat > "$setup_staging/hod-setup.sh" <<'SETUPEOF'
+#!/bin/bash
+set -euo pipefail
+
+gen=/usr/hod/system/current
+if [ -d "$gen/pkgs" ]; then
+  {
+    printf '# Generated by hod-fedora-bootc-build.\n'
+    printf 'HOD_SYSTEM_CURRENT=/usr/hod/system/current\n'
+    printf 'for _hod_pkg in "$HOD_SYSTEM_CURRENT"/pkgs/*; do\n'
+    printf '  if [ -d "$_hod_pkg/bin" ]; then\n'
+    printf '    PATH="$_hod_pkg/bin${PATH:+:$PATH}"\n'
+    printf '  fi\n'
+    printf '  if [ -d "$_hod_pkg/share/man" ]; then\n'
+    printf '    MANPATH="$_hod_pkg/share/man${MANPATH:+:$MANPATH}"\n'
+    printf '  fi\n'
+    printf '  if [ -d "$_hod_pkg/share" ]; then\n'
+    printf '    XDG_DATA_DIRS="$_hod_pkg/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"\n'
+    printf '  fi\n'
+    printf 'done\n'
+    printf 'export PATH MANPATH XDG_DATA_DIRS HOD_SYSTEM_CURRENT\n'
+    printf 'unset _hod_pkg\n'
+  } > /etc/profile.d/hod.sh
+fi
+
+# Install Hod-owned systemd units from packages.
+# Each package may ship $pkg/lib/systemd/system/<name>.service
+# which gets installed into /usr/lib/systemd/system/.
+unit_count=0
+if [ -d "$gen/pkgs" ]; then
+  for pkg in "$gen"/pkgs/*; do
+    unit_dir="$pkg/lib/systemd/system"
+    if [ -d "$unit_dir" ]; then
+      for unit in "$unit_dir"/*.service; do
+        [ -f "$unit" ] || continue
+        unit_name=$(basename "$unit")
+        cp "$unit" "/usr/lib/systemd/system/$unit_name"
+        systemctl enable "$unit_name" || true
+        unit_count=$((unit_count + 1))
+      done
+    fi
+  done
+fi
+echo "hod-setup: installed $unit_count systemd unit(s)" || true
+
+systemd-tmpfiles --create --prefix=/var/hod || true
+SETUPEOF
+chmod +x "$setup_staging/hod-setup.sh"
+
+authorized_keys_line=""
+if [[ -n "$ssh_pubkey_text" ]]; then
+  authorized_keys_line="$ssh_pubkey_text"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Generate Containerfile
+# ---------------------------------------------------------------------------
+{
+  printf 'FROM %s\n\n' "$base_tag"
+
+  printf 'COPY hod-store/ %s/\n\n' "$image_store"
+
+  printf 'COPY hod-system/ /usr/hod/system/\n\n'
+
+  printf 'COPY tmpfiles/hod.conf /usr/lib/tmpfiles.d/hod.conf\n\n'
+
+  printf 'COPY setup/hod-setup.sh /usr/local/bin/hod-setup.sh\n'
+  printf 'RUN /usr/local/bin/hod-setup.sh\n\n'
+
+  if [[ -n "$authorized_keys_line" ]]; then
+    printf 'RUN mkdir -p /var/roothome/.ssh && chmod 700 /var/roothome/.ssh && echo "%s" > /var/roothome/.ssh/authorized_keys && chmod 600 /var/roothome/.ssh/authorized_keys\n\n' "$authorized_keys_line"
+  fi
+
+  printf 'RUN systemctl enable sshd.service\n\n'
+
+  printf 'RUN bootc container lint\n'
+} > "$containerfile"
+
+printf '[hod-fedora] generated Containerfile:\n' >&2
+sed 's/^/  /' "$containerfile" >&2
+
+# ---------------------------------------------------------------------------
+# 9. Build the derived image
+# ---------------------------------------------------------------------------
+printf '[hod-fedora] building derived image %s\n' "$image_tag" >&2
+podman build \
+  --dns 8.8.8.8 --dns 1.1.1.1 \
+  -f "$containerfile" -t "$image_tag" "$staging_dir"
+
+printf '[hod-fedora] done\n' >&2
+printf '  image: %s\n' "$image_tag" >&2
+printf '  run:   scripts/hod-fedora-bootc-run\n' >&2

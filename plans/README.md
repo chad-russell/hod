@@ -1,58 +1,86 @@
 # Plans Index
 
-`plans/` contains planning notes, design history, investigations, and handoff docs.
+This directory holds active planning notes and recently-implemented design
+records. Implemented or historical plans are deleted as their content gets
+absorbed into `docs/`, source comments, or current code; this index stays
+small.
 
-**Do not treat this directory as the default source of truth.** Read `../docs/README.md` first, then use this file to decide whether a plan is still active.
+**Read `../docs/README.md` first** for current behavior. Use this index to
+find what's currently being planned or recently shipped.
 
 ## Status guide
 
-- **Active** — still a good place to continue work.
-- **Implemented** — useful historical design context; current authority is elsewhere.
-- **Superseded** — replaced by a newer design or implementation.
-- **Historical** — investigation log or handoff note; useful for archaeology only.
+- **Active** — work is in flight or queued.
+- **Implemented** — landed; kept here as design rationale that's not yet
+  fully captured in `docs/` or code comments. Will be deleted once that
+  capture is complete.
 
-## Plan status
+## Top priority
+
+**`minimal-hod-vm-roadmap.md`** — Active. The current product direction:
+build a bootable QEMU VM from a minimal Arch seed with direct kernel boot,
+where Hod owns the content-addressed application/service/desktop layer
+baked into the OS image.
+
+The next concrete tasks under this roadmap are tracked as their own plans:
+
+1. **`alpine-vm-validation.md`** — Implemented. Validated locally-built
+   profiles against a fresh Alpine VM via the new `tests/vm/` framework.
+   See `tests/vm/README.md`.
+2. **`service-boundary.md`** — Implemented. **Architecture record** for
+   the Arch seed + direct kernel boot approach.
+3. **`hod-arch-os.md`** — Implemented. Arch seed VM with all acceptance
+   criteria met.
+4. **`future-tracks.md`** — Active. Backlog of well-scoped tracks
+   (graphical session, recipe ergonomics cleanup, closure distribution
+   UX, trust-base reduction, plus the existing bindgen plan). Promote to
+   real plans when ready to start.
+
+## Service-boundary sub-plans
+
+`service-boundary.md` decomposes into focused sub-plans. All are now
+implemented.
+
+| # | File | Status | Notes |
+|---|------|--------|-------|
+| 1 | `hod-system-profile.md` | Implemented | First-class `hod system` generation/list/rollback/pin CLI surface. |
+| 2 | `bootc-image-builder.md` | Implemented | Fedora bootc-derived image with baked Hod store + system profile. Boots in QEMU. |
+| 3 | `hod-arch-os.md` | Implemented | Arch seed + direct kernel boot VM. Primary VM target. All acceptance criteria met. |
+| 4 | `heartbeat-service-poc.md` | Implemented | Trivial Hod service running from the baked layer as a systemd unit. |
+| 5 | `etc-generation.md` | Rescoped | Hod renders systemd units/drop-ins via the build script. |
+| later | `cosmic-on-hod-vm.md` | Future | COSMIC desktop on the Arch VM. Out of scope for service-boundary. |
+
+## Other active plans
 
 | File | Status | Notes |
 |------|--------|-------|
-| `copy-closure-design.md` | Implemented | Current behavior is in `docs/closure-transfer.md` and `src/closure.rs`. |
-| `bindgen-infrastructure.md` | Active | General, hermetic bindgen support for sandboxed Rust builds. Needed to unblock upstream `bindgen` users like `xdg-desktop-portal-cosmic`. |
-| `end-user-runtime.md` | Superseded | Early runtime/profile design; current implementation uses TS profiles, `src/run.rs`, and `src/profile.rs`. |
-| `geany-wrapper-handoff.md` | Historical / resolved | Records the Geany portability investigation and fix path. |
-| `go-language-support.md` | Implemented | Go helper/toolchain work now exists in `recipes/helpers/go.ts` and `recipes/native/go/`. |
-| `thinkpad-hod-migration.md` | Active | Plan to migrate ThinkPad user packages from Nix/Home Manager to Hod profiles with remote build/deploy workflows. |
-| `cosmic-desktop-roadmap.md` | **Active — top priority** | Build COSMIC DE from source (Mesa → C deps → Rust apps → bootable VM). See below. |
-| `gtk-gui-roadmap.md` | Superseded by `cosmic-desktop-roadmap.md` | The GTK3/GTK4 GUI stack is complete and working. COSMIC is the new desktop frontier. |
-| `merge-rpath-bootstrap-segment.md` | Implemented | Current authority is `src/packed.rs` and `docs/relocatable-binaries-guide.md`. |
-| `profiles.md` | Implemented | Current behavior is documented in `docs/profiles.md`. |
-| `rebuild-after-shellbuild-redesign.md` | Historical | Investigation log for the shellBuild env redesign and rebuild/GC validation. |
-| `standardize-strip-in-profiles.md` | Active cleanup candidate | Small cleanup with clear scope. |
-| `transfer-to-laptop.md` | Historical / completed | Pre-`hod copy-closure` transfer notes; superseded by current closure tooling. |
+| `cosmic-desktop-roadmap.md` | Active sub-plan | Full COSMIC component build plan. Pairs with `cosmic-on-hod-vm.md` for the desktop phase of `minimal-hod-vm-roadmap.md`. |
+| `bindgen-infrastructure.md` | Active | Hermetic bindgen for the sandbox. Unblocks `xdg-desktop-portal-cosmic` and other crates that run bindgen at build time. |
+| `standardize-strip-in-profiles.md` | Active cleanup candidate | Small, scoped cleanup for shared-library stripping. |
 
-## Best places to go next
+## Recently implemented (kept for design rationale)
 
-The **top priority** is the COSMIC desktop environment roadmap (`cosmic-desktop-roadmap.md`).
-This plan has five phases:
+| File | Status | Notes |
+|------|--------|-------|
+| `hod-arch-os.md` | Implemented | Arch seed + direct kernel boot VM. Primary VM target. All acceptance criteria met. |
+| `service-boundary.md` | Implemented | Architecture record for Arch seed + direct kernel boot approach. |
+| `hod-system-profile.md` | Implemented | Adds `hod system` generation/list/rollback/pin primitives and `docs/system-profiles.md`. |
+| `alpine-vm-validation.md` | Implemented | Validation pass + new VM test framework under `tests/vm/`. See `tests/vm/README.md`. K2 ld-linux symlink is now automated by the deploy script. |
+| `real-store-in-sandbox.md` | Implemented | Sandbox layout now mirrors the host store (`/store/staging/<shard>/<hex>/`). Documents why and the invariant. |
+| `transitive-runtime-closure.md` | Implemented | Sandbox bind-mounts include the transitive runtime closure of direct deps. Companion to the layout fix; together they fix the K1 cluster. |
 
-1. **Mesa / GPU graphics stack** — LLVM → Mesa (EGL/GLES), enabling GPU rendering
-2. **COSMIC C library dependencies** — systemd-libs, libinput, libseat, pipewire, etc.
-3. **Cargo vendoring & Rust toolkit** — reproducible offline builds of COSMIC Rust crates
-4. **COSMIC desktop components** — compositor, panel, session, settings, files, edit, term, launcher
-5. **Bootable VM** — Arch-based QEMU image running COSMIC from the hod store
+Implemented plans are deleted once the invariants they document are fully
+absorbed into `docs/` or source comments.
 
-See `cosmic-desktop-roadmap.md` for the full plan with per-phase tasks and exit criteria.
+## Plan-file conventions
 
-Secondary priorities:
+When adding or updating a plan:
 
-- **Closure distribution UX** — `copy-closure --from`, cache workflows
-- **Bootstrap minimization** — reduce the irreducible seed
-- **Low-risk cleanup** — finish strip/profile cleanup (`standardize-strip-in-profiles.md`)
-
-## Plan-file best practice
-
-When updating or adding a plan:
-
-- include **Status**, **Date**, and **Current authority** near the top
-- say whether the doc is active, implemented, superseded, or historical
-- link to the current implementation/docs
-- avoid mixing current behavior and speculation without labeling them
+- Include **Status**, **Owner**, and either **Depends on** or **Current
+  authority** near the top.
+- Active plans should say what done looks like (acceptance criteria).
+- Implemented plans should point at the current authority (docs/source).
+- Once an implemented plan's content lives in current docs/source, delete
+  the plan file rather than letting it accumulate.
+- New tracks that aren't yet ready for full planning go in
+  `future-tracks.md` as a short writeup, not in their own file.

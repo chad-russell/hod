@@ -22,6 +22,15 @@ const recipe = await process({
 
 ${preamble}
 
+# bash may be a wrapper script (when bash has runtime_deps that trigger
+# wrapper generation) or a raw ELF. Detect which and pick the file we
+# inspect for ELF/linker checks accordingly.
+if [ -f /deps/bash/bin/.bash-wrapped ]; then
+  BASH_ELF=/deps/bash/bin/.bash-wrapped
+else
+  BASH_ELF=/deps/bash/bin/bash
+fi
+
 # Test 1: Run bash --version to confirm it works
 /deps/bash/bin/bash --version > $OUT/version.txt 2>&1
 
@@ -29,17 +38,17 @@ ${preamble}
 echo 'echo "hello from hermetic bash"' | /deps/bash/bin/bash > $OUT/hello.txt 2>&1
 
 # Test 3: Check ELF type (should be dynamically linked)
-ELF_MAGIC=$(/deps/seed/bin/busybox od -A n -t x1 -N 4 /deps/bash/bin/bash | tr -d ' ')
+ELF_MAGIC=$(/deps/seed/bin/busybox od -A n -t x1 -N 4 "$BASH_ELF" | tr -d ' ')
 if [ "$ELF_MAGIC" != "7f454c46" ]; then
-  echo "ERROR: not a valid ELF binary" >&2
+  echo "ERROR: not a valid ELF binary at $BASH_ELF" >&2
   exit 1
 fi
 
 # Test 4: Check it links to glibc (libc.so.6)
-/deps/seed/bin/busybox strings /deps/bash/bin/bash | grep -q "libc.so.6" && echo "Dynamically linked to libc.so.6" >> $OUT/checks.txt || echo "WARNING: no libc.so.6 reference" >> $OUT/checks.txt
+/deps/seed/bin/busybox strings "$BASH_ELF" | grep -q "libc.so.6" && echo "Dynamically linked to libc.so.6" >> $OUT/checks.txt || echo "WARNING: no libc.so.6 reference" >> $OUT/checks.txt
 
 # Test 5: Check it is NOT linked to musl
-if /deps/seed/bin/busybox strings /deps/bash/bin/bash | grep -q "ld-musl"; then
+if /deps/seed/bin/busybox strings "$BASH_ELF" | grep -q "ld-musl"; then
   echo "ERROR: bash is linked to musl!" >> $OUT/checks.txt
   exit 1
 else

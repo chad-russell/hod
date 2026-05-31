@@ -24,6 +24,9 @@ recipes/sources/
 result
 result-*
 
+# Local VM images and cloud-init state
+.hod-vm/
+
 # Logs and temporary files
 *.log
 *.tmp

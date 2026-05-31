@@ -890,6 +890,133 @@ fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
 // unsandboxed execution on other platforms
 // ---------------------------------------------------------------------------
 
+/// Compute the transitive runtime closure of a set of direct dep outputs.
+///
+/// For each `(direct_dep_recipe_hash, direct_dep_output_hash)` pair, walks
+/// the dep recipe's `runtime_deps`, resolving each name to a recipe hash via
+/// the dep's own `dependencies:` list, and looking up that recipe's built
+/// output. Recurses transitively. Returns the set of *transitive* output
+/// hashes — direct deps are excluded from the result, since the caller has
+/// already mounted them.
+///
+/// Walks only `runtime_deps` edges (Nix-style runtime closure). Build-time
+/// deps that are not declared as runtime_deps are not propagated, matching
+/// the design of `src/closure.rs::resolve_closure`.
+///
+/// Recipes that are missing from the store, missing built outputs, or are
+/// not Process recipes contribute nothing to the closure (they have no
+/// `runtime_deps` field). A missing or stale entry produces a warning to
+/// stderr but is not a hard error — the build proceeds with whatever the
+/// closure resolved.
+fn collect_runtime_closure(
+    store: &Store,
+    direct_deps: &[(Hash, Hash)],
+) -> Vec<Hash> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut visited_recipes: HashSet<Hash> = HashSet::new();
+    let mut transitive_outputs: Vec<Hash> = Vec::new();
+    let mut transitive_seen: HashSet<Hash> = HashSet::new();
+    let direct_outputs: HashSet<Hash> =
+        direct_deps.iter().map(|(_, out)| *out).collect();
+
+    // Seed the worklist from each direct dep's recipe. We do NOT add the
+    // direct dep's own output to transitive_outputs, even though we visit
+    // its recipe to read its runtime_deps.
+    let mut worklist: VecDeque<Hash> =
+        direct_deps.iter().map(|(rh, _)| *rh).collect();
+
+    while let Some(recipe_hash) = worklist.pop_front() {
+        if !visited_recipes.insert(recipe_hash) {
+            continue;
+        }
+
+        let recipe_bytes = match store.get_recipe(&recipe_hash) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "[hod] warning: cannot read recipe {} for closure walk: {e}",
+                    hash_to_hex(&recipe_hash),
+                );
+                continue;
+            }
+        };
+        let recipe = match Recipe::decode(&recipe_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "[hod] warning: cannot decode recipe {} for closure walk: {e}",
+                    hash_to_hex(&recipe_hash),
+                );
+                continue;
+            }
+        };
+
+        let p = match &recipe {
+            Recipe::Process(p) => p,
+            _ => continue,
+        };
+
+        let runtime_dep_names = match p.runtime_deps.as_ref() {
+            Some(names) => names,
+            None => continue,
+        };
+
+        for rd_name in runtime_dep_names {
+            // Resolve the runtime_dep name against the recipe's own
+            // dependencies list.
+            let dep_recipe_hash = match p
+                .dependencies
+                .iter()
+                .find(|d| d.name == *rd_name)
+            {
+                Some(d) => d.recipe_hash,
+                None => {
+                    eprintln!(
+                        "[hod] warning: runtime_dep '{}' not found in dependencies of {}",
+                        rd_name,
+                        hash_to_hex(&recipe_hash),
+                    );
+                    continue;
+                }
+            };
+
+            // Look up the dep recipe's built output.
+            let dep_output = match store.get_output(&dep_recipe_hash) {
+                Ok(Some(h)) => h,
+                Ok(None) => {
+                    eprintln!(
+                        "[hod] warning: runtime_dep '{}' (recipe {}) has no built output; \
+                         skipping in transitive closure",
+                        rd_name,
+                        hash_to_hex(&dep_recipe_hash),
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[hod] warning: error looking up output for runtime_dep '{}': {e}",
+                        rd_name,
+                    );
+                    continue;
+                }
+            };
+
+            // Add to transitive set if it's not already a direct dep.
+            if !direct_outputs.contains(&dep_output)
+                && transitive_seen.insert(dep_output)
+            {
+                transitive_outputs.push(dep_output);
+            }
+
+            // Recurse: visit the dep's recipe to walk its runtime_deps.
+            worklist.push_back(dep_recipe_hash);
+        }
+    }
+
+    transitive_outputs
+}
+
 /// Build a Process recipe: set up execution environment, run command in sandbox,
 /// capture output.
 ///
@@ -931,10 +1058,21 @@ fn build_process(
     let guest_tmp = PathBuf::from("/tmp");
     let guest_home = PathBuf::from("/homeless-shelter");
 
-    // Build dep mounts — each dep is bind-mounted at /store/<shard>/<hex>/
-    // with a symlink from /deps/<name>/ inside the sandbox. This mirrors the
-    // host store's staging layout, enabling store-relocated binaries to work.
+    // Build dep mounts — each direct dep is bind-mounted at
+    // /store/staging/<shard>/<hex>/ inside the sandbox, with an ergonomic
+    // symlink at /deps/<name>/. This mirrors the host store's staging layout
+    // exactly so store-relocated binaries' RUNPATHs and AT_EXECFN bootstraps
+    // resolve identically in sandbox and on host.
+    //
+    // After the direct deps, we also bind-mount the *transitive runtime
+    // closure* — the runtime_deps of each direct dep, recursively. These are
+    // mounted at canonical store paths only (no /deps/<name>/ alias, to
+    // sidestep name-collision questions). They are needed because relocated
+    // binaries inside one dep can reference other deps' staging shards via
+    // store-relative RUNPATH; without transitive mounting, those references
+    // would resolve to nonexistent paths inside the sandbox.
     let mut dep_mounts: Vec<crate::sandbox::DepMount> = Vec::new();
+    let mut direct_dep_recipe_outputs: Vec<(Hash, Hash)> = Vec::new();
     for (name, output_hash) in &dep_outputs.named {
         if name.starts_with('<') {
             // Skip internal deps like <workdir>, <scaffold>
@@ -944,6 +1082,12 @@ fn build_process(
         canonicalize_mtimes_recursive(&staging_path)?;
         let shard = hash_shard(output_hash);
         let hex = hash_to_hex(output_hash);
+
+        // Capture the direct dep's recipe hash so we can walk its
+        // runtime_deps for the transitive closure.
+        if let Some(dep) = p.dependencies.iter().find(|d| d.name == *name) {
+            direct_dep_recipe_outputs.push((dep.recipe_hash, *output_hash));
+        }
 
         if staging_path.is_dir() {
             dep_mounts.push(crate::sandbox::DepMount {
@@ -964,6 +1108,30 @@ fn build_process(
                 store_hex: hex,
             });
         }
+    }
+
+    // Walk the transitive runtime closure of the direct deps and add each
+    // reachable output to dep_mounts. The synthetic name "<transitive>" marks
+    // these so sandbox.rs skips creating a /deps/<name>/ alias (matching the
+    // existing convention for <workdir>, <scaffold>, etc.).
+    let transitive_outputs = collect_runtime_closure(store, &direct_dep_recipe_outputs);
+    for output_hash in &transitive_outputs {
+        let staging_path = artifact_staging_path(store, output_hash);
+        if !staging_path.is_dir() {
+            // Transitive deps are always Process outputs (they have
+            // runtime_deps), which are directories. If something exotic
+            // shows up here, skip rather than fail.
+            continue;
+        }
+        canonicalize_mtimes_recursive(&staging_path)?;
+        let shard = hash_shard(output_hash);
+        let hex = hash_to_hex(output_hash);
+        dep_mounts.push(crate::sandbox::DepMount {
+            name: "<transitive>".to_string(),
+            host_staging_path: staging_path,
+            store_shard: shard,
+            store_hex: hex,
+        });
     }
 
     // Handle output scaffold — pre-populate the out directory
@@ -1012,10 +1180,10 @@ fn build_process(
         guest_tmp.to_string_lossy().to_string(),
     );
     env.insert("HOME".to_string(), guest_home.to_string_lossy().to_string());
-    env.insert(
-        "HOD_STORE".to_string(),
-        store.root().to_string_lossy().to_string(),
-    );
+    // The sandbox is itself a real Hod store, rooted at /store/. Build
+    // scripts that consult $HOD_STORE see the in-sandbox store root, not
+    // the host's path (which would be meaningless inside the chroot).
+    env.insert("HOD_STORE".to_string(), "/store".to_string());
 
     // Build command args (argv[0] is the command itself)
     let mut cmd_args = vec![p.command.clone()];

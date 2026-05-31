@@ -54,18 +54,25 @@ cp -a /deps/gcc-stage2/. $OUT/
 mkdir -p $OUT/bin
 cp -a /deps/binutils/bin/* $OUT/bin/
 
-# Overlay shell and core utilities
-cp -a /deps/bash/bin/bash $OUT/bin/bash
+# Overlay shell and core utilities.
+#
+# Note: post-Phase-5 the K1 deps (bash, coreutils, sed, grep, tar, patch,
+# gawk, make) ship as wrapper-script bundles -- a wrapper at bin/<tool>
+# plus the real ELF at bin/.<tool>-wrapped. POSIX star-glob does NOT match
+# dotfiles, so 'cp -a SRC/* DST/' would silently drop the .<tool>-wrapped
+# ELFs. Use 'cp -a SRC/. DST/' (trailing dot, no glob) to copy everything
+# including dotfiles.
+cp -a /deps/bash/bin/. $OUT/bin/
 ln -sf bash $OUT/bin/sh
 
-cp -a /deps/make/bin/make $OUT/bin/make 2>/dev/null || true
-cp -a /deps/coreutils/bin/* $OUT/bin/ 2>/dev/null || true
-cp -a /deps/tar/bin/* $OUT/bin/ 2>/dev/null || true
-cp -a /deps/sed/bin/* $OUT/bin/ 2>/dev/null || true
-cp -a /deps/grep/bin/* $OUT/bin/ 2>/dev/null || true
-cp -a /deps/gawk/bin/gawk $OUT/bin/gawk 2>/dev/null || true
+cp -a /deps/make/bin/. $OUT/bin/ 2>/dev/null || true
+cp -a /deps/coreutils/bin/. $OUT/bin/ 2>/dev/null || true
+cp -a /deps/tar/bin/. $OUT/bin/ 2>/dev/null || true
+cp -a /deps/sed/bin/. $OUT/bin/ 2>/dev/null || true
+cp -a /deps/grep/bin/. $OUT/bin/ 2>/dev/null || true
+cp -a /deps/gawk/bin/. $OUT/bin/ 2>/dev/null || true
 ln -sf gawk $OUT/bin/awk 2>/dev/null || true
-cp -a /deps/patch/bin/* $OUT/bin/ 2>/dev/null || true
+cp -a /deps/patch/bin/. $OUT/bin/ 2>/dev/null || true
 
 # Overlay pkgconf (pkg-config replacement)
 cp -a /deps/pkgconf/bin/pkgconf $OUT/bin/pkgconf
@@ -183,6 +190,7 @@ echo "=== Toolchain bundle complete ==="`,
   env: [
     { key: "C_INCLUDE_PATH", value: "" },
   ],
+  runtime_deps: ["glibc"],
   dependencies: [
     dep("bash", bashRecipe),
     dep("binutils", binutilsRecipe),

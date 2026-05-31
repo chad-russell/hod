@@ -56,7 +56,7 @@ export interface CProfileOptions {
  *   - PATH: /deps/<tc>/bin plus explicit binDeps
  *   - C compiler: CC pointing at gcc --sysroot + -B for binutils
  *   - Toolchain vars: AR, RANLIB, STRIP, CFLAGS
- *   - Optional explicit C_INCLUDE_PATH, LIBRARY_PATH, and PKG_CONFIG_PATH
+ *   - Optional explicit C_INCLUDE_PATH, LIBRARY_PATH, LD_LIBRARY_PATH, and PKG_CONFIG_PATH
  *   - LDFLAGS + HOD_DUMMY_RPATH: dummy RUNPATH for store-relative relocation
  *
  * Both HOD_DUMMY_RPATH and LDFLAGS are set to the same literal flag string
@@ -106,6 +106,13 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
   ]);
   if (libraryPath !== "") {
     env.LIBRARY_PATH = libraryPath;
+  }
+
+  // Add LD_LIBRARY_PATH from libDeps so that dynamically-linked build tools
+  // (e.g., clang needing libz) can find their runtime dependencies when
+  // invoked by downstream recipes. This mirrors what cargoBuild does for Rust.
+  if (libraryPath !== "") {
+    env.LD_LIBRARY_PATH = libraryPath;
   }
 
   // Add both lib/pkgconfig and share/pkgconfig for each dep.

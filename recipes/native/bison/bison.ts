@@ -43,8 +43,8 @@ mv $OUT/bin/bison $OUT/libexec/bison/bison
 # Bake the canonical runtime location of the m4 dependency into the wrapper.
 # This is store-shape relative, so it works both in sandboxes (/xx/hash) and
 # from a host/transfer staging root (.../staging/xx/hash).
-m4_rel="$(readlink /deps/m4)"
-m4_store_path="\${m4_rel#../}"
+m4_abs="$(readlink -f /deps/m4)"
+m4_store_path="\${m4_abs#/store/staging/}"
 
 cat > $OUT/bin/bison <<'EOF'
 #!/bin/sh

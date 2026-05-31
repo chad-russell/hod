@@ -64,6 +64,7 @@ rm -rf $OUT/share $OUT/include $OUT/lib $OUT/etc 2>/dev/null || true`,
     { key: "C_INCLUDE_PATH", value: "/deps/gcc-stage1/include:/deps/glibc/include:/deps/linux-headers/include" },
     { key: "LIBRARY_PATH", value: "/deps/glibc/lib:/deps/gcc-stage1/lib:/deps/gcc-stage1/lib/gcc/x86_64-linux-gnu/13.2.0" },
   ],
+  runtime_deps: ["glibc"],
   dependencies: [
     dep("gcc-stage1", gccStage1Recipe),
     dep("glibc", glibcRecipe),

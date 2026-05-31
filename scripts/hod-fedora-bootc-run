@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-fedora-bootc-run [options]
+
+Generate a bootable qcow2 disk from the Fedora bootc image and run it in QEMU.
+
+Uses `bootc install to-filesystem` from the host (Nix dev shell) to lay down
+the ostree deployment, then installs systemd-boot (Fedora's GRUB crashes with
+OVMF). Kernel and initramfs are copied to the ESP since systemd-boot only
+reads from vfat.
+
+Options:
+  --image-tag <tag>   OCI image tag (default: hod-fedora-bootc:latest)
+  --state-dir <dir>   Build state directory (default: .hod-vm/fedora)
+  --disk-size <size>  Disk image size (default: 4G)
+  --force             Recreate the disk image even if it exists
+  --memory <mb>       Guest memory in MB (default: 2048)
+  --cpus <n>          Guest vCPUs (default: 2)
+  --ssh-port <port>   Host port forwarded to guest SSH 22 (default: 2223)
+  --no-boot           Generate disk only, do not boot
+  -h, --help          Show this help
+
+Environment:
+  HOD_VM_BIND_ADDR    Address for forwarded ports (default: 10.10.0.6)
+
+Requirements:
+  - Must run inside `nix develop --accept-flake-config` (needs bootc, ostree,
+    skopeo, qemu-img, qemu-system-x86_64)
+  - The image must exist in root podman storage (use --copy-to-root or
+    the script will do it automatically)
+USAGE
+}
+
+image_tag="hod-fedora-bootc:latest"
+state_dir=""
+disk_size="4G"
+force=false
+memory=2048
+cpus=2
+ssh_port=2223
+no_boot=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --image-tag)  image_tag="$2"; shift 2 ;;
+    --state-dir)  state_dir="$2"; shift 2 ;;
+    --disk-size)  disk_size="$2"; shift 2 ;;
+    --force)      force=true; shift ;;
+    --memory)     memory="$2"; shift 2 ;;
+    --cpus)       cpus="$2"; shift 2 ;;
+    --ssh-port)   ssh_port="$2"; shift 2 ;;
+    --no-boot)    no_boot=true; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'hod-fedora-bootc-run: missing %s; run inside `nix develop --accept-flake-config`\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need sudo
+need bootc
+need ostree
+need skopeo
+need qemu-system-x86_64
+need qemu-img
+need sfdisk
+need mkfs.ext4
+need mkfs.vfat
+
+state_dir=${state_dir:-.hod-vm/fedora}
+disk_image=$state_dir/hod-fedora-bootc.qcow2
+bind_addr=${HOD_VM_BIND_ADDR:-10.10.0.6}
+
+# Ensure ostree prepare-root.conf exists on host (bootc checks for it)
+if [[ ! -f /etc/ostree/prepare-root.conf ]]; then
+  sudo mkdir -p /etc/ostree
+  cat <<CONF | sudo tee /etc/ostree/prepare-root.conf > /dev/null
+[composefs]
+enabled = yes
+[sysroot]
+readonly = true
+CONF
+  printf '[hod-fedora] created /etc/ostree/prepare-root.conf\n' >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Generate disk image
+# ---------------------------------------------------------------------------
+if [[ "$force" == true || ! -f "$disk_image" ]]; then
+
+  # Ensure image is in root podman store
+  if ! sudo podman image exists "$image_tag" 2>/dev/null; then
+    printf '[hod-fedora] copying image to root podman store\n' >&2
+    tmp_archive=$state_dir/image-transfer.tar
+    podman save --output "$tmp_archive" "$image_tag"
+    sudo podman load --input "$tmp_archive"
+    rm -f "$tmp_archive"
+  fi
+
+  # Create raw disk
+  disk_raw=$state_dir/hod-fedora-bootc.raw
+  rm -f "$disk_raw"
+  truncate -s "$disk_size" "$disk_raw"
+
+  # Partition: 512MB ESP + rest root
+  printf '[hod-fedora] partitioning disk\n' >&2
+  sudo sfdisk "$disk_raw" <<EOF
+label: gpt
+type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, size=512MiB, name=ESP
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root
+EOF
+
+  # Set up loop device with partition scanning
+  LOOP=$(sudo losetup -f --show --partscan "$disk_raw")
+  printf '[hod-fedora] loop device: %s\n' "$LOOP" >&2
+
+  cleanup_loop() {
+    sudo umount "$root_mnt/boot/efi" 2>/dev/null || true
+    sudo umount "$root_mnt" 2>/dev/null || true
+    sudo losetup -d "$LOOP" 2>/dev/null || true
+  }
+  trap cleanup_loop EXIT
+
+  sleep 1
+  lsblk "$LOOP" >&2
+
+  # Format partitions
+  printf '[hod-fedora] formatting partitions\n' >&2
+  sudo mkfs.vfat -F32 -n EFI "${LOOP}p1"
+  sudo mkfs.ext4 -L root "${LOOP}p2"
+
+  ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP}p2")
+
+  # Mount for bootc install
+  root_mnt=$state_dir/mnt-root
+  sudo rm -rf "$root_mnt" 2>/dev/null || true
+  mkdir -p "$root_mnt"
+  sudo mount "${LOOP}p2" "$root_mnt"
+  sudo mkdir -p "$root_mnt/boot/efi"
+  sudo mount "${LOOP}p1" "$root_mnt/boot/efi"
+
+  # Run bootc install to-filesystem (from host, not container)
+  printf '[hod-fedora] running bootc install to-filesystem\n' >&2
+  # bootc install deploys ostree but may fail at bootloader install (we handle that).
+  # Use fully qualified name matching root podman storage.
+  sudo bootc install to-filesystem \
+    --source-imgref "containers-storage:localhost/$image_tag" \
+    --skip-fetch-check \
+    "$root_mnt" || true
+
+  # bootc install may recreate /boot; remount ESP
+  sudo mkdir -p "$root_mnt/boot/efi"
+  sudo mount "${LOOP}p1" "$root_mnt/boot/efi"
+
+  # Install systemd-boot directly (skip Fedora's GRUB — it crashes with OVMF)
+  printf '[hod-fedora] installing systemd-boot\n' >&2
+  deploy_dir=$(sudo find "$root_mnt/ostree/deploy" -maxdepth 5 -name '*.0' -type d ! -path '*/firmware/*' ! -path '*/backing/*' | head -1)
+  if [[ -z "$deploy_dir" ]]; then
+    printf 'hod-fedora-bootc-run: could not find ostree deployment\n' >&2
+    exit 1
+  fi
+  printf '[hod-fedora] deployment: %s\n' "$deploy_dir" >&2
+
+  systemd_boot_efi=""
+  for candidate in \
+    /run/current-system/sw/lib/systemd/boot/efi/systemd-bootx64.efi \
+    "$deploy_dir/usr/lib/systemd/boot/efi/systemd-bootx64.efi" \
+    /usr/lib/systemd/boot/efi/systemd-bootx64.efi; do
+    if sudo test -f "$candidate"; then
+      systemd_boot_efi=$candidate
+      break
+    fi
+  done
+
+  if [[ -z "$systemd_boot_efi" ]]; then
+    printf 'hod-fedora-bootc-run: systemd-bootx64.efi not found\n' >&2
+    exit 1
+  fi
+
+  sudo mkdir -p "$root_mnt/boot/efi/EFI/systemd" "$root_mnt/boot/efi/EFI/BOOT"
+  sudo cp "$systemd_boot_efi" "$root_mnt/boot/efi/EFI/systemd/systemd-bootx64.efi"
+  sudo cp "$systemd_boot_efi" "$root_mnt/boot/efi/EFI/BOOT/BOOTX64.EFI"
+
+  # Find kernel and initramfs in the ostree boot tree
+  kver=$(sudo ls "$root_mnt/boot/ostree/" | head -1)
+  if [[ -z "$kver" ]]; then
+    printf 'hod-fedora-bootc-run: no kernel found in /boot/ostree\n' >&2
+    exit 1
+  fi
+  printf '[hod-fedora] kernel dir: %s\n' "$kver" >&2
+
+  # Copy kernel + initramfs to ESP (systemd-boot only reads vfat)
+  sudo mkdir -p "$root_mnt/boot/efi/$kver"
+  sudo cp "$root_mnt/boot/ostree/$kver/"* "$root_mnt/boot/efi/$kver/"
+
+  # Get ostree boot parameter from the BLS entry that bootc created
+  ostree_param=""
+  bls_entry=$(sudo find "$root_mnt/boot" -name 'ostree-*.conf' -type f | head -1)
+  if [[ -n "$bls_entry" ]]; then
+    ostree_param=$(sudo grep -oP 'ostree=\S+' "$bls_entry" || true)
+  fi
+  printf '[hod-fedora] ostree param: %s\n' "$ostree_param" >&2
+
+  # Create systemd-boot loader entry
+  kver_file=$(sudo ls "$root_mnt/boot/efi/$kver/" | grep vmlinuz | head -1)
+  initrd_file=$(sudo ls "$root_mnt/boot/efi/$kver/" | grep initramfs | head -1)
+
+  sudo mkdir -p "$root_mnt/boot/efi/loader/entries"
+  cat <<EOF | sudo tee "$root_mnt/boot/efi/loader/loader.conf" > /dev/null
+default fedora.conf
+timeout 3
+editor  no
+EOF
+
+  cat <<EOF | sudo tee "$root_mnt/boot/efi/loader/entries/fedora.conf" > /dev/null
+title Fedora Linux (Hod)
+linux /$kver/$kver_file
+initrd /$kver/$initrd_file
+options root=UUID=$ROOT_UUID rw $ostree_param console=ttyS0
+EOF
+
+  printf '[hod-fedora] ESP contents:\n' >&2
+  sudo find "$root_mnt/boot/efi" -type f | sort | sed 's/^/  /' >&2
+
+  # Unmount (use lazy unmount — ostree bind mounts may keep root busy)
+  sudo umount "$root_mnt/boot/efi" 2>/dev/null || true
+  sudo umount -l "$root_mnt" 2>/dev/null || true
+  sudo losetup -d "$LOOP" 2>/dev/null || true
+  trap - EXIT
+
+  # Convert to qcow2
+  printf '[hod-fedora] converting to qcow2\n' >&2
+  qemu-img convert -f raw -O qcow2 "$disk_raw" "$disk_image"
+  rm -f "$disk_raw"
+
+  printf '[hod-fedora] disk image ready: %s\n' "$disk_image" >&2
+else
+  printf '[hod-fedora] reusing existing disk: %s\n' "$disk_image" >&2
+fi
+
+if [[ "$no_boot" == true ]]; then
+  printf '[hod-fedora] disk image only (--no-boot)\n' >&2
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Boot in QEMU
+# ---------------------------------------------------------------------------
+accel_args=(-accel kvm)
+if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+  accel_args=(-accel tcg)
+  printf '[hod-fedora] WARNING: KVM not available, using TCG (slow)\n' >&2
+fi
+
+printf '[hod-fedora] guest SSH will be available at %s:%s after boot\n' "$bind_addr" "$ssh_port" >&2
+printf '[hod-fedora] serial console attached below; use Ctrl-a x to quit QEMU\n' >&2
+
+extra_args=()
+if [[ -n ${HOD_VM_EXTRA_QEMU:-} ]]; then
+  extra_args=($HOD_VM_EXTRA_QEMU)
+fi
+
+ovmf_code=""
+ovmf_vars=""
+for candidate in \
+  /nix/store/*-OVMF-*-fd/FV/OVMF_CODE.fd \
+  /usr/share/OVMF/OVMF_CODE.fd \
+  /usr/share/edk2/ovmf/OVMF_CODE.fd; do
+  if [[ -f "$candidate" ]]; then
+    ovmf_code=$candidate
+    break
+  fi
+done
+for candidate in \
+  /nix/store/*-OVMF-*-fd/FV/OVMF_VARS.fd \
+  /usr/share/OVMF/OVMF_VARS.fd \
+  /usr/share/edk2/ovmf/OVMF_VARS.fd; do
+  if [[ -f "$candidate" ]]; then
+    ovmf_vars=$candidate
+    break
+  fi
+done
+
+uefi_args=()
+if [[ -n "$ovmf_code" && -n "$ovmf_vars" ]]; then
+  vars_copy=$state_dir/ovmf_vars.fd
+  cp "$ovmf_vars" "$vars_copy"
+  chmod 644 "$vars_copy"
+  uefi_args=(-drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+             -drive "if=pflash,format=raw,file=$vars_copy")
+  printf '[hod-fedora] using UEFI boot with %s\n' "$ovmf_code" >&2
+else
+  printf '[hod-fedora] WARNING: no OVMF firmware found, BIOS boot only\n' >&2
+fi
+
+exec qemu-system-x86_64 \
+  "${accel_args[@]}" \
+  -cpu host \
+  "${uefi_args[@]}" \
+  -m "$memory" \
+  -smp "$cpus" \
+  -drive "file=$disk_image,if=virtio,format=qcow2" \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:$bind_addr:$ssh_port-:22" \
+  -display none \
+  -serial mon:stdio \
+  "${extra_args[@]}"

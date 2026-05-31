@@ -244,6 +244,96 @@ struct ResolvedPackage {
     staging_path: PathBuf,
 }
 
+/// Public form of [`ResolvedPackage`] for cross-module callers.
+///
+/// Used by `crate::system` to compose its own farm layout while reusing the
+/// profile resolution + runtime-dep walk logic.
+pub struct FarmEntry {
+    pub link_name: String,
+    pub staging_path: PathBuf,
+}
+
+/// Populate `target_dir` with a symlink farm: `pkgs/<name> → store path` and
+/// `runtime/<dep> → store path` for each package's runtime closure.
+///
+/// `target_dir` must exist and should be empty. The caller decides what to do
+/// with the populated directory (atomic rename for user profiles, generation
+/// move for system profiles, etc.).
+///
+/// Does NOT write env scripts. Callers that need env composition should call
+/// `write_user_env_snippets` afterward; system profiles intentionally skip
+/// shell env composition.
+pub fn populate_farm(
+    target_dir: &Path,
+    store: &Store,
+    profile_packages: &[ProfilePackage],
+) -> Result<Vec<FarmEntry>, String> {
+    std::fs::create_dir_all(target_dir.join("pkgs"))
+        .map_err(|e| format!("cannot create pkgs dir: {e}"))?;
+    std::fs::create_dir_all(target_dir.join("runtime"))
+        .map_err(|e| format!("cannot create runtime dir: {e}"))?;
+
+    let mut entries: Vec<FarmEntry> = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    for package in profile_packages {
+        let hash = &package.hash;
+        let hex = hash_to_hex(hash);
+
+        let output_hash = store
+            .get_output(hash)
+            .map_err(|e| format!("store error for package {}: {e}", hex))?
+            .ok_or_else(|| format!("package {} has not been built yet", hex))?;
+
+        let staging_path = build::artifact_staging_path(store, &output_hash);
+        if !staging_path.exists() {
+            return Err(format!(
+                "staging path for package {} does not exist: {}",
+                hex,
+                staging_path.display()
+            ));
+        }
+
+        let link_name = match &package.name {
+            Some(name) => unique_package_name(name, &mut seen_names),
+            None => derive_package_name(&staging_path, &hex, &mut seen_names),
+        };
+
+        let link_path = target_dir.join("pkgs").join(&link_name);
+        std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
+            format!(
+                "cannot symlink {} → {}: {e}",
+                link_path.display(),
+                staging_path.display()
+            )
+        })?;
+
+        entries.push(FarmEntry {
+            link_name,
+            staging_path,
+        });
+    }
+
+    // Resolve runtime deps (deduplicated across all packages).
+    let mut runtime_deps: Vec<(String, PathBuf)> = Vec::new();
+    let mut seen_runtime: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+
+    for package in profile_packages {
+        collect_runtime_deps(store, &package.hash, &mut runtime_deps, &mut seen_runtime)?;
+    }
+
+    for (dep_name, dep_staging) in &runtime_deps {
+        let link_path = target_dir.join("runtime").join(dep_name);
+        if link_path.exists() || link_path.is_symlink() {
+            let _ = std::fs::remove_file(&link_path);
+        }
+        std::os::unix::fs::symlink(dep_staging, &link_path)
+            .map_err(|e| format!("cannot symlink runtime dep {}: {e}", dep_name))?;
+    }
+
+    Ok(entries)
+}
+
 // ---------------------------------------------------------------------------
 // Symlink farm
 // ---------------------------------------------------------------------------
@@ -295,74 +385,17 @@ pub fn create_farm_from_packages(
             .map_err(|e| format!("cannot remove stale temp dir: {e}"))?;
     }
 
-    // Create farm subdirectories
-    std::fs::create_dir_all(tmp_dir.join("pkgs"))
-        .map_err(|e| format!("cannot create pkgs dir: {e}"))?;
-    std::fs::create_dir_all(tmp_dir.join("runtime"))
-        .map_err(|e| format!("cannot create runtime dir: {e}"))?;
+    // Populate pkgs/ and runtime/ via the shared helper.
+    let entries = populate_farm(&tmp_dir, store, profile_packages)?;
+    let packages: Vec<ResolvedPackage> = entries
+        .into_iter()
+        .map(|e| ResolvedPackage {
+            link_name: e.link_name,
+            staging_path: e.staging_path,
+        })
+        .collect();
 
-    // Resolve packages: recipe hash → staging path + link name
-    let mut packages: Vec<ResolvedPackage> = Vec::new();
-    let mut seen_names = std::collections::HashSet::new();
-
-    for package in profile_packages {
-        let hash = &package.hash;
-        let hex = hash_to_hex(hash);
-
-        let output_hash = store
-            .get_output(hash)
-            .map_err(|e| format!("store error for package {}: {e}", hex))?
-            .ok_or_else(|| format!("package {} has not been built yet", hex))?;
-
-        let staging_path = build::artifact_staging_path(store, &output_hash);
-        if !staging_path.exists() {
-            return Err(format!(
-                "staging path for package {} does not exist: {}",
-                hex,
-                staging_path.display()
-            ));
-        }
-
-        let link_name = match &package.name {
-            Some(name) => unique_package_name(name, &mut seen_names),
-            None => derive_package_name(&staging_path, &hex, &mut seen_names),
-        };
-
-        // Create the directory symlink
-        let link_path = tmp_dir.join("pkgs").join(&link_name);
-        std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
-            format!(
-                "cannot symlink {} → {}: {e}",
-                link_path.display(),
-                staging_path.display()
-            )
-        })?;
-
-        packages.push(ResolvedPackage {
-            link_name,
-            staging_path,
-        });
-    }
-
-    // Resolve runtime deps (deduplicated)
-    let mut runtime_deps: Vec<(String, PathBuf)> = Vec::new();
-    let mut seen_runtime: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
-
-    for package in profile_packages {
-        collect_runtime_deps(store, &package.hash, &mut runtime_deps, &mut seen_runtime)?;
-    }
-
-    // Create runtime dep symlinks
-    for (dep_name, dep_staging) in &runtime_deps {
-        let link_path = tmp_dir.join("runtime").join(dep_name);
-        if link_path.exists() || link_path.is_symlink() {
-            let _ = std::fs::remove_file(&link_path);
-        }
-        std::os::unix::fs::symlink(dep_staging, &link_path)
-            .map_err(|e| format!("cannot symlink runtime dep {}: {e}", dep_name))?;
-    }
-
-    // Write env snippets
+    // Write env snippets (user-profile-specific; system profiles skip this).
     write_env_snippets(&tmp_dir, name, &packages)?;
 
     // Atomic swap

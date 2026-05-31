@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-vm-run-alpine
+
+Run the minimal Alpine Hod OS VM on bees.
+
+Environment:
+  HOD_VM_STATE_DIR   VM state directory (default: .hod-vm/alpine)
+  HOD_VM_BIND_ADDR   Address on bees for forwarded ports (default: 10.10.0.6)
+  HOD_VM_SSH_PORT    Host SSH port forwarded to guest port 22 (default: 2222)
+  HOD_VM_MEMORY      Guest memory (default: 2048)
+  HOD_VM_CPUS        Guest vCPUs (default: 2)
+  HOD_VM_EXTRA_QEMU  Extra qemu-system-x86_64 args
+
+This is remote-first: the serial console stays in the SSH session to bees, and
+the guest SSH port is reachable from the ThinkPad at 10.10.0.6:2222.
+USAGE
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+  printf 'hod-vm-run-alpine: missing qemu-system-x86_64; run inside `nix develop --accept-flake-config`\n' >&2
+  exit 1
+fi
+
+state_dir=${HOD_VM_STATE_DIR:-.hod-vm/alpine}
+disk_image=$state_dir/hod-alpine.qcow2
+seed_iso=$state_dir/seed.iso
+bind_addr=${HOD_VM_BIND_ADDR:-10.10.0.6}
+ssh_port=${HOD_VM_SSH_PORT:-2222}
+memory=${HOD_VM_MEMORY:-2048}
+cpus=${HOD_VM_CPUS:-2}
+
+if [[ ! -f "$disk_image" || ! -f "$seed_iso" ]]; then
+  printf 'hod-vm-run-alpine: missing disk or seed ISO; run scripts/hod-vm-build-alpine first\n' >&2
+  exit 1
+fi
+
+accel_args=(-accel tcg)
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  accel_args=(-accel kvm)
+fi
+
+printf '[hod-vm] guest SSH will be available at %s:%s after cloud-init finishes\n' "$bind_addr" "$ssh_port" >&2
+printf '[hod-vm] serial console is attached below; use Ctrl-a x to quit QEMU\n' >&2
+
+extra_args=()
+if [[ -n ${HOD_VM_EXTRA_QEMU:-} ]]; then
+  # shellcheck disable=SC2206
+  extra_args=($HOD_VM_EXTRA_QEMU)
+fi
+
+exec qemu-system-x86_64 \
+  "${accel_args[@]}" \
+  -m "$memory" \
+  -smp "$cpus" \
+  -drive "file=$disk_image,if=virtio,format=qcow2" \
+  -drive "file=$seed_iso,if=virtio,format=raw,readonly=on" \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:$bind_addr:$ssh_port-:22" \
+  -display none \
+  -serial mon:stdio \
+  "${extra_args[@]}"

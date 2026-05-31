@@ -673,6 +673,11 @@ fn transfer_local(
                 .map_err(|e| format!("error creating dir {}: {e}", parent.display()))?;
         }
 
+        if dst.exists() || std::fs::symlink_metadata(&dst).is_ok() {
+            remove_existing_path(&dst)
+                .map_err(|e| format!("error removing {}: {e}", dst.display()))?;
+        }
+
         std::fs::copy(&src, &dst).map_err(|e| format!("error copying {rel}: {e}"))?;
 
         copied += 1;

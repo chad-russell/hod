@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-vm-deploy-profile [profile.ts]
+
+Build a Hod profile on bees, copy package closures into the running VM over the
+forwarded SSH port, and create a profile symlink farm in the guest without
+requiring a working hod binary inside Alpine.
+
+Environment:
+  HOD_BIN             Local hod binary (default: target/debug/hod if present, else hod)
+  HOD_VM_HOST         SSH host for forwarded guest port (default: 10.10.0.6)
+  HOD_VM_SSH_PORT     SSH port forwarded to guest port 22 (default: 2222)
+  HOD_VM_USER         Guest user (default: hod)
+  HOD_VM_STORE        Guest store path (default: /home/<user>/.local/share/hod)
+  HOD_VM_PROFILE_DIR  Guest profile dir (default: /home/<user>/.hod/profiles)
+  HOD_VM_SSH_OPTS     Extra SSH/SCP options
+
+Default profile: profiles/minimal-vm.ts
+USAGE
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+profile_path=${1:-profiles/minimal-vm.ts}
+if [[ ! -f "$profile_path" ]]; then
+  printf 'hod-vm-deploy-profile: profile not found: %s\n' "$profile_path" >&2
+  exit 2
+fi
+
+hod_bin=${HOD_BIN:-}
+if [[ -z "$hod_bin" ]]; then
+  if [[ -x target/debug/hod ]]; then
+    hod_bin=target/debug/hod
+  else
+    hod_bin=hod
+  fi
+fi
+if [[ "$hod_bin" == */* ]]; then
+  hod_bin=$(realpath "$hod_bin")
+fi
+
+guest_host=${HOD_VM_HOST:-10.10.0.6}
+guest_port=${HOD_VM_SSH_PORT:-2222}
+guest_user=${HOD_VM_USER:-hod}
+guest_store=${HOD_VM_STORE:-/home/$guest_user/.local/share/hod}
+guest_profiles=${HOD_VM_PROFILE_DIR:-/home/$guest_user/.hod/profiles}
+ssh_opts=${HOD_VM_SSH_OPTS:-}
+remote=$guest_user@$guest_host
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/hod-vm-deploy.XXXXXX")
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+eval_script=$tmp_dir/eval-profile.ts
+manifest=$tmp_dir/package-hashes.txt
+links=$tmp_dir/package-links.tsv
+profile_abs=$(realpath "$profile_path")
+
+cat > "$eval_script" <<EOF
+import { profile } from "$profile_abs";
+const packages = profile.packages.map((p) => {
+  if (typeof p === "string") return { hash: p };
+  if (p && typeof p === "object" && "hash" in p) return { name: p.name, hash: p.hash };
+  const recipe = p?.recipe ?? p?.package;
+  if (recipe && typeof recipe === "object" && "hash" in recipe) return { name: p.name, hash: recipe.hash };
+  throw new Error("invalid profile package entry");
+});
+console.log(JSON.stringify({ name: profile.name, packages }));
+EOF
+
+printf '[hod-vm] evaluating %s\n' "$profile_path" >&2
+json=$(HOD_BIN="$hod_bin" bun run "$eval_script" | awk '/^\{/ { line=$0 } END { print line }')
+if [[ -z "$json" ]]; then
+  printf 'hod-vm-deploy-profile: profile evaluation produced no JSON\n' >&2
+  exit 1
+fi
+
+profile_name=$(printf '%s' "$json" | bun -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); process.stdout.write(JSON.parse(input).name);')
+printf '%s' "$json" | bun -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); for (const p of JSON.parse(input).packages) console.log(p.name ? `${p.hash} ${p.name}` : p.hash);' > "$manifest"
+
+printf '[hod-vm] building profile locally\n' >&2
+"$hod_bin" profile build "$profile_path" --quiet
+
+> "$links"
+printf '[hod-vm] copying closures to %s:%s\n' "$remote" "$guest_store" >&2
+while read -r hash pkg_name; do
+  [[ -n "${hash:-}" ]] || continue
+  closure_list=$tmp_dir/closure-$hash.txt
+  "$hod_bin" copy-closure "$hash" --list --quiet > "$closure_list" 2>/dev/null
+  output_hash=$(awk -v h="$hash" '$1 == h { print $2; exit }' "$closure_list")
+  if [[ -z "$output_hash" || "$output_hash" == "-" ]]; then
+    printf 'hod-vm-deploy-profile: no built output for package %s\n' "$hash" >&2
+    exit 1
+  fi
+  link_name=${pkg_name:-${hash:0:12}}
+  printf '%s\t%s\t%s\n' "$link_name" "$hash" "$output_hash" >> "$links"
+  printf '[hod-vm] copy %s %s\n' "$link_name" "$hash" >&2
+  RSYNC_RSH="ssh -p $guest_port $ssh_opts" "$hod_bin" copy-closure "$hash" --to "$remote:$guest_store" --force --quiet
+done < "$manifest"
+
+remote_links=/tmp/hod-vm-profile-links-$$.tsv
+scp -P "$guest_port" $ssh_opts "$links" "$remote:$remote_links"
+
+printf '[hod-vm] activating profile farm in guest\n' >&2
+ssh -p "$guest_port" $ssh_opts "$remote" sh -s -- "$profile_name" "$guest_store" "$guest_profiles" "$remote_links" <<'REMOTE'
+set -eu
+
+profile_name=$1
+store=$2
+profiles_dir=$3
+links_file=$4
+farm=$profiles_dir/$profile_name
+tmp=$profiles_dir/.$profile_name.tmp
+old=$profiles_dir/.$profile_name.old
+roots_dir=${HOME}/.hod/roots
+
+rm -rf "$tmp"
+mkdir -p "$tmp/pkgs" "$roots_dir"
+
+while read -r name recipe_hash output_hash; do
+  [ -n "$name" ] || continue
+  shard=$(printf '%s' "$output_hash" | cut -c1-2)
+  target=$store/staging/$shard/$output_hash
+  if [ ! -d "$target" ]; then
+    printf 'missing staging path: %s\n' "$target" >&2
+    exit 1
+  fi
+  ln -s "$target" "$tmp/pkgs/$name"
+  printf '%s %s\n' "$recipe_hash" "$name" >> "$tmp/roots.txt"
+done < "$links_file"
+
+cat > "$tmp/env.sh" <<'ENVEOF'
+# Generated by scripts/hod-vm-deploy-profile.
+export HOD_PROFILE=__PROFILE_NAME__
+_hod_profile_dir="$HOME/.hod/profiles/__PROFILE_NAME__"
+for _hod_pkg in "$_hod_profile_dir"/pkgs/*; do
+  if [ -d "$_hod_pkg/bin" ]; then
+    PATH="$_hod_pkg/bin${PATH:+:$PATH}"
+  fi
+  if [ -d "$_hod_pkg/share/man" ]; then
+    MANPATH="$_hod_pkg/share/man${MANPATH:+:$MANPATH}"
+  fi
+  if [ -d "$_hod_pkg/share" ]; then
+    XDG_DATA_DIRS="$_hod_pkg/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+  fi
+done
+
+# LD_LIBRARY_PATH is intentionally NOT set here. Relocated binaries find
+# their libraries via store-relative RUNPATH ($ORIGIN/../../../<shard>/<hex>/lib).
+# That math assumes the on-disk store layout matches what was assumed at
+# build time, which it does: deps live at <store>/staging/<shard>/<hex>/
+# both on the build host and on the deploy target.
+export PATH MANPATH XDG_DATA_DIRS
+unset _hod_pkg _hod_profile_dir
+ENVEOF
+sed -i "s/__PROFILE_NAME__/$profile_name/g" "$tmp/env.sh"
+
+if [ -e "$farm" ]; then
+  rm -rf "$old"
+  mv "$farm" "$old"
+fi
+mv "$tmp" "$farm"
+rm -rf "$old"
+cp "$farm/roots.txt" "$roots_dir/profile-$profile_name.txt"
+rm -f "$links_file"
+
+# K2: ensure /lib64/ld-linux-x86-64.so.2 exists.
+#
+# Rationale: the host kernel honors PT_INTERP, which our glibc-built ELFs
+# spell as a Hod-store path during the build. When we relocate the closure
+# onto the guest, that path is still correct *for our binaries*. But the
+# tiny shim `/lib64/ld-linux-x86-64.so.2` is needed for any ELF that didn't
+# go through Hod's relocation pass (e.g. the Bun installer, third-party
+# binaries, AT_EXECFN bootstrap fallbacks). On glibc hosts this is provided
+# by the system; on musl Alpine we have to create it ourselves, pointing
+# at any glibc copy from the deployed closure.
+glibc_ld=""
+for pkg_dir in "$farm"/pkgs/*; do
+  [ -d "$pkg_dir" ] || continue
+  candidate=$(find -L "$pkg_dir/lib" -maxdepth 2 -name "ld-linux-x86-64.so.2" -type f 2>/dev/null | head -n1)
+  if [ -n "$candidate" ]; then
+    glibc_ld=$(readlink -f "$candidate")
+    break
+  fi
+done
+if [ -n "$glibc_ld" ]; then
+  current=$(readlink -f /lib64/ld-linux-x86-64.so.2 2>/dev/null || true)
+  if [ "$current" != "$glibc_ld" ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo mkdir -p /lib64
+      sudo ln -sf "$glibc_ld" /lib64/ld-linux-x86-64.so.2
+      printf '[hod-vm-guest] linked /lib64/ld-linux-x86-64.so.2 -> %s\n' "$glibc_ld" >&2
+    elif command -v doas >/dev/null 2>&1; then
+      doas mkdir -p /lib64
+      doas ln -sf "$glibc_ld" /lib64/ld-linux-x86-64.so.2
+      printf '[hod-vm-guest] linked /lib64/ld-linux-x86-64.so.2 -> %s\n' "$glibc_ld" >&2
+    else
+      printf '[hod-vm-guest] WARN: no sudo/doas; cannot create /lib64/ld-linux-x86-64.so.2 -> %s\n' "$glibc_ld" >&2
+    fi
+  fi
+fi
+REMOTE
+
+printf '[hod-vm] done\n' >&2
+printf 'Test from bees or ThinkPad:\n'
+printf '  ssh -p %s %s@%s\n' "$guest_port" "$guest_user" "$guest_host"
+printf '  source ~/.hod/profiles/%s/env.sh && jq --version && rg --version\n' "$profile_name"

@@ -380,10 +380,38 @@ enum Commands {
         quiet: bool,
     },
 
+    /// Print the resolved store root path to stdout.
+    ///
+    /// Useful for scripts that need to know where the store lives
+    /// (e.g. bootc image builder, closure staging).
+    StoreRoot {
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
     /// Manage package profiles.
     Profile {
         #[command(subcommand)]
         action: ProfileAction,
+
+        /// Override store location.
+        #[arg(long, global = true)]
+        store: Option<PathBuf>,
+
+        /// Suppress build output.
+        #[arg(long, global = true, short)]
+        quiet: bool,
+    },
+
+    /// Manage system profiles.
+    ///
+    /// System profiles define the running OS, parallel to user profiles
+    /// which define a per-user shell environment. See
+    /// `docs/system-profiles.md` for the full model.
+    System {
+        #[command(subcommand)]
+        action: SystemAction,
 
         /// Override store location.
         #[arg(long, global = true)]
@@ -466,6 +494,36 @@ enum ProfileAction {
     Roots,
 }
 
+#[derive(Subcommand)]
+enum SystemAction {
+    /// Build the closure of a system profile without activating.
+    Build {
+        /// Path to the system profile .ts file.
+        profile_file: PathBuf,
+    },
+
+    /// Build, materialize a new generation, and switch `current` to it.
+    Activate {
+        /// Path to the system profile .ts file.
+        profile_file: PathBuf,
+    },
+
+    /// List system generations.
+    List,
+
+    /// Switch `current` to the previous generation.
+    Rollback,
+
+    /// Pin a system profile's recipe hashes as GC roots without activating.
+    Pin {
+        /// Path to the system profile .ts file.
+        profile_file: PathBuf,
+    },
+
+    /// Remove the system roots GC pin.
+    Unpin,
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -535,7 +593,13 @@ fn main() {
             store,
             quiet,
         } => cmd_profile(action, store, quiet),
+        Commands::System {
+            action,
+            store,
+            quiet,
+        } => cmd_system(action, store, quiet),
         Commands::Closure { specifier, store } => cmd_closure(specifier, store),
+        Commands::StoreRoot { store } => cmd_store_root(store),
         Commands::CopyClosure {
             specifier,
             to,
@@ -851,6 +915,16 @@ fn cmd_hash_file(file: PathBuf) -> ! {
 
     let hash_hex = hash_to_hex(&hash_bytes(&data));
     println!("{hash_hex}");
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod store-root`
+// ---------------------------------------------------------------------------
+
+fn cmd_store_root(store_path: Option<PathBuf>) -> ! {
+    let config = StoreConfig { path: store_path };
+    println!("{}", config.resolve().display());
     process::exit(0);
 }
 
@@ -2055,6 +2129,192 @@ fn cmd_profile_roots() -> ! {
         }
     }
     process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod system`
+// ---------------------------------------------------------------------------
+
+fn cmd_system(action: SystemAction, store_path: Option<PathBuf>, quiet: bool) -> ! {
+    let store_config = StoreConfig { path: store_path };
+
+    match action {
+        SystemAction::List => cmd_system_list(),
+        SystemAction::Rollback => cmd_system_rollback(),
+        SystemAction::Unpin => cmd_system_unpin(),
+        SystemAction::Pin { profile_file } => cmd_system_pin(profile_file, store_config),
+        SystemAction::Build { profile_file } => {
+            cmd_system_build_or_activate(profile_file, store_config, quiet, false)
+        }
+        SystemAction::Activate { profile_file } => {
+            cmd_system_build_or_activate(profile_file, store_config, quiet, true)
+        }
+    }
+}
+
+fn cmd_system_build_or_activate(
+    profile_file: PathBuf,
+    store_config: StoreConfig,
+    quiet: bool,
+    activate: bool,
+) -> ! {
+    eprintln!("[hod] evaluating system profile {}", profile_file.display());
+    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+    let hashes = hod::profile::package_hashes(&packages);
+    eprintln!(
+        "[hod] system profile '{}': {} package(s)",
+        name,
+        hashes.len()
+    );
+
+    let store = match Store::open(&store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    match hod::profile::build_profile(&store, &hashes, quiet) {
+        Ok(built) => {
+            if built > 0 {
+                eprintln!("[hod] built {} package(s)", built);
+            }
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+
+    if !activate {
+        process::exit(0);
+    }
+
+    let (generation, gen_dir) = match hod::system::build_generation(&store, &name, &packages) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+    eprintln!(
+        "[hod] materialized generation {} at {}",
+        generation,
+        gen_dir.display()
+    );
+
+    if let Err(e) = hod::system::activate_generation(generation, &name, &hashes) {
+        eprintln!("hod: activation failed: {e}");
+        process::exit(10);
+    }
+
+    let current = hod::system::system_dir().join("current");
+    eprintln!(
+        "[hod] activated system profile '{}' (generation {}) at {}",
+        name,
+        generation,
+        current.display()
+    );
+    process::exit(0);
+}
+
+fn cmd_system_list() -> ! {
+    let gens = match hod::system::list_generations() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    if gens.is_empty() {
+        eprintln!("[hod] no system generations");
+        process::exit(0);
+    }
+
+    for entry in gens {
+        let marker = if entry.is_current { "*" } else { " " };
+        let name = entry
+            .metadata
+            .as_ref()
+            .map(|m| m.profile_name.as_str())
+            .unwrap_or("(unknown)");
+        let created = entry
+            .metadata
+            .as_ref()
+            .map(|m| m.created_at.as_str())
+            .unwrap_or("(unknown)");
+        let pkg_count = entry
+            .metadata
+            .as_ref()
+            .map(|m| m.recipe_hashes.len())
+            .unwrap_or(0);
+        println!(
+            "{} {:>4}  {}  {}  {} package(s)",
+            marker, entry.generation, created, name, pkg_count
+        );
+    }
+    process::exit(0);
+}
+
+fn cmd_system_rollback() -> ! {
+    match hod::system::rollback() {
+        Ok(gen) => {
+            eprintln!("[hod] rolled back to generation {gen}");
+            process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_system_pin(profile_file: PathBuf, store_config: StoreConfig) -> ! {
+    eprintln!("[hod] evaluating system profile {}", profile_file.display());
+    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+    let hashes = hod::profile::package_hashes(&packages);
+
+    if let Err(e) = hod::system::write_system_roots(&name, &hashes) {
+        eprintln!("hod: {e}");
+        process::exit(10);
+    }
+    eprintln!(
+        "[hod] pinned system profile '{}' with {} root(s)",
+        name,
+        hashes.len()
+    );
+    process::exit(0);
+}
+
+fn cmd_system_unpin() -> ! {
+    match hod::system::remove_system_roots() {
+        Ok(true) => {
+            eprintln!("[hod] removed system GC root pin");
+            process::exit(0);
+        }
+        Ok(false) => {
+            eprintln!("hod: no system roots pin to remove");
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    }
 }
 
 fn verify_remote_profile_copy(

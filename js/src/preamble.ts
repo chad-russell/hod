@@ -9,10 +9,41 @@ export interface HermeticPreambleOptions {
   /** Dep name providing `bin/busybox`. Creates `/bin/sh` and supplies setup applets. */
   shell?: string;
 
-  /** Dep name providing the musl dynamic linker at `lib/ld-musl-x86_64.so.1`. */
+  /**
+   * Dep name providing the musl dynamic linker at `lib/ld-musl-x86_64.so.1`.
+   *
+   * Creates `/lib/ld-musl-x86_64.so.1` and `/lib/libc.so` pointing into the
+   * named dep, so binaries with musl PT_INTERP (notably the static seed
+   * busybox, which has `/lib/ld-musl-x86_64.so.1` baked in) can be invoked
+   * inside the sandbox.
+   *
+   * Picking which dep provides musl is a recipe-level decision and is left
+   * explicit on purpose: the sandbox has no way to choose between multiple
+   * libc-shipping deps without guessing.
+   */
   muslLinker?: string;
 
-  /** Dep name providing the glibc dynamic linker at `lib/ld-linux-x86-64.so.2`. */
+  /**
+   * Dep name providing the glibc dynamic linker at `lib/ld-linux-x86-64.so.2`.
+   *
+   * Creates `/lib/ld-linux-x86-64.so.2`, `/lib64/ld-linux-x86-64.so.2`, and
+   * a `/lib/*` symlink farm pointing into the named glibc dep. Required
+   * whenever the build script needs to *run* a binary that resolves ld.so
+   * via the standard FHS paths — typically a freshly-compiled binary that
+   * has not yet been through Hod's relocation pass (configure feature
+   * tests, `make check`, validate-reloc-style smoke tests, etc.).
+   *
+   * Post-relocation outputs do **not** need this — they find ld.so via the
+   * AT_EXECFN bootstrap and store-relative RUNPATH. The new sandbox layout
+   * (deps at `/store/staging/<shard>/<hex>/`) is sufficient for them.
+   *
+   * Picking which dep provides glibc is a recipe-level decision and is
+   * left explicit on purpose. A closure can legitimately contain multiple
+   * glibc versions, or both glibc and musl, and only the recipe knows which
+   * libc semantics its intra-build invocations expect. The sandbox cannot
+   * autoselect this without guessing, and a wrong guess is silent and
+   * version-dependent.
+   */
   glibcLinker?: string;
 
   /**
@@ -103,7 +134,18 @@ export function hermeticPreamble(opts: HermeticPreambleOptions = {}): string {
     lines.push(`${busyboxBin} chmod +x /usr/bin/python3`);
   }
 
-  // --- Dynamic linker + runtime library setup ---
+  // --- Dynamic linker setup ---
+  //
+  // For *relocated* binaries (post-build outputs), the new sandbox layout
+  // (deps at /store/staging/<shard>/<hex>/) is sufficient: PT_INTERP and
+  // RUNPATH math resolve correctly without any /lib/ symlinks. However,
+  // *freshly-compiled* binaries produced inside a build script have the
+  // standard glibc PT_INTERP (/lib64/ld-linux-x86-64.so.2) baked in by the
+  // compiler — and they need to run before the relocation pass touches
+  // them (e.g., configure tests, make check, validate-reloc-style smoke
+  // tests). For those, we still create /lib64/ld-linux-... pointing into
+  // the glibc dep. The /lib/* symlink farm is also kept because some
+  // libraries link against /lib/libfoo.so.X via DT_NEEDED.
   //
   // ORDER MATTERS. We set up glibc FIRST, then musl. Both C libraries
   // have a file named "libc.so" but with different contents:

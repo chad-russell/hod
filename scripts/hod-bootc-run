@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-bootc-run [options]
+
+Generate a bootable qcow2 disk from the Hod bootc image and run it in QEMU.
+
+Steps:
+  1. Mount the OCI image's rootfs via podman.
+  2. Create a partitioned raw disk (ESP + root).
+  3. Copy the rootfs into the root partition.
+  4. Install systemd-boot and kernel.
+  5. Convert to qcow2 and boot in QEMU.
+
+Options:
+  --image-tag <tag>   OCI image tag (default: hod-bootc:latest)
+  --state-dir <dir>   Build state directory (default: .hod-vm/bootc)
+  --disk-size <size>  Disk image size (default: 20G)
+  --force             Recreate the disk image even if it exists
+  --memory <mb>       Guest memory in MB (default: 2048)
+  --cpus <n>          Guest vCPUs (default: 2)
+  --ssh-port <port>   Host port forwarded to guest SSH 22 (default: 2223)
+  --no-boot           Generate disk only, do not boot
+  -h, --help          Show this help
+
+Environment:
+  HOD_VM_BIND_ADDR    Address for forwarded ports (default: 10.10.0.6)
+USAGE
+}
+
+image_tag="hod-bootc:latest"
+state_dir=""
+disk_size="20G"
+force=false
+memory=2048
+cpus=2
+ssh_port=2223
+no_boot=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --image-tag)  image_tag="$2"; shift 2 ;;
+    --state-dir)  state_dir="$2"; shift 2 ;;
+    --disk-size)  disk_size="$2"; shift 2 ;;
+    --force)      force=true; shift ;;
+    --memory)     memory="$2"; shift 2 ;;
+    --cpus)       cpus="$2"; shift 2 ;;
+    --ssh-port)   ssh_port="$2"; shift 2 ;;
+    --no-boot)    no_boot=true; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'hod-bootc-run: missing %s; run inside `nix develop --accept-flake-config`\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need podman
+need qemu-system-x86_64
+need qemu-img
+
+state_dir=${state_dir:-.hod-vm/bootc}
+disk_image=$state_dir/hod-bootc.qcow2
+bind_addr=${HOD_VM_BIND_ADDR:-10.10.0.6}
+
+# ---------------------------------------------------------------------------
+# 1. Generate disk image
+# ---------------------------------------------------------------------------
+if [[ "$force" == true || ! -f "$disk_image" ]]; then
+  need sfdisk
+  need mkfs.ext4
+  need mke2fs
+
+  # Ensure image is in root podman store
+  if ! sudo podman image exists "$image_tag" 2>/dev/null; then
+    printf '[hod-bootc] transferring image to root podman store\n' >&2
+    tmp_archive=$state_dir/image-transfer.tar
+    podman save --output "$tmp_archive" "$image_tag"
+    sudo podman load --input "$tmp_archive"
+    rm -f "$tmp_archive"
+  fi
+
+  printf '[hod-bootc] creating container to mount rootfs\n' >&2
+  ctr_id=$(sudo podman create "$image_tag" /bin/true)
+  cleanup_ctr() { sudo podman rm "$ctr_id" >/dev/null 2>&1 || true; }
+  trap cleanup_ctr EXIT
+
+  rootfs=$(sudo podman mount "$ctr_id")
+  cleanup_mount() { sudo podman umount "$ctr_id" >/dev/null 2>&1 || true; cleanup_ctr; }
+  trap cleanup_mount EXIT
+
+  printf '[hod-bootc] rootfs mounted at %s\n' "$rootfs" >&2
+
+  # Create raw disk
+  disk_raw=$state_dir/hod-bootc.raw
+  rm -f "$disk_raw"
+  fallocate -l "$disk_size" "$disk_raw"
+
+  # Partition: 512MB ESP + rest root
+  printf '[hod-bootc] partitioning disk\n' >&2
+  sfdisk "$disk_raw" <<EOF
+label: gpt
+type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, size=512MiB, name=ESP
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root
+EOF
+
+  # Calculate partition offsets (512-byte sectors)
+  esp_start=2048
+  esp_sectors=1048576
+  root_start=$((esp_start + esp_sectors))
+
+  # Set up loop devices for each partition using offset
+  printf '[hod-bootc] formatting partitions\n' >&2
+  esp_loop=$(sudo losetup --find --show --offset $((esp_start * 512)) --sizelimit $((esp_sectors * 512)) "$disk_raw")
+  root_loop=$(sudo losetup --find --show --offset $((root_start * 512)) "$disk_raw")
+
+  cleanup_loop() {
+    sudo umount "$root_mnt" 2>/dev/null || true
+    sudo umount "$esp_mnt" 2>/dev/null || true
+    sudo losetup -d "$root_loop" 2>/dev/null || true
+    sudo losetup -d "$esp_loop" 2>/dev/null || true
+    cleanup_mount
+  }
+  trap cleanup_loop EXIT
+
+  sudo mkfs.vfat -F32 -n EFI "$esp_loop"
+  sudo mkfs.ext4 -L root "$root_loop"
+
+  # Mount and copy rootfs
+  root_mnt=$state_dir/mnt-root
+  esp_mnt=$state_dir/mnt-esp
+  rm -rf "$root_mnt" "$esp_mnt"
+  mkdir -p "$root_mnt" "$esp_mnt"
+
+  sudo mount "$root_loop" "$root_mnt"
+  sudo mount "$esp_loop" "$esp_mnt"
+
+  printf '[hod-bootc] copying rootfs (%s) — this may take a minute\n' "$rootfs" >&2
+  sudo cp -a "$rootfs"/. "$root_mnt"/
+
+  # Install systemd-boot
+  printf '[hod-bootc] installing systemd-boot\n' >&2
+  sudo mkdir -p "$esp_mnt"/EFI/systemd "$esp_mnt"/EFI/BOOT
+  if [[ -f "$root_mnt"/usr/lib/systemd/boot/efi/systemd-bootx64.efi ]]; then
+    sudo cp "$root_mnt"/usr/lib/systemd/boot/efi/systemd-bootx64.efi "$esp_mnt"/EFI/systemd/systemd-bootx64.efi
+    sudo cp "$root_mnt"/usr/lib/systemd/boot/efi/systemd-bootx64.efi "$esp_mnt"/EFI/BOOT/BOOTX64.EFI
+  fi
+
+  # Set up boot entry
+  kver=$(ls "$root_mnt"/usr/lib/modules/ | head -1)
+  printf '[hod-bootc] kernel version: %s\n' "$kver" >&2
+
+  sudo mkdir -p "$esp_mnt"/"$kver"
+  sudo cp "$root_mnt"/usr/lib/modules/"$kver"/vmlinuz "$esp_mnt"/"$kver"/vmlinuz 2>/dev/null || \
+    sudo cp "$root_mnt"/boot/vmlinuz-"$kver" "$esp_mnt"/"$kver"/vmlinuz 2>/dev/null || true
+  sudo cp "$root_mnt"/usr/lib/modules/"$kver"/initramfs.img "$esp_mnt"/"$kver"/initramfs.img 2>/dev/null || \
+    sudo cp "$root_mnt"/boot/initramfs-"$kver".img "$esp_mnt"/"$kver"/initramfs.img 2>/dev/null || true
+
+  # Create boot loader entry
+  sudo mkdir -p "$esp_mnt"/loader/entries
+  cat <<ENTRY | sudo tee "$esp_mnt"/loader/entries/hod.conf > /dev/null
+title Hod OS
+version $kver
+linux /$kver/vmlinuz
+initrd /$kver/initramfs.img
+  options root=/dev/vda2 rw console=ttyS0 quiet
+ENTRY
+  echo "default hod.conf" | sudo tee "$esp_mnt"/loader/loader.conf > /dev/null
+
+  # Verify ESP content
+  printf '[hod-bootc] ESP contents:\n' >&2
+  sudo find "$esp_mnt" -type f | sort | sed 's/^/  /' >&2
+
+  # Generate fstab
+  cat <<FSTAB | sudo tee "$root_mnt"/etc/fstab > /dev/null
+LABEL=root  /      ext4  defaults  0 1
+FSTAB
+
+  # Unmount
+  sudo umount "$esp_mnt"
+  sudo umount "$root_mnt"
+  sudo losetup -d "$root_loop"
+  sudo losetup -d "$esp_loop"
+
+  # Reset trap since we cleaned up
+  trap cleanup_mount EXIT
+
+  # Convert to qcow2
+  printf '[hod-bootc] converting to qcow2\n' >&2
+  qemu-img convert -f raw -O qcow2 "$disk_raw" "$disk_image"
+  rm -f "$disk_raw"
+
+  # Cleanup
+  sudo podman umount "$ctr_id" >/dev/null 2>&1 || true
+  sudo podman rm "$ctr_id" >/dev/null 2>&1 || true
+  trap - EXIT
+
+  printf '[hod-bootc] disk image ready: %s\n' "$disk_image" >&2
+else
+  printf '[hod-bootc] reusing existing disk: %s\n' "$disk_image" >&2
+fi
+
+if [[ "$no_boot" == true ]]; then
+  printf '[hod-bootc] disk image only (--no-boot)\n' >&2
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Boot in QEMU
+# ---------------------------------------------------------------------------
+accel_args=(-accel tcg)
+if [[ -r /dev/kvm && -w /dev/kvm ]]; then
+  accel_args=(-accel kvm)
+fi
+
+printf '[hod-bootc] guest SSH will be available at %s:%s after boot\n' "$bind_addr" "$ssh_port" >&2
+printf '[hod-bootc] serial console attached below; use Ctrl-a x to quit QEMU\n' >&2
+
+extra_args=()
+if [[ -n ${HOD_VM_EXTRA_QEMU:-} ]]; then
+  # shellcheck disable=SC2206
+  extra_args=($HOD_VM_EXTRA_QEMU)
+fi
+
+# UEFI firmware for systemd-boot
+ovmf_code=""
+ovmf_vars=""
+for candidate in \
+  /nix/store/*-OVMF-*-fd/FV/OVMF_CODE.fd \
+  /usr/share/OVMF/OVMF_CODE.fd \
+  /usr/share/edk2/ovmf/OVMF_CODE.fd; do
+  if [[ -f "$candidate" ]]; then
+    ovmf_code=$candidate
+    break
+  fi
+done
+for candidate in \
+  /nix/store/*-OVMF-*-fd/FV/OVMF_VARS.fd \
+  /usr/share/OVMF/OVMF_VARS.fd \
+  /usr/share/edk2/ovmf/OVMF_VARS.fd; do
+  if [[ -f "$candidate" ]]; then
+    ovmf_vars=$candidate
+    break
+  fi
+done
+
+uefi_args=()
+if [[ -n "$ovmf_code" && -n "$ovmf_vars" ]]; then
+  # Copy VARS to a writable location so QEMU can modify it
+  vars_copy=$state_dir/ovmf_vars.fd
+  cp "$ovmf_vars" "$vars_copy"
+  chmod 644 "$vars_copy"
+  uefi_args=(-drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+             -drive "if=pflash,format=raw,file=$vars_copy")
+  printf '[hod-bootc] using UEFI boot with %s\n' "$ovmf_code" >&2
+else
+  printf '[hod-bootc] WARNING: no OVMF firmware found, BIOS boot only\n' >&2
+fi
+
+exec qemu-system-x86_64 \
+  "${accel_args[@]}" \
+  "${uefi_args[@]}" \
+  -m "$memory" \
+  -smp "$cpus" \
+  -drive "file=$disk_image,if=virtio,format=qcow2" \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:$bind_addr:$ssh_port-:22" \
+  -display none \
+  -serial mon:stdio \
+  "${extra_args[@]}"

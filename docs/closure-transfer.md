@@ -20,8 +20,6 @@ src/closure.rs    Closure resolution, display, transfer, and archive logic
 src/main.rs       CLI subcommands: `closure` and `copy-closure`
 ```
 
-The historical design document is at `plans/copy-closure-design.md`.
-
 ## `hod closure` — Inspect a Closure
 
 Resolves the runtime closure of a recipe and prints a human-readable summary.

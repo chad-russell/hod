@@ -15,7 +15,7 @@ This file is the **agent/LLM quick-start**. `README.md` is human-oriented; this 
 - **Hod is not source-only.** Prefer upstream release binaries when that is the pragmatic supported path, as long as artifacts are content-hashed and made self-contained in the Hod store (host may provide the Linux kernel, not userland libraries/interpreters).
 - **`.hod` files are not the normal workflow.** They are for import/export/debugging.
 - **There is no top-level `PRD.md`.** Do not add new references to it.
-- **Current behavior lives in `docs/`, source, and tests.** `plans/` contains design history and active planning notes, but many files there are historical.
+- **Current behavior lives in `docs/`, source, and tests.** `plans/` contains active planning notes plus a small set of recently-implemented design records; deletes happen as plans land and their content is absorbed elsewhere.
 - **Some ignored tests and old notes still mention historical checked-in `.hod` recipes.** Treat those as historical unless you confirm the current code path still uses them.
 
 ## High-signal repo map
@@ -109,6 +109,19 @@ nix develop --accept-flake-config --command cargo test -- --test-threads=1
 ```
 
 Avoid ignored bootstrap/sandbox tests unless explicitly asked.
+
+For end-to-end VM validation (boot a fresh Alpine snapshot, deploy
+profiles, run smoke suites, tear down), use the framework in `tests/vm/`:
+
+```bash
+nix develop --accept-flake-config --command scripts/hod-vm-test
+nix develop --accept-flake-config --command scripts/hod-vm-test --suite invariants
+```
+
+See `tests/vm/README.md` for full options. The framework is the canonical
+way to confirm closure transfer + runtime relocation still hold after
+changes to `src/build.rs`, `src/sandbox.rs`, `src/wrap.rs`, `src/relocate.rs`,
+or `src/packed.rs`.
 
 ## Recent milestone
 

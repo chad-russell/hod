@@ -20,7 +20,7 @@ import { seatdRecipe } from "../seatd/seatd.js";
 import { mesonProfile } from "../../helpers/meson.js";
 import { STRIP_ALL } from "../../helpers/strip.js";
 
-export const libinputRuntimeDeps = ["eudev", "seatd", "toolchain"];
+export const libinputRuntimeDeps = ["eudev", "libevdev", "mtdev", "seatd", "toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({

@@ -18,6 +18,7 @@ import { libclcSourceRecipe } from "./libclc-source.js";
 const recipe = await shellBuild({
   ...cProfile({
     binDeps: ["cmake", "ninja", "spirv-tools"],
+    libDeps: ["zlib", "zstd"],
   }),
   script: `
 cp -a /deps/source/. /tmp/build

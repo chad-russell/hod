@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/hod-arch-run [options]
+
+Boot the Hod OS Arch image in QEMU with direct kernel boot.
+No bootloader, no partition table — fastest possible dev loop.
+
+Options:
+  --state-dir <dir>   Build state directory (default: .hod-vm/arch)
+  --memory <mb>       Guest memory in MB (default: 4096)
+  --cpus <n>          Guest vCPUs (default: 2)
+  --ssh-port <port>   Host port forwarded to guest SSH 22 (default: 2223)
+  --graphics          Enable graphical display (virtio-vga, QEMU window)
+  --vnc               Enable VNC display on :0 (port 5900)
+  -h, --help          Show this help
+
+Environment:
+  HOD_VM_BIND_ADDR    Address for forwarded ports (default: 10.10.0.6)
+  HOD_VM_EXTRA_QEMU   Extra QEMU arguments (space-separated)
+
+Requirements:
+  - Run inside `nix develop --accept-flake-config` (needs qemu-system-x86_64)
+  - Build the image first with scripts/hod-arch-build
+USAGE
+}
+
+state_dir=""
+memory=4096
+cpus=2
+ssh_port=2223
+graphics=false
+vnc=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --state-dir) state_dir="$2"; shift 2 ;;
+    --memory)    memory="$2"; shift 2 ;;
+    --cpus)      cpus="$2"; shift 2 ;;
+    --ssh-port)  ssh_port="$2"; shift 2 ;;
+    --graphics)  graphics=true; shift ;;
+    --vnc)       vnc=true; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'hod-arch-run: missing %s; run inside `nix develop --accept-flake-config`\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need qemu-system-x86_64
+
+state_dir=${state_dir:-.hod-vm/arch}
+bind_addr=${HOD_VM_BIND_ADDR:-10.10.0.6}
+
+kernel=$state_dir/vmlinuz
+initrd=$state_dir/initramfs.img
+disk_image=$state_dir/hod-arch.qcow2
+
+for f in "$kernel" "$initrd" "$disk_image"; do
+  if [[ ! -f "$f" ]]; then
+    printf 'hod-arch-run: missing %s; run scripts/hod-arch-build first\n' "$f" >&2
+    exit 1
+  fi
+done
+
+accel_args=(-accel kvm)
+if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+  accel_args=(-accel tcg)
+  printf '[hod-arch] WARNING: KVM not available, using TCG (slow)\n' >&2
+fi
+
+printf '[hod-arch] guest SSH will be available at %s:%s after boot\n' "$bind_addr" "$ssh_port" >&2
+printf '[hod-arch] serial console attached below; use Ctrl-a x to quit QEMU\n' >&2
+
+extra_args=()
+if [[ -n ${HOD_VM_EXTRA_QEMU:-} ]]; then
+  extra_args=($HOD_VM_EXTRA_QEMU)
+fi
+
+display_args=()
+if [[ "$graphics" == true ]]; then
+  display_args=(
+    -device virtio-vga
+    -serial mon:stdio
+  )
+  printf '[hod-arch] graphics mode enabled (virtio-vga)\n' >&2
+elif [[ "$vnc" == true ]]; then
+  display_args=(
+    -device virtio-vga
+    -vnc :0
+    -serial mon:stdio
+  )
+  printf '[hod-arch] VNC mode enabled on :0 (port 5900, virtio-vga)\n' >&2
+else
+  display_args=(-nographic)
+fi
+
+exec qemu-system-x86_64 \
+  "${accel_args[@]}" \
+  -cpu host \
+  -m "$memory" \
+  -smp "$cpus" \
+  -kernel "$kernel" \
+  -initrd "$initrd" \
+  -append "root=/dev/vda rw console=ttyS0" \
+  -drive "file=$disk_image,if=virtio,format=qcow2" \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:$bind_addr:$ssh_port-:22" \
+  "${display_args[@]}" \
+  "${extra_args[@]}"

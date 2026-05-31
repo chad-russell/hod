@@ -11,11 +11,14 @@
 //! Sandbox filesystem layout:
 //! ```text
 //! /                   (root = sandbox_root on host)
-//! ├── <shard>/<hash>/ → bind-mounted dependency outputs at canonical store paths
-//! ├── store/
-//! │   └── <shard>/<hash>/ -> ../../<shard>/<hash>/
+//! ├── store/          → canonical Hod store root (mirrors host layout exactly)
+//! │   ├── staging/
+//! │   │   └── <shard>/<hash>/   → bind-mounted dependency outputs
+//! │   ├── blobs/      → empty placeholder (future: read-only host blob CAS)
+//! │   ├── recipes/    → empty placeholder
+//! │   └── tmp/        → empty placeholder
 //! ├── deps/
-//! │   ├── <name>/    -> ../<shard>/<hash>/
+//! │   ├── <name>/     -> ../store/staging/<shard>/<hash>/  (ergonomic alias)
 //! │   └── ...
 //! ├── tmp/            → writable (bind-mounted host tmp or tmpfs)
 //! ├── dev/            → bind-mounted from host /dev
@@ -24,6 +27,13 @@
 //! └── homeless-shelter/
 //!     └── (writable $HOME)
 //! ```
+//!
+//! The sandbox is a **real, miniature Hod store** at `/store/`, identical in
+//! shape to the host store. This means RUNPATH math, AT_EXECFN bootstrap math,
+//! and PT_INTERP paths all compute the same relative paths in the sandbox as
+//! they do on the host — only the store *root* differs. This eliminates the
+//! depth/path mismatches that previously required ad-hoc workarounds for
+//! relocated binaries used as build-time deps.
 
 use std::collections::HashMap;
 use std::io;
@@ -37,16 +47,15 @@ use crate::build::BuildError;
 
 /// A dependency to be mounted in the sandbox.
 ///
-/// Each dep's output is bind-mounted at the canonical store-shaped path
-/// `/<shard>/<hex>/`. For convenience, the sandbox also creates:
-/// - `/store/<shard>/<hex>/ -> ../../<shard>/<hex>/`
-/// - `/deps/<name>/ -> ../<shard>/<hex>/`
+/// Each dep's output is bind-mounted at the canonical store path
+/// `/store/staging/<shard>/<hex>/`, which mirrors the host store layout
+/// exactly. For build-script ergonomics, the sandbox also creates:
+/// - `/deps/<name>/ -> ../store/staging/<shard>/<hex>/`
 ///
-/// The canonical `/<shard>/<hex>/` path is important: store-relative
-/// `PT_INTERP` paths in relocated executables are interpreted relative to the
-/// *invocation path*, so named aliases like `/deps/<name>/bin/tool` only work
-/// if walking `../../../<shard>/<hash>/...` from that alias lands on a real
-/// top-level shard directory.
+/// Because the sandbox layout is identical in shape to the host store
+/// (only the root path differs: `/store` vs. `<host_root>`), the relative
+/// paths encoded by `$ORIGIN/../...` RUNPATHs and AT_EXECFN bootstraps
+/// resolve to the correct deps in both environments.
 #[derive(Debug, Clone)]
 pub struct DepMount {
     /// Human-readable dependency name (e.g., "gcc", "glibc").
@@ -72,9 +81,9 @@ pub struct SandboxConfig {
     pub sandbox_root: PathBuf,
     /// Named dependencies to mount in the sandbox.
     ///
-    /// Each dep is bind-mounted at `/<shard>/<hex>/` (the canonical store-like
-    /// path inside the sandbox), with compatibility aliases at
-    /// `/store/<shard>/<hex>/` and `/deps/<name>/`.
+    /// Each dep is bind-mounted at `/store/staging/<shard>/<hex>/` (the
+    /// canonical store path, identical in shape to the host store), with
+    /// an ergonomic alias at `/deps/<name>/`.
     pub deps: Vec<DepMount>,
     /// Guest path where the process writes output (e.g. `/out`).
     pub out_path: PathBuf,
@@ -127,21 +136,37 @@ pub fn setup_sandbox_filesystem(config: &SandboxConfig) -> Result<(), BuildError
 
     std::fs::create_dir_all(root).map_err(io_error)?;
 
+    // Top-level sandbox directories (no shard dirs at the root anymore —
+    // those live under /store/staging/ to mirror the host store layout).
     let dirs = [
-        "store", "deps", "tmp", "dev", "proc", "out", "homeless-shelter",
-        "bin", "usr", "lib", "lib64", "etc", "sbin", "nix",
+        "store",
+        "store/staging",
+        "store/blobs",
+        "store/recipes",
+        "store/tmp",
+        "deps",
+        "tmp",
+        "dev",
+        "proc",
+        "out",
+        "homeless-shelter",
+        "bin",
+        "usr",
+        "lib",
+        "lib64",
+        "etc",
+        "sbin",
+        "nix",
     ];
     for dir in &dirs {
         std::fs::create_dir_all(root.join(dir)).map_err(io_error)?;
     }
 
-    // Create canonical and compatibility mount points for each dependency.
+    // Pre-create the canonical bind-mount target dir for each dep.
+    let staging_dir = root.join("store").join("staging");
     for dep in &config.deps {
-        let canonical_path = root.join(&dep.store_shard).join(&dep.store_hex);
+        let canonical_path = staging_dir.join(&dep.store_shard).join(&dep.store_hex);
         std::fs::create_dir_all(&canonical_path).map_err(io_error)?;
-
-        let store_shard_dir = root.join("store").join(&dep.store_shard);
-        std::fs::create_dir_all(&store_shard_dir).map_err(io_error)?;
     }
 
     Ok(())
@@ -382,25 +407,25 @@ mod linux_sandbox {
 
 
         // -- Dependencies --
-        // Bind each dep at the canonical store-like path /<shard>/<hex>/.
-        // Then create two alias layers:
-        //   - /store/<shard>/<hex>/ -> ../../<shard>/<hex>/
-        //   - /deps/<name>/         -> ../<shard>/<hex>/
+        // Bind each dep at its canonical store path:
+        //   /store/staging/<shard>/<hex>/
+        // This mirrors the host store layout exactly, so RUNPATH math and
+        // AT_EXECFN bootstrap math compute the same relative paths inside
+        // the sandbox as on the host.
         //
-        // The canonical top-level shard directories are what make raw
-        // store-relative PT_INTERP paths work even when a tool is invoked via
-        // the human-friendly /deps/<name>/ alias: walking ../../../<shard>/<hash>
-        // from /deps/<name>/bin/tool lands on /<shard>/<hash>/.
+        // For ergonomics, also create:
+        //   /deps/<name>/ -> ../store/staging/<shard>/<hex>/
         let store_dir = root.join("store");
+        let staging_dir = store_dir.join("staging");
         let deps_dir = root.join("deps");
-        std::fs::create_dir_all(&store_dir)?;
+        std::fs::create_dir_all(&staging_dir)?;
         std::fs::create_dir_all(&deps_dir)?;
 
         for dep in deps {
-            let canonical_path = root.join(&dep.store_shard).join(&dep.store_hex);
+            let canonical_path = staging_dir.join(&dep.store_shard).join(&dep.store_hex);
             std::fs::create_dir_all(&canonical_path)?;
 
-            // Bind-mount the dep's staging directory at /<shard>/<hex>/
+            // Bind-mount the dep's staging directory at /store/staging/<shard>/<hex>/
             match mount(
                 Some(&dep.host_staging_path),
                 &canonical_path,
@@ -427,31 +452,28 @@ mod linux_sandbox {
                 }
             }
 
-            // Create /store/<shard>/<hex> -> ../../<shard>/<hex>
-            let store_shard_dir = store_dir.join(&dep.store_shard);
-            std::fs::create_dir_all(&store_shard_dir)?;
-            let store_alias = store_shard_dir.join(&dep.store_hex);
-            if store_alias.is_symlink() {
-                let _ = std::fs::remove_file(&store_alias);
-            } else if store_alias.is_dir() {
-                let _ = std::fs::remove_dir_all(&store_alias);
-            } else if store_alias.is_file() {
-                let _ = std::fs::remove_file(&store_alias);
+            // Create /deps/<name> -> ../store/staging/<shard>/<hex>
+            //
+            // Synthetic names (starting with '<', e.g. "<transitive>") are
+            // bind-mounted at the canonical store path but do NOT get a
+            // /deps/<name>/ alias. Transitive runtime-closure deps use this
+            // pattern so they're reachable for store-relative RUNPATH/PT_INTERP
+            // resolution without polluting /deps/ or risking name collisions.
+            if !dep.name.starts_with('<') {
+                let symlink_path = deps_dir.join(&dep.name);
+                if symlink_path.is_symlink() {
+                    let _ = std::fs::remove_file(&symlink_path);
+                } else if symlink_path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&symlink_path);
+                } else if symlink_path.is_file() {
+                    let _ = std::fs::remove_file(&symlink_path);
+                }
+                let symlink_target = format!(
+                    "../store/staging/{}/{}",
+                    dep.store_shard, dep.store_hex
+                );
+                std::os::unix::fs::symlink(&symlink_target, &symlink_path)?;
             }
-            let store_target = format!("../../{}/{}", dep.store_shard, dep.store_hex);
-            std::os::unix::fs::symlink(&store_target, &store_alias)?;
-
-            // Create /deps/<name> -> ../<shard>/<hex>
-            let symlink_path = deps_dir.join(&dep.name);
-            if symlink_path.is_symlink() {
-                let _ = std::fs::remove_file(&symlink_path);
-            } else if symlink_path.is_dir() {
-                let _ = std::fs::remove_dir_all(&symlink_path);
-            } else if symlink_path.is_file() {
-                let _ = std::fs::remove_file(&symlink_path);
-            }
-            let symlink_target = format!("../{}/{}", dep.store_shard, dep.store_hex);
-            std::os::unix::fs::symlink(&symlink_target, &symlink_path)?;
         }
 
         // -- /tmp (writable) --

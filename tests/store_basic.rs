@@ -242,7 +242,7 @@ fn output_store_and_lookup() {
     let output_hash = test_hash_b();
 
     store
-        .store_output(&recipe_hash, &output_hash, 42)
+        .store_output(&recipe_hash, &output_hash, 42, None)
         .expect("store output");
 
     let found = store.get_output(&recipe_hash).expect("get output");
@@ -265,10 +265,10 @@ fn output_overwrite_on_rebuild() {
     let output_hash_v2 = test_hash_b();
 
     store
-        .store_output(&recipe_hash, &output_hash_v1, 10)
+        .store_output(&recipe_hash, &output_hash_v1, 10, None)
         .expect("store v1");
     store
-        .store_output(&recipe_hash, &output_hash_v2, 20)
+        .store_output(&recipe_hash, &output_hash_v2, 20, None)
         .expect("store v2");
 
     let found = store.get_output(&recipe_hash).expect("get output");

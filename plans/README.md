@@ -31,7 +31,9 @@ The next concrete tasks under this roadmap are tracked as their own plans:
    the Arch seed + direct kernel boot approach.
 3. **`hod-arch-os.md`** — Implemented. Arch seed VM with all acceptance
    criteria met.
-4. **`future-tracks.md`** — Active. Backlog of well-scoped tracks
+4. **`niri-desktop-roadmap.md`** — Active. Current desktop target for the Arch
+   VM: package Niri and a minimal compositor-first user environment.
+5. **`future-tracks.md`** — Active. Backlog of well-scoped tracks
    (graphical session, recipe ergonomics cleanup, closure distribution
    UX, trust-base reduction, plus the existing bindgen plan). Promote to
    real plans when ready to start.
@@ -54,7 +56,8 @@ implemented.
 
 | File | Status | Notes |
 |------|--------|-------|
-| `cosmic-desktop-roadmap.md` | Active sub-plan | Full COSMIC component build plan. Pairs with `cosmic-on-hod-vm.md` for the desktop phase of `minimal-hod-vm-roadmap.md`. |
+| `niri-desktop-roadmap.md` | Active sub-plan | Smaller compositor-first desktop target for the Arch VM. |
+| `cosmic-desktop-roadmap.md` | Paused | COSMIC binaries build, but usable shell requires broader distro-style integration. |
 | `bindgen-infrastructure.md` | Active | Hermetic bindgen for the sandbox. Unblocks `xdg-desktop-portal-cosmic` and other crates that run bindgen at build time. |
 | `standardize-strip-in-profiles.md` | Active cleanup candidate | Small, scoped cleanup for shared-library stripping. |
 

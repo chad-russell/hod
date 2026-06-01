@@ -89,13 +89,34 @@ impl std::fmt::Display for BuildError {
                 hash_to_hex(dep_hash),
             ),
             Self::ProcessFailed {
-                exit_code, stderr, ..
+                exit_code, stdout, stderr, ..
             } => {
                 write!(f, "build process failed with exit code {exit_code}")?;
+                if !stdout.is_empty() {
+                    let stdout_str = String::from_utf8_lossy(stdout);
+                    let preview = stdout_str
+                        .lines()
+                        .rev()
+                        .take(80)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    write!(f, "\n--- stdout tail ---\n{preview}")?;
+                }
                 if !stderr.is_empty() {
                     let stderr_str = String::from_utf8_lossy(stderr);
-                    let preview = stderr_str.chars().take(500).collect::<String>();
-                    write!(f, "\n{preview}")?;
+                    let preview = stderr_str
+                        .lines()
+                        .rev()
+                        .take(160)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    write!(f, "\n--- stderr tail ---\n{preview}")?;
                 }
                 Ok(())
             }

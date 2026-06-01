@@ -15,6 +15,7 @@ Options:
   --ssh-port <port>   Host port forwarded to guest SSH 22 (default: 2223)
   --graphics          Enable graphical display (virtio-vga, QEMU window)
   --gl                Use virtio-vga-gl + GTK OpenGL display (local graphics only)
+  --egl-headless      Use virtio-vga-gl + EGL headless display (debug only)
   --vnc               Enable VNC display on :0 (port 5900)
   -h, --help          Show this help
 
@@ -36,6 +37,7 @@ ssh_port=2223
 graphics=false
 gl=false
 vnc=false
+egl_headless=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-port)  ssh_port="$2"; shift 2 ;;
     --graphics)  graphics=true; shift ;;
     --gl)        gl=true; shift ;;
+    --egl-headless) egl_headless=true; gl=true; shift ;;
     --vnc)       vnc=true; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
@@ -92,7 +95,14 @@ if [[ -n ${HOD_VM_EXTRA_QEMU:-} ]]; then
 fi
 
 display_args=()
-if [[ "$graphics" == true ]]; then
+if [[ "$egl_headless" == true ]]; then
+  display_args=(
+    -display egl-headless
+    -device virtio-vga-gl
+    -serial mon:stdio
+  )
+  printf '[hod-arch] EGL headless mode enabled (virtio-vga-gl)\n' >&2
+elif [[ "$graphics" == true ]]; then
   if [[ "$gl" == true ]]; then
     display_args=(
       -display gtk,gl=on

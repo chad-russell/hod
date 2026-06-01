@@ -15,6 +15,7 @@ This directory is the **current documentation authority** for Hod.
 | Understand runtime relocation / portability | `relocatable-binaries-guide.md`, `closure-transfer.md` |
 | Work on profiles / end-user activation | `profiles.md`, `system-profiles.md` |
 | Work on the minimal Hod VM | `minimal-vm-workflow.md`, `../plans/minimal-hod-vm-roadmap.md` |
+| Work on desktop environments | `../plans/niri-desktop-roadmap.md`, `../plans/cosmic-desktop-roadmap.md` |
 | Build a bootc-derived Hod OS image | `bootc-image-workflow.md` |
 | Add or run automated VM tests | `../tests/vm/README.md` |
 | Work on build env policy / metadata | `build-environment-and-metadata.md` |
@@ -55,9 +56,25 @@ Prior milestone (still valid):
 - build **Nautilus 48.7** from source (full GTK4/libadwaita GUI stack)
 - copy its closure to another machine and run it there — closure transfer + relocation + wrapper/runtime setup work for complex GUI apps
 
+## Desktop status
+
+COSMIC is currently **paused** as the main desktop target. Hod can build the
+COSMIC component binaries, but a usable COSMIC desktop requires distro-level
+integration beyond source builds: upstream install data, `/share/cosmic`,
+wallpapers, portals, systemd user units, D-Bus activation, dconf/polkit/upower,
+and package-specific feature choices. Recent VM debugging confirmed that normal
+Wayland client windows render under `cosmic-comp`, but the shell remains
+incomplete due to layer-shell/default-data/session integration gaps. See
+`../plans/cosmic-desktop-roadmap.md` for the paused state.
+
+The active desktop direction is now a smaller Niri environment. Niri is a
+compositor/window manager rather than a full desktop environment, so Hod can
+provide a minimal usable session with `niri`, `alacritty`, `mako`, and a small
+Hod-authored config before packaging a full portal/bar/launcher ecosystem. See
+`../plans/niri-desktop-roadmap.md`.
+
 ## Suggested next fronts
 
-1. **Heartbeat service PoC** — trivial Hod service as a systemd unit, proving the baked-service deploy path. See `../plans/heartbeat-service-poc.md`.
-2. **COSMIC desktop on bootc VM** — full desktop on the Fedora bootc base. See `../plans/cosmic-on-hod-vm.md`.
-3. Improve closure pull/cache workflows (`copy-closure --from`).
-4. Keep shrinking the bootstrap trust base.
+1. **Niri desktop on Arch VM** — smaller compositor-first desktop target. See `../plans/niri-desktop-roadmap.md`.
+2. Improve closure pull/cache workflows (`copy-closure --from`).
+3. Keep shrinking the bootstrap trust base.

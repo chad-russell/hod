@@ -160,6 +160,24 @@ enum Commands {
         store: Option<PathBuf>,
     },
 
+    /// Print stored build stdout/stderr for a recipe hash.
+    Logs {
+        /// BLAKE3 recipe hash (hex, 64 characters).
+        hash: String,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Only print stdout.
+        #[arg(long)]
+        stdout: bool,
+
+        /// Only print stderr.
+        #[arg(long)]
+        stderr: bool,
+    },
+
     /// Reset the store: delete all recipes, outputs, blobs, and build logs.
     Reset {
         /// Override store location.
@@ -500,12 +518,20 @@ enum SystemAction {
     Build {
         /// Path to the system profile .ts file.
         profile_file: PathBuf,
+
+        /// Keep sandbox working directories on build failure.
+        #[arg(long)]
+        keep_failed: bool,
     },
 
     /// Build, materialize a new generation, and switch `current` to it.
     Activate {
         /// Path to the system profile .ts file.
         profile_file: PathBuf,
+
+        /// Keep sandbox working directories on build failure.
+        #[arg(long)]
+        keep_failed: bool,
     },
 
     /// List system generations.
@@ -559,6 +585,12 @@ fn main() {
             output,
             store,
         } => cmd_export_recipe(hash, output, store),
+        Commands::Logs {
+            hash,
+            store,
+            stdout,
+            stderr,
+        } => cmd_logs(hash, store, stdout, stderr),
         Commands::Reset { store } => cmd_reset(store),
         Commands::Restage { specifier, store } => cmd_restage(specifier, store),
         Commands::BuildRemaining {
@@ -1082,6 +1114,94 @@ fn cmd_export_recipe(hash_str: String, output: PathBuf, store_path: Option<PathB
     }
 
     eprintln!("Exported recipe {hash_str} to {}", output.display());
+    process::exit(0);
+}
+
+fn cmd_logs(hash_str: String, store_path: Option<PathBuf>, only_stdout: bool, only_stderr: bool) -> ! {
+    let hash = match hex_to_hash(&hash_str) {
+        Some(h) => h,
+        None => {
+            eprintln!("hod: invalid hash: '{hash_str}' (expected 64 hex characters)");
+            process::exit(3);
+        }
+    };
+
+    if only_stdout && only_stderr {
+        eprintln!("hod: --stdout and --stderr are mutually exclusive");
+        process::exit(3);
+    }
+
+    let store = match Store::open(&StoreConfig { path: store_path }) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let log = match store.get_build_log(&hash) {
+        Ok(Some(log)) => log,
+        Ok(None) => {
+            eprintln!("hod: no build log found for {hash_str}");
+            process::exit(4);
+        }
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    eprintln!(
+        "[hod] build log for {}: exit_code={}, built_at={}",
+        hash_str, log.exit_code, log.built_at
+    );
+
+    if !only_stderr {
+        if let Some(h) = log.stdout_blob {
+            match store.read_blob(&h) {
+                Ok(bytes) => {
+                    if !only_stdout {
+                        eprintln!("[hod] --- stdout ---");
+                    }
+                    if let Err(e) = std::io::stdout().write_all(&bytes) {
+                        eprintln!("hod: failed to write stdout log: {e}");
+                        process::exit(10);
+                    }
+                    if !bytes.ends_with(b"\n") {
+                        println!();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("hod: failed to read stdout blob: {e}");
+                    process::exit(10);
+                }
+            }
+        }
+    }
+
+    if !only_stdout {
+        if let Some(h) = log.stderr_blob {
+            match store.read_blob(&h) {
+                Ok(bytes) => {
+                    if !only_stderr {
+                        eprintln!("[hod] --- stderr ---");
+                    }
+                    if let Err(e) = std::io::stdout().write_all(&bytes) {
+                        eprintln!("hod: failed to write stderr log: {e}");
+                        process::exit(10);
+                    }
+                    if !bytes.ends_with(b"\n") {
+                        println!();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("hod: failed to read stderr blob: {e}");
+                    process::exit(10);
+                }
+            }
+        }
+    }
+
     process::exit(0);
 }
 
@@ -1869,7 +1989,7 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
         }
     };
 
-    match hod::profile::build_profile(&store, &hashes, quiet) {
+    match hod::profile::build_profile(&store, &hashes, quiet, false) {
         Ok(built) => {
             if built > 0 {
                 eprintln!("[hod] built {} package(s)", built);
@@ -1937,7 +2057,7 @@ fn cmd_profile_copy(
         }
     };
 
-    match hod::profile::build_profile(&store, &hashes, quiet) {
+    match hod::profile::build_profile(&store, &hashes, quiet, false) {
         Ok(built) => {
             if built > 0 {
                 eprintln!("[hod] built {} package(s)", built);
@@ -2143,11 +2263,11 @@ fn cmd_system(action: SystemAction, store_path: Option<PathBuf>, quiet: bool) ->
         SystemAction::Rollback => cmd_system_rollback(),
         SystemAction::Unpin => cmd_system_unpin(),
         SystemAction::Pin { profile_file } => cmd_system_pin(profile_file, store_config),
-        SystemAction::Build { profile_file } => {
-            cmd_system_build_or_activate(profile_file, store_config, quiet, false)
+        SystemAction::Build { profile_file, keep_failed } => {
+            cmd_system_build_or_activate(profile_file, store_config, quiet, keep_failed, false)
         }
-        SystemAction::Activate { profile_file } => {
-            cmd_system_build_or_activate(profile_file, store_config, quiet, true)
+        SystemAction::Activate { profile_file, keep_failed } => {
+            cmd_system_build_or_activate(profile_file, store_config, quiet, keep_failed, true)
         }
     }
 }
@@ -2156,6 +2276,7 @@ fn cmd_system_build_or_activate(
     profile_file: PathBuf,
     store_config: StoreConfig,
     quiet: bool,
+    keep_failed: bool,
     activate: bool,
 ) -> ! {
     eprintln!("[hod] evaluating system profile {}", profile_file.display());
@@ -2181,7 +2302,7 @@ fn cmd_system_build_or_activate(
         }
     };
 
-    match hod::profile::build_profile(&store, &hashes, quiet) {
+    match hod::profile::build_profile(&store, &hashes, quiet, keep_failed) {
         Ok(built) => {
             if built > 0 {
                 eprintln!("[hod] built {} package(s)", built);

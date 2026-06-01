@@ -159,7 +159,12 @@ console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
 
 /// Build any unbuilt packages in the profile. Returns the number of packages
 /// that were actually built (vs already cached).
-pub fn build_profile(store: &Store, hashes: &[Hash], quiet: bool) -> Result<usize, String> {
+pub fn build_profile(
+    store: &Store,
+    hashes: &[Hash],
+    quiet: bool,
+    keep_failed: bool,
+) -> Result<usize, String> {
     // Determine which packages need building
     let mut unbuilt: Vec<Hash> = Vec::new();
     for hash in hashes {
@@ -179,7 +184,7 @@ pub fn build_profile(store: &Store, hashes: &[Hash], quiet: bool) -> Result<usiz
     let options = BuildOptions {
         force: false,
         quiet,
-        keep_failed: false,
+        keep_failed,
     };
 
     let mut built = 0;

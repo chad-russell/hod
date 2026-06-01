@@ -445,6 +445,11 @@ cosmic_session_bin=$(find "$rootfs$image_store" -name cosmic-session -type f -pa
 if [[ -n "$cosmic_session_bin" ]]; then
   cosmic_session_img=${cosmic_session_bin#"$rootfs"}
 
+  # Never bake display-specific runtime state into the image. COSMIC writes the
+  # active monitor mode here; reusing it across QEMU display devices can make
+  # startup fail with "Unable to find matching mode".
+  rm -rf "$rootfs/home/hod/.local/state/cosmic-comp"
+
   # Override getty@tty1 to auto-login hod
   mkdir -p "$rootfs/etc/systemd/system/getty@tty1.service.d"
   cat > "$rootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'AUTOEOF'
@@ -480,6 +485,7 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   export DCONF_PROFILE=cosmic
   export LIBSEAT_BACKEND=seatd
   export COSMIC_DISABLE_SYNCOBJ=1
+  export RUST_LOG=cosmic_comp=debug,cosmic_panel=debug,cosmic_bg=debug,cosmic_settings_daemon=debug,cosmic_osd=debug,warn
   mkdir -p "$XDG_RUNTIME_DIR"
   mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
   chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
@@ -568,6 +574,142 @@ BPEOF
   chown 1000:1000 "$rootfs/home/hod/.bash_profile" 2>/dev/null || true
 
   printf '[hod-arch]   configured COSMIC auto-login (tty1 -> cosmic-session)\n' >&2
+fi
+
+niri_bin=$(find "$rootfs$image_store" -name niri -type f -path '*/bin/*' 2>/dev/null | head -1)
+if [[ -n "$niri_bin" && -z "$cosmic_session_bin" ]]; then
+  mkdir -p "$rootfs/etc/systemd/system/getty@tty1.service.d"
+  cat > "$rootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf" << 'AUTOEOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin hod --noclear %I $TERM
+AUTOEOF
+
+  mkdir -p "$rootfs/home/hod/.config/niri"
+  cat > "$rootfs/home/hod/.config/niri/config.kdl" << 'NIRICFG'
+input {
+    keyboard { xkb {} }
+    touchpad { tap natural-scroll }
+}
+
+layout {
+    gaps 12
+    default-column-width { proportion 0.6; }
+    focus-ring {
+        width 3
+        active-color "#7fc8ff"
+        inactive-color "#505050"
+    }
+}
+
+prefer-no-csd
+
+spawn-at-startup "alacritty"
+
+binds {
+    Mod+T { spawn "alacritty"; }
+    Mod+Q { close-window; }
+    Mod+Shift+E { quit; }
+    Mod+Left  { focus-column-left; }
+    Mod+Right { focus-column-right; }
+    Mod+Up    { focus-window-up; }
+    Mod+Down  { focus-window-down; }
+    Mod+H     { focus-column-left; }
+    Mod+L     { focus-column-right; }
+    Mod+K     { focus-window-up; }
+    Mod+J     { focus-window-down; }
+    Mod+F     { maximize-column; }
+}
+NIRICFG
+  chown -R 1000:1000 "$rootfs/home/hod/.config" 2>/dev/null || true
+
+  cat > "$rootfs/home/hod/.bash_profile" << 'BPEOF'
+# Source profile
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Auto-launch Niri desktop on tty1.
+if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+  export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+  export XDG_SESSION_TYPE=wayland
+  export XDG_CURRENT_DESKTOP=niri
+  export XDG_SESSION_DESKTOP=niri
+  export DESKTOP_SESSION=niri
+  export LIBSEAT_BACKEND=seatd
+  mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+  chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+  _HOD_LD=""
+  for _hod_gl in \
+    /usr/hod/store/staging/*/*/lib/libEGL.so.1 \
+    /usr/hod/store/staging/*/*/lib/libGLdispatch.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgbm.so.1 \
+    /usr/hod/store/staging/*/*/lib/libEGL_mesa.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgallium-*.so \
+    /usr/hod/store/staging/*/*/lib/libwayland-client.so.0 \
+    /usr/hod/store/staging/*/*/lib/libwayland-cursor.so.0 \
+    /usr/hod/store/staging/*/*/lib/libwayland-egl.so.1 \
+    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0; do
+    [ -e "$_hod_gl" ] || continue
+    _hod_lib=$(dirname "$_hod_gl")
+    case ":$_HOD_LD:" in
+      *:"$_hod_lib":*) ;;
+      *) _HOD_LD="$_hod_lib${_HOD_LD:+:$_HOD_LD}" ;;
+    esac
+  done
+  unset _hod_gl _hod_lib
+
+  _HOD_DRI=""
+  for _hod_d in /usr/hod/store/staging/*/*/lib/dri; do
+    [ -d "$_hod_d" ] || continue
+    _HOD_DRI="$_hod_d${_HOD_DRI:+:$_HOD_DRI}"
+  done
+  unset _hod_d
+
+  _HOD_GBM=""
+  for _hod_g in /usr/hod/store/staging/*/*/lib/gbm; do
+    [ -d "$_hod_g" ] || continue
+    _HOD_GBM="$_hod_g${_HOD_GBM:+:$_HOD_GBM}"
+  done
+  unset _hod_g
+
+  _HOD_EGL=""
+  for _hod_e in /usr/hod/store/staging/*/*/share/glvnd/egl_vendor.d; do
+    [ -d "$_hod_e" ] || continue
+    _HOD_EGL="$_hod_e${_HOD_EGL:+:$_HOD_EGL}"
+  done
+  unset _hod_e
+
+  _HOD_XKB=""
+  for _hod_x in /usr/hod/store/staging/*/*/share/X11/xkb; do
+    [ -d "$_hod_x" ] || continue
+    _HOD_XKB="$_hod_x"
+    break
+  done
+  unset _hod_x
+
+  _HOD_DATA=""
+  for _hod_s in /usr/hod/system/current/pkgs/*/share /usr/hod/store/staging/*/*/share; do
+    [ -d "$_hod_s" ] || continue
+    _HOD_DATA="$_hod_s${_HOD_DATA:+:$_HOD_DATA}"
+  done
+  unset _hod_s
+
+  exec env \
+    LD_LIBRARY_PATH="$_HOD_LD" \
+    LIBGL_DRIVERS_PATH="$_HOD_DRI" \
+    GBM_BACKENDS_PATH="$_HOD_GBM" \
+    __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
+    XKB_CONFIG_ROOT="$_HOD_XKB" \
+    XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
+    dbus-run-session -- sh -lc 'dbus-update-activation-environment --all 2>/dev/null || true; exec niri --session'
+fi
+BPEOF
+  chown 1000:1000 "$rootfs/home/hod/.bash_profile" 2>/dev/null || true
+
+  printf '[hod-arch]   configured Niri auto-login (tty1 -> niri --session)\n' >&2
 fi
 
 # ---------------------------------------------------------------------------

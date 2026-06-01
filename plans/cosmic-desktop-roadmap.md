@@ -1,8 +1,30 @@
 # COSMIC Desktop Environment Roadmap
 
-**Status:** Active sub-plan
+**Status:** Paused
 **Date:** 2026-05-19
-**Current authority:** This document; implementation will live in `recipes/native/mesa/`, `recipes/native/cosmic/`, etc.
+**Current authority:** This document records the paused state; current desktop work has moved to `niri-desktop-roadmap.md`.
+
+## Pause Summary
+
+COSMIC component binaries build, and `cosmic-comp` can run in the Arch VM with
+normal xdg-shell clients visible when using `just run-local-gl`. However, the
+desktop shell is not yet usable. Debugging showed the remaining problems are not
+single missing libraries; they are distro-integration issues:
+
+- our recipes copied Rust binaries instead of using upstream install targets, so
+  important data under `/share/cosmic`, D-Bus activation files, systemd user
+  units, wallpaper assets, and applet metadata were incomplete
+- broad `--no-default-features` diverged from Arch/NixOS package choices
+- the real portal stack (`xdg-desktop-portal`, GTK/GNOME/COSMIC backends) is not packaged
+- `cosmic-bg` defaults referenced a missing `/usr/share/backgrounds/cosmic/...` wallpaper
+- stale `/home/hod/.local/state/cosmic-comp/outputs.ron` was baked into images and caused
+  `F_ERR=Unable to find matching mode` across QEMU display changes
+- panel defaults referenced applets/components that are not all packaged or wired
+- `cosmic-settings-daemon` and `cosmic-osd` currently spin at ~100% CPU in the VM
+
+The conclusion is that COSMIC should resume only after Hod has a distro-style
+desktop packaging layer: upstream install target support, real portal packaging,
+systemd user units, D-Bus activation, and path-linked desktop data.
 
 ## Goal
 

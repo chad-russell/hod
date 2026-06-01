@@ -4,7 +4,7 @@ set dotenv-load := true
 #   HOD_REMOTE=builder.example.org just sync-from-remote
 #   HOD_STATE_DIR=~/vm/hod just run-local
 state_dir := env_var_or_default("HOD_STATE_DIR", ".hod-vm/arch")
-profile := env_var_or_default("HOD_PROFILE", "profiles/cosmic-desktop.ts")
+profile := env_var_or_default("HOD_PROFILE", "profiles/niri-desktop.ts")
 remote := env_var_or_default("HOD_REMOTE", "")
 remote_dir := env_var_or_default("HOD_REMOTE_DIR", "/home/crussell/hod")
 ssh_port := env_var_or_default("HOD_SSH_PORT", "2223")
@@ -16,13 +16,19 @@ nix := "nix develop --accept-flake-config --command"
 default:
     @just --list
 
-# Build the COSMIC VM image, reusing the Arch seed rootfs.
-build-cosmic:
+# Build the configured VM profile image, reusing the Arch seed rootfs.
+build-vm:
     {{nix}} scripts/hod-arch-build --skip-rootfs --profile {{profile}} --state-dir {{state_dir}}
 
 # Full rebuild including the Arch seed rootfs. Slower, but useful after base OS changes.
-build-cosmic-full:
+build-vm-full:
     {{nix}} scripts/hod-arch-build --profile {{profile}} --state-dir {{state_dir}}
+
+# Backwards-compatible alias. Prefer `build-vm` with HOD_PROFILE.
+build-cosmic: build-vm
+
+# Backwards-compatible alias. Prefer `build-vm-full` with HOD_PROFILE.
+build-cosmic-full: build-vm-full
 
 # Build the small headless/base image, reusing the Arch seed rootfs.
 build-base:

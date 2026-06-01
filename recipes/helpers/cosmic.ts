@@ -478,6 +478,16 @@ if [ -d /tmp/build/data/default_schema ]; then
     [ -e "$_hod_panel/padding_overlap" ] || printf '0\n' > "$_hod_panel/padding_overlap"
   done
   unset _hod_panel
+  if [ -d $OUT/share/cosmic/com.system76.CosmicPanel.Panel/v1 ]; then
+    printf 'S\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Panel/v1/size
+    printf 'Some(["com.system76.CosmicAppletTime"])\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_center
+    printf 'None\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Panel/v1/plugins_wings
+  fi
+  if [ -d $OUT/share/cosmic/com.system76.CosmicPanel.Dock/v1 ]; then
+    printf 'M\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Dock/v1/size
+    printf 'Some(["com.system76.CosmicPanelLauncherButton", "com.system76.CosmicPanelAppButton", "com.system76.CosmicAppletMinimize"])\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Dock/v1/plugins_center
+    printf 'None\n' > $OUT/share/cosmic/com.system76.CosmicPanel.Dock/v1/plugins_wings
+  fi
 fi
 `,
     opts.postInstallScript,

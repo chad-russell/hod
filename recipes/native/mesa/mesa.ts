@@ -1,10 +1,11 @@
 //! Mesa 26.0.7 — open-source OpenGL/EGL/GBM graphics stack.
 //!
-//! Builds Mesa with the Intel iris driver plus llvmpipe software fallback.
+//! Builds Mesa with Intel iris, virtio/virgl, plus llvmpipe software fallback.
 //!
 //! ## Drivers
 //!
 //! - **iris** (Gallium): Modern Intel OpenGL driver for Gen8+ GPUs.
+//! - **virgl** (Gallium): Virtio-GPU OpenGL driver for QEMU `virtio-vga-gl`.
 //! - **llvmpipe** (Gallium): Software OpenGL renderer using LLVM JIT.
 //!   Provides CPU fallback when no matching hardware driver is available.
 //! - No Vulkan drivers (lavapipe can be added later if needed).
@@ -16,7 +17,7 @@
 //! - `libGLESv2.so` — OpenGL ES 2.0/3.0
 //! - `libgbm.so` — Generic Buffer Manager (needed by Wayland compositors)
 //! - `libglapi.so` — GL API dispatch
-//! - `libgallium-*.so` — Gallium driver shared library (contains iris/llvmpipe)
+//! - `libgallium-*.so` — Gallium driver shared library (contains iris/virgl/llvmpipe)
 //! - DRI driver backends in `lib/dri/`
 //! - GBM backend in `lib/gbm/`
 //!
@@ -203,7 +204,7 @@ meson setup build \\
   --libdir=lib \\
   --buildtype=release \\
   -Dplatforms=x11,wayland \\
-  -Dgallium-drivers=iris,llvmpipe \\
+  -Dgallium-drivers=iris,virgl,llvmpipe \\
   -Dstatic-libclc=spirv,spirv64 \\
   -Dvulkan-drivers= \\
   -Dshared-llvm=false \\

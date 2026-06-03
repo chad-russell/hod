@@ -4,7 +4,7 @@
 //! without screencast support. The Hod VM profile supplies a minimal config and
 //! companion apps separately.
 
-import { dep, importToStore } from "../../../js/src/index.js";
+import { dep, HOD_DUMMY_RPATH_FLAG, importToStore } from "../../../js/src/index.js";
 import { cargoBuild } from "../../helpers/rust.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { rustRecipe } from "../rust/rust.js";
@@ -246,7 +246,13 @@ const recipe = await cargoBuild({
       "/deps/wayland/lib",
       "/deps/zlib/lib",
     ].join(":"),
-    RUSTFLAGS: "-C link-arg=-Wl,--push-state,--no-as-needed -C link-arg=-lEGL -C link-arg=-lwayland-client -C link-arg=-Wl,--pop-state",
+    RUSTFLAGS: [
+      `-C link-arg=${HOD_DUMMY_RPATH_FLAG}`,
+      "-C link-arg=-Wl,--push-state,--no-as-needed",
+      "-C link-arg=-lEGL",
+      "-C link-arg=-lwayland-client",
+      "-C link-arg=-Wl,--pop-state",
+    ].join(" "),
   },
   cargoFlags: ["--no-default-features", "--features", "dbus"],
   unsafe_flags: 0x01,

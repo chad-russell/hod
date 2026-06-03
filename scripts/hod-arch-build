@@ -499,7 +499,24 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     /usr/hod/store/staging/*/*/lib/libwayland-client.so.0 \
     /usr/hod/store/staging/*/*/lib/libwayland-cursor.so.0 \
     /usr/hod/store/staging/*/*/lib/libwayland-egl.so.1 \
-    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0; do
+    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpango-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpangocairo-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpangoft2-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libcairo.so.2 \
+    /usr/hod/store/staging/*/*/lib/libcairo-gobject.so.2 \
+    /usr/hod/store/staging/*/*/lib/libglib-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgobject-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgio-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libfontconfig.so.1 \
+    /usr/hod/store/staging/*/*/lib/libfreetype.so.6 \
+    /usr/hod/store/staging/*/*/lib/libharfbuzz.so.0 \
+    /usr/hod/store/staging/*/*/lib/libfribidi.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpng16.so.16 \
+    /usr/hod/store/staging/*/*/lib/libpixman-1.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpcre2-8.so.0 \
+    /usr/hod/store/staging/*/*/lib/libffi.so.8 \
+    /usr/hod/store/staging/*/*/lib/libbz2.so.1.0; do
     [ -e "$_hod_gl" ] || continue
     _hod_lib=$(dirname "$_hod_gl")
     case ":$_HOD_LD:" in
@@ -588,8 +605,14 @@ AUTOEOF
   mkdir -p "$rootfs/home/hod/.config/niri"
   cat > "$rootfs/home/hod/.config/niri/config.kdl" << 'NIRICFG'
 input {
-    keyboard { xkb {} }
-    touchpad { tap natural-scroll }
+    keyboard {
+        xkb {
+        }
+    }
+    touchpad {
+        tap
+        natural-scroll
+    }
 }
 
 layout {
@@ -604,10 +627,13 @@ layout {
 
 prefer-no-csd
 
-spawn-at-startup "alacritty"
+spawn-at-startup "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"
 
 binds {
-    Mod+T { spawn "alacritty"; }
+    Mod+T { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
+    Mod+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
+    Mod+Shift+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
+    Ctrl+Alt+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
     Mod+Q { close-window; }
     Mod+Shift+E { quit; }
     Mod+Left  { focus-column-left; }
@@ -638,7 +664,10 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   export XDG_SESSION_DESKTOP=niri
   export DESKTOP_SESSION=niri
   export LIBSEAT_BACKEND=seatd
+  export FONTCONFIG_FILE=/usr/hod/system/current/pkgs/fontconfig/etc/fonts/fonts.conf
+  export LIBINPUT_QUIRKS_DIR=/usr/hod/system/current/pkgs/libinput/share/libinput
   mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+  mkdir -p "$HOME/.local/share/niri"
   chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
   _HOD_LD=""
@@ -651,7 +680,24 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     /usr/hod/store/staging/*/*/lib/libwayland-client.so.0 \
     /usr/hod/store/staging/*/*/lib/libwayland-cursor.so.0 \
     /usr/hod/store/staging/*/*/lib/libwayland-egl.so.1 \
-    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0; do
+    /usr/hod/store/staging/*/*/lib/libxkbcommon.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpango-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpangocairo-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpangoft2-1.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libcairo.so.2 \
+    /usr/hod/store/staging/*/*/lib/libcairo-gobject.so.2 \
+    /usr/hod/store/staging/*/*/lib/libglib-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgobject-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libgio-2.0.so.0 \
+    /usr/hod/store/staging/*/*/lib/libfontconfig.so.1 \
+    /usr/hod/store/staging/*/*/lib/libfreetype.so.6 \
+    /usr/hod/store/staging/*/*/lib/libharfbuzz.so.0 \
+    /usr/hod/store/staging/*/*/lib/libfribidi.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpng16.so.16 \
+    /usr/hod/store/staging/*/*/lib/libpixman-1.so.0 \
+    /usr/hod/store/staging/*/*/lib/libpcre2-8.so.0 \
+    /usr/hod/store/staging/*/*/lib/libffi.so.8 \
+    /usr/hod/store/staging/*/*/lib/libbz2.so.1.0; do
     [ -e "$_hod_gl" ] || continue
     _hod_lib=$(dirname "$_hod_gl")
     case ":$_HOD_LD:" in
@@ -660,6 +706,18 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     esac
   done
   unset _hod_gl _hod_lib
+
+  # Niri links a broader compositor/toolkit stack than just GL/Wayland. Keep
+  # this broad library path scoped to the Niri session so Arch system binaries
+  # do not load Hod-built glibc or desktop libraries.
+  for _hod_lib in /usr/hod/store/staging/*/*/lib; do
+    [ -d "$_hod_lib" ] || continue
+    case ":$_HOD_LD:" in
+      *:"$_hod_lib":*) ;;
+      *) _HOD_LD="$_hod_lib${_HOD_LD:+:$_HOD_LD}" ;;
+    esac
+  done
+  unset _hod_lib
 
   _HOD_DRI=""
   for _hod_d in /usr/hod/store/staging/*/*/lib/dri; do
@@ -697,14 +755,16 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   done
   unset _hod_s
 
-  exec env \
-    LD_LIBRARY_PATH="$_HOD_LD" \
-    LIBGL_DRIVERS_PATH="$_HOD_DRI" \
-    GBM_BACKENDS_PATH="$_HOD_GBM" \
-    __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL" \
-    XKB_CONFIG_ROOT="$_HOD_XKB" \
-    XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share" \
-    dbus-run-session -- sh -lc 'dbus-update-activation-environment --all 2>/dev/null || true; exec niri --session'
+  export _HOD_LD _HOD_DRI _HOD_GBM _HOD_EGL _HOD_XKB _HOD_DATA
+  exec dbus-run-session -- sh -lc '
+    dbus-update-activation-environment --all 2>/dev/null || true
+    export LIBGL_DRIVERS_PATH="$_HOD_DRI"
+    export GBM_BACKENDS_PATH="$_HOD_GBM"
+    export __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL"
+    export XKB_CONFIG_ROOT="$_HOD_XKB"
+    export XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share"
+    exec niri --session
+  ' > "$HOME/.local/share/niri/hod-session.log" 2>&1
 fi
 BPEOF
   chown 1000:1000 "$rootfs/home/hod/.bash_profile" 2>/dev/null || true

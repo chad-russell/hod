@@ -12,13 +12,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { xzSourceRecipe } from "./xz-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Configure: shared + static, no NLS, no docs
 ./configure \\
@@ -32,25 +31,9 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) pc_prefix='\${pcfiledir}/../../..' ;;
-    */share/pkgconfig/*) pc_prefix='\${pcfiledir}/../..' ;;
-    */lib/pkgconfig/*)   pc_prefix='\${pcfiledir}/../..' ;;
-  esac
-  sed -i \
-    -e "s|^prefix=.*|prefix=$pc_prefix|" \
-    -e 's|^exec_prefix=.*|exec_prefix=\${prefix}|' \
-    -e 's|^libdir=.*|libdir=\${prefix}/lib|' \
-    -e 's|^includedir=.*|includedir=\${prefix}/include|' \
-    "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip binaries
-/deps/toolchain/bin/strip $OUT/bin/xz $OUT/bin/xzdec $OUT/bin/lzmadec $OUT/bin/lzmainfo 2>/dev/null || true
-/deps/toolchain/bin/strip $OUT/lib/liblzma.so.*.*.* 2>/dev/null || true
+${STRIP_ALL}
 
 # Replace absolute symlinks with relative ones
 cd $OUT/bin
@@ -59,11 +42,7 @@ ln -sf xz lzma
 ln -sf xz unlzma
 ln -sf xz lzcat
 ln -sf xz xzcat
-
-# Clean up — keep lib/pkgconfig and headers for downstream deps
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
-# Remove share/ only if nothing useful remains
-rmdir $OUT/share 2>/dev/null || true`,
+`,
   deps: [
     dep("source", xzSourceRecipe),
     dep("toolchain", nativeToolchainRecipe),

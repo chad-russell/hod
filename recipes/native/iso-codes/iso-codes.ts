@@ -9,31 +9,22 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { isoCodesSourceRecipe } from "./iso-codes-source.js";
 import { pythonRecipe } from "../python/python.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
     python: "python",
     binDeps: ["python"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/
 
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config file relocatable.
-for pc in $OUT/share/pkgconfig/*.pc $OUT/lib/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Clean up — remove translations we don't need, keep JSON data and pc file
 rm -rf $OUT/share/locale 2>/dev/null || true

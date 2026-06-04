@@ -3,14 +3,13 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { luaSourceRecipe } from "./lua-source.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 make -j$(nproc) linux \
   CC="$CC" \
   AR="$AR rcu" \
@@ -38,7 +37,7 @@ EOF
 ln -sf lua-5.4.pc $OUT/lib/pkgconfig/lua54.pc
 ln -sf lua-5.4.pc $OUT/lib/pkgconfig/lua.pc
 
-/deps/toolchain/bin/strip $OUT/bin/lua $OUT/bin/luac 2>/dev/null || true
+${STRIP_BINARIES}
 rm -rf $OUT/share/man $OUT/share/doc 2>/dev/null || true
 `,
   deps: [

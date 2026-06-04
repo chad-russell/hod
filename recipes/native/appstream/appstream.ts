@@ -22,7 +22,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const appstreamRuntimeDeps = [
   "curl", "glib", "libffi", "libfyaml", "libiconv", "libxml2",
@@ -31,6 +31,7 @@ export const appstreamRuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["gperf"],
     includeDeps: ["glib", "libffi", "pcre2", "zlib", "libiconv", "curl", "openssl", "libxml2", "libfyaml", "xmlb"],
@@ -42,16 +43,10 @@ const recipe = await shellBuild({
     libDeps: ["glib", "libffi", "pcre2", "zlib", "libiconv", "curl", "openssl", "libxml2", "libfyaml", "xmlb"],
     pkgConfigDeps: ["glib", "libffi", "pcre2", "zlib", "libiconv", "curl", "openssl", "libxml2", "libfyaml", "xmlb"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Skip translations, data, docs, contrib, tests (no gettext, no need for these)
 sed -i -e "/subdir('po/d" -e "/subdir('data/d" -e "/subdir('contrib/d" -e "/subdir('docs/d" -e "/subdir('tests/d" meson.build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXFLAGS="-O2"
 
 # Allow meson's test programs and linker to find shared deps
 export LD_LIBRARY_PATH="/deps/glib/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/zlib/lib:/deps/libiconv/lib:/deps/curl/lib:/deps/openssl/lib:/deps/libxml2/lib:/deps/libfyaml/lib:/deps/xmlb/lib"
@@ -81,14 +76,7 @@ meson setup _build \\
 ninja -C _build
 DESTDIR=$OUT ninja -C _build install
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

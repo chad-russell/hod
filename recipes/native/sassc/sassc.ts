@@ -11,15 +11,13 @@ import { cProfile } from "../../helpers/c.js";
 import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
-  ...cProfile(),
+  ...cProfile({ cxx: true }),
   script: `
 
 # Build libsass as a static library first
 cp -a /deps/libsass/. /tmp/libsass
 cd /tmp/libsass
 
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXFLAGS="-O2"
 export BUILD="static"
 
 make -j$(nproc) -C /tmp/libsass

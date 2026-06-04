@@ -16,6 +16,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { nanoSourceRecipe } from "./nano-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -23,11 +24,8 @@ const recipe = await shellBuild({
     includePaths: ["/deps/ncurses/include/ncursesw"],
     libDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Set flags for ncurses (both include paths needed for ncurses_dll.h resolution)
 export CPPFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
@@ -43,10 +41,7 @@ export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binary
-/deps/toolchain/bin/strip $OUT/bin/nano 2>/dev/null || true
-
-# Clean up - remove docs and man pages, keep syntax highlighting
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share/locale 2>/dev/null || true
 `,
   deps: [

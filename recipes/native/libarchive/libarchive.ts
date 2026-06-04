@@ -13,7 +13,7 @@ import { opensslRecipe } from "../openssl/openssl.js";
 import { libxml2Recipe } from "../libxml2/libxml2.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libarchiveRuntimeDeps = ["bzip2", "libiconv", "libxml2", "openssl", "toolchain", "xz", "zlib"];
 
@@ -24,11 +24,8 @@ const recipe = await shellBuild({
     libDeps: ["zlib", "bzip2", "xz", "openssl", "libxml2", "libiconv"],
     pkgConfigDeps: ["zlib", "bzip2", "xz", "openssl", "libxml2", "libiconv"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Allow configure's test programs to find shared deps at runtime
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/bzip2/lib:/deps/xz/lib:/deps/openssl/lib:/deps/libxml2/lib:/deps/libiconv/lib"
 
@@ -53,14 +50,7 @@ export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/bzip2/lib:/deps/xz/lib:/deps/openss
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

@@ -16,14 +16,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { jqSourceRecipe } from "./jq-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Pre-seed autoconf cache for the bundled oniguruma configure.
 # It can't run test programs in the hermetic sandbox to determine type sizes.
 cat > config.cache <<'EOF'
@@ -48,13 +46,8 @@ cp config.cache vendor/oniguruma/config.cache
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binaries
-/deps/toolchain/bin/strip $OUT/bin/jq 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
-# Keep share if it has useful content (e.g. aclocal)
+${STRIP_ALL}
+rm -rf $OUT/share/info 2>/dev/null || true
 find $OUT/share -type d -empty -delete 2>/dev/null || true
 `,
   deps: [

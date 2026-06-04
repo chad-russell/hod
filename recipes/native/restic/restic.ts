@@ -22,6 +22,7 @@ import {
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goProfile } from "../../helpers/go.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { resticSourceRecipe } from "./restic-source.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 
@@ -42,11 +43,9 @@ const recipe = await shellBuild({
     // CA certificates for HTTPS module downloads.
     SSL_CERT_FILE: "/deps/cacert/etc/ssl/certs/ca-certificates.crt",
   },
+  sourceDir: true,
   script: `
 # Copy source to a writable build directory
-cp -a /deps/source/. /tmp/build
-
-cd /tmp/build
 
 # Build restic from ./cmd/restic with the same tags and ldflags as upstream.
 # Tags: selfupdate (enable self-update command), disable_grpc_modules (reduce binary size).
@@ -55,8 +54,7 @@ go build -trimpath \
   -ldflags '-s -w -X main.version=0.18.1' \
   -o $OUT/bin/restic ./cmd/restic
 
-# Strip the binary (should already be stripped via -s -w, but just in case)
-/deps/toolchain/bin/strip $OUT/bin/restic 2>/dev/null || true
+${STRIP_BINARIES}
 `,
   unsafe_flags: 0x01, // networking needed for go mod download
 });

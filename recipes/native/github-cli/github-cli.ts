@@ -15,6 +15,7 @@ import { dep, depSubpath, importToStore, shellBuild } from "../../../js/src/inde
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goProfile } from "../../helpers/go.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 import { githubCliSourceRecipe } from "./github-cli-source.js";
 
@@ -27,16 +28,14 @@ const recipe = await shellBuild({
     GOTOOLCHAIN: "local",
     SSL_CERT_FILE: `${depSubpath("cacerts", "etc/ssl/certs/ca-certificates.crt")}`,
   },
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 go build -trimpath \
   -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.92.0 -X github.com/cli/cli/v2/internal/build.Date=2026-04-28' \
   -o $OUT/bin/gh \
   ./cmd/gh
 
-/deps/toolchain/bin/strip $OUT/bin/gh 2>/dev/null || true
+${STRIP_BINARIES}
 `,
   deps: [
     dep("source", githubCliSourceRecipe),

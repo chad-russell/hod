@@ -12,7 +12,7 @@ import { libunistringRecipe } from "../libunistring/libunistring.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { pythonRecipe } from "../python/python.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libpslRuntimeDeps = ["libiconv", "libidn2", "libunistring", "toolchain"];
 
@@ -23,11 +23,8 @@ const recipe = await shellBuild({
     libDeps: ["libidn2", "libunistring", "libiconv"],
     pkgConfigDeps: ["libidn2", "libunistring", "libiconv"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export LD_LIBRARY_PATH="/deps/libidn2/lib:/deps/libunistring/lib:/deps/libiconv/lib"
 
 ./configure \\
@@ -42,14 +39,7 @@ export LD_LIBRARY_PATH="/deps/libidn2/lib:/deps/libunistring/lib:/deps/libiconv/
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

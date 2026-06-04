@@ -20,6 +20,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { ncduSourceRecipe } from "./ncdu-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -27,11 +28,8 @@ const recipe = await shellBuild({
     libDeps: ["ncurses"],
     pkgConfigDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # pkg-config provides -I/-L/-l flags from the relocatable ncurses .pc files.
 # CPPFLAGS includes ncurses' ncursesw header subdirectory explicitly because
 # ncdu's configure checks for <ncurses.h> before using pkg-config results.
@@ -50,10 +48,7 @@ LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib" \
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip the binary
-/deps/toolchain/bin/strip $OUT/bin/ncdu 2>/dev/null || true
-
-# Remove docs
+${STRIP_BINARIES}
 rm -rf $OUT/share/man $OUT/share/doc 2>/dev/null || true
 `,
   deps: [

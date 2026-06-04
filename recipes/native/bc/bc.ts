@@ -18,14 +18,12 @@ import { flexRecipe } from "../flex/flex.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { bcSourceRecipe } from "./bc-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["bison", "flex"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Point configure to flex and bison
 export PATH="/deps/flex/bin:/deps/bison/bin:$PATH"
 
@@ -39,8 +37,7 @@ make -j$(nproc) MAKEINFO=true
 make install DESTDIR=$OUT MAKEINFO=true
 
 # Strip binaries
-/deps/toolchain/bin/strip $OUT/bin/bc 2>/dev/null || true
-/deps/toolchain/bin/strip $OUT/bin/dc 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true

@@ -7,6 +7,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libXdmcpSourceRecipe } from "./libXdmcp-source.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 export const libXdmcpRuntimeDeps = ["toolchain"];
 
@@ -18,11 +19,8 @@ const recipe = await shellBuild({
     // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\
@@ -31,12 +29,9 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-for pc in $OUT/lib/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
 `,
   deps: [

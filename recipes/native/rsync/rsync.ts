@@ -19,6 +19,7 @@ import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { zstdRecipe } from "../zstd/zstd.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -26,10 +27,8 @@ const recipe = await shellBuild({
     libDeps: ["openssl", "zlib", "zstd"],
     pkgConfigDeps: ["openssl", "zlib", "zstd"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Point to dependencies
 export CPPFLAGS="-I/deps/openssl/include -I/deps/zlib/include -I/deps/zstd/include"
@@ -66,10 +65,7 @@ EOF
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binary
-/deps/toolchain/bin/strip $OUT/bin/rsync 2>/dev/null || true
-
-# Clean up
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share $OUT/lib/*.la 2>/dev/null || true
 `,
   deps: [

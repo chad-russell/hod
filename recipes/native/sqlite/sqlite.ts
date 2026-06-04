@@ -14,13 +14,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { sqliteSourceRecipe } from "./sqlite-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Autosetup builds a bootstrap jimsh using plain 'cc'/'gcc', ignoring CC.
 # Create a wrapper that includes sysroot flags so the bootstrap can compile.
@@ -43,11 +42,8 @@ export PATH="/tmp/cc-wrapper:$PATH"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up — remove docs, man, la files. Keep lib/pkgconfig for downstream.
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/info 2>/dev/null || true
 
 # Verify key outputs
 ls -la $OUT/bin/sqlite3

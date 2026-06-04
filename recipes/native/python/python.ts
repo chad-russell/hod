@@ -38,6 +38,7 @@ import { bzip2Recipe } from "../bzip2/bzip2.js";
 import { xzRecipe } from "../xz/xz.js";
 import { expatRecipe } from "../expat/expat.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -46,10 +47,8 @@ const recipe = await shellBuild({
     libDeps: ["openssl", "zlib", "libffi", "ncurses", "readline", "bzip2", "xz", "expat"],
     pkgConfigDeps: ["openssl", "zlib", "libffi", "ncurses", "bzip2", "xz", "expat"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Set PKG_CONFIG_PATH so configure's PKG_CHECK_MODULES can find all deps.
 export PKG_CONFIG_PATH="/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig:/deps/libffi/lib/pkgconfig:/deps/ncurses/lib/pkgconfig:/deps/bzip2/lib/pkgconfig:/deps/xz/lib/pkgconfig:/deps/expat/lib/pkgconfig"
@@ -113,9 +112,8 @@ export LD_LIBRARY_PATH="/deps/openssl/lib:/deps/zlib/lib:/deps/libffi/lib:/deps/
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip the python binary, shared libpython, and extension modules
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name 'libpython*.so*' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
+${STRIP_BINARIES}
+${STRIP_LIBRARIES}
 find $OUT/lib/python3.13/lib-dynload -name '*.so' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
 
 # Create python -> python3 symlink

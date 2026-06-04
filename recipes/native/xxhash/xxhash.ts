@@ -16,13 +16,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { xxhashSourceRecipe } from "./xxhash-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Build shared + static library and CLI
 make -j$(nproc) LIB_TYPE=dynamic
@@ -30,22 +29,10 @@ make -j$(nproc) LIB_TYPE=dynamic
 # Install everything (library, headers, CLI, pkg-config)
 make install DESTDIR=$OUT PREFIX=/ PKGCONFIGDIR=/lib/pkgconfig
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip binaries and shared library
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-/deps/toolchain/bin/strip $OUT/lib/libxxhash.so.*.*.* 2>/dev/null || true
-
-# Clean up — remove docs, man pages, la files. Keep pkgconfig.
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/info 2>/dev/null || true
 rmdir $OUT/share 2>/dev/null || true
 `,
   deps: [

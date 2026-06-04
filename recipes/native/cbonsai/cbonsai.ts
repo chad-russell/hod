@@ -8,6 +8,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { cbonsaiSourceRecipe } from "./cbonsai-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -15,11 +16,8 @@ const recipe = await shellBuild({
     includePaths: ["/deps/ncurses/include/ncursesw"],
     libDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 make cbonsai \\
   CC="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin" \\
   CFLAGS="-O2 -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw" \\
@@ -30,8 +28,7 @@ mkdir -p $OUT/bin
 cp cbonsai $OUT/bin/cbonsai
 chmod +x $OUT/bin/cbonsai
 
-# Strip
-/deps/toolchain/bin/strip $OUT/bin/cbonsai 2>/dev/null || true`,
+${STRIP_BINARIES}`,
   deps: [
     dep("ncurses", ncursesRecipe),
     dep("source", cbonsaiSourceRecipe),

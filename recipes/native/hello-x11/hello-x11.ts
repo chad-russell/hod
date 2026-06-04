@@ -10,6 +10,7 @@ import { libXauRecipe } from "../libXau/libXau.js";
 import { libXdmcpRecipe } from "../libXdmcp/libXdmcp.js";
 import { libXcbRecipe } from "../libxcb/libxcb.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 export const helloX11RuntimeDeps = ["libX11", ...libX11RuntimeDeps];
 
@@ -63,7 +64,7 @@ int main(void) {
 EOF
 
 $CC $CFLAGS $HOD_DUMMY_RPATH -o $OUT/bin/hello-x11 /tmp/build/hello-x11.c $(pkg-config --cflags --libs x11)
-/deps/toolchain/bin/strip $OUT/bin/hello-x11 2>/dev/null || true
+${STRIP_BINARIES}
 `,
   deps: [
     dep("toolchain", nativeToolchainRecipe),

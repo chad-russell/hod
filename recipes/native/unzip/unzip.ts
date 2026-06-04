@@ -6,13 +6,13 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { unzipSourceRecipe } from "./unzip-source.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Info-ZIP's Unix Makefile does not support DESTDIR. Install directly into
 # the staging prefix and then remove man pages to keep the profile lean.
@@ -32,12 +32,7 @@ eval make -f unix/Makefile -j$(nproc) unzips \\
 
 make -f unix/Makefile install prefix="$OUT"
 
-/deps/toolchain/bin/strip \\
-  $OUT/bin/unzip \\
-  $OUT/bin/funzip \\
-  $OUT/bin/unzipsfx \\
-  2>/dev/null || true
-
+${STRIP_BINARIES}
 rm -rf $OUT/man $OUT/share/man $OUT/share/doc 2>/dev/null || true
 `,
   deps: [

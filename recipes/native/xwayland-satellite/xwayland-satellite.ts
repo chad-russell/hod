@@ -22,6 +22,7 @@ import { xcbUtilRecipe } from "../xcb-util/xcb-util.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { xwaylandSatelliteSourceRecipe } from "./xwayland-satellite-source.js";
 import { cargoBuild } from "../../helpers/rust.js";
+import { caCertEnv, depEnvFromList } from "../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "xwayland-satellite",
@@ -44,19 +45,8 @@ const recipe = await cargoBuild({
     dep("xorgproto", xorgprotoRecipe),
   ],
   env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    PKG_CONFIG_PATH: [
-      "/deps/libXcb/lib/pkgconfig",
-      "/deps/xcb-util-cursor/lib/pkgconfig",
-      "/deps/xcb-util-image/lib/pkgconfig",
-      "/deps/xcb-util-renderutil/lib/pkgconfig",
-      "/deps/xcb-util/lib/pkgconfig",
-      "/deps/libXau/lib/pkgconfig",
-      "/deps/libXdmcp/lib/pkgconfig",
-      "/deps/libpthread-stubs/lib/pkgconfig",
-      "/deps/xorgproto/share/pkgconfig",
-    ].join(":"),
+    ...caCertEnv(),
+    ...depEnvFromList(["zlib", "libXcb", "xcb-util-cursor", "xcb-util-image", "xcb-util-renderutil", "xcb-util", "libXau", "libXdmcp", "libpthread-stubs", "xorgproto"]),
   },
   bindgen: true,
   unsafe_flags: 0x01,

@@ -18,7 +18,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const harfbuzzRuntimeDeps = [
   "bzip2", "freetype", "glib", "libffi", "libpng", "pcre2", "toolchain", "zlib",
@@ -26,6 +26,7 @@ export const harfbuzzRuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["glib"],
     includeDeps: ["freetype", "glib", "libffi", "pcre2", "bzip2", "libpng", "zlib"],
@@ -33,12 +34,8 @@ const recipe = await shellBuild({
     libDeps: ["freetype", "glib", "libffi", "pcre2", "bzip2", "libpng", "zlib"],
     pkgConfigDeps: ["freetype", "glib", "libffi", "pcre2", "bzip2", "libpng", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CXXFLAGS="-O2 -I/deps/freetype/include/freetype2"
 export CPPFLAGS="-I/deps/freetype/include/freetype2"
 
@@ -70,14 +67,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}

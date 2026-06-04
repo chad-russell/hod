@@ -15,13 +15,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { zstdSourceRecipe } from "./zstd-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Build shared + static library and CLI
 make -j$(nproc) lib-release LIB_TYPE=dynamic
@@ -33,15 +32,7 @@ make -C lib install DESTDIR=$OUT PREFIX=/ LIB_TYPE=dynamic
 # Install CLI programs
 make -C programs install DESTDIR=$OUT PREFIX=/
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Strip the binary and shared library
 $STRIP $OUT/bin/zstd 2>/dev/null || true

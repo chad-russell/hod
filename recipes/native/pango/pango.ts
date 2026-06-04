@@ -29,12 +29,13 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const pangoRuntimeDeps = ["bzip2", "cairo", "expat", "fontconfig", "freetype", "fribidi", "glib", "harfbuzz", "libX11", "libXau", "libXcb", "libXdmcp", "libXext", "libXrender", "libffi", "libpng", "pcre2", "pixman", "toolchain", "zlib"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     includeDeps: ["cairo", "fribidi", "glib", "harfbuzz", "fontconfig", "freetype", "libpng", "pixman", "zlib", "expat", "bzip2", "libffi", "pcre2", "libX11", "libXrender", "libXext", "libXau", "libXcb", "libXdmcp"],
     includePaths: ["/deps/freetype/include/freetype2"],
@@ -45,17 +46,14 @@ const recipe = await shellBuild({
     // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Cairo was built with CAIRO_HAS_FC_FONT=1, but Pango's Meson probe can fail
 # because cairo-ft.pc under-describes Fontconfig on this Cairo release.
 sed -i "/does not have the required FontConfig support/s|error.*|message('Skipping cairo-ft FontConfig probe; Cairo has CAIRO_HAS_FC_FONT')|" meson.build
 
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CXXFLAGS="-O2 -I/deps/freetype/include/freetype2"
 export CPPFLAGS="-I/deps/freetype/include/freetype2"
 export LDFLAGS="$HOD_DUMMY_RPATH \
@@ -88,13 +86,7 @@ meson setup build \
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}

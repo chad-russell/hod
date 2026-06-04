@@ -23,6 +23,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
@@ -34,11 +35,8 @@ const recipe = await shellBuild({
     // Add "wayland-protocols" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/wayland-protocols/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # wayland-scanner needs its shared lib deps at runtime during build.
 export LD_LIBRARY_PATH="/deps/expat/lib:/deps/wayland/lib:/deps/zlib/lib"
 
@@ -57,7 +55,7 @@ ninja -C build
 DESTDIR=$OUT ninja -C build install
 
 # Strip binary
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true

@@ -31,6 +31,7 @@ import { m4Recipe } from "../m4/m4.js";
 import { perlRecipe } from "../perl/perl.js";
 import { tigSourceRecipe } from "./tig-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -39,11 +40,10 @@ const recipe = await shellBuild({
     pkgConfigDeps: ["ncurses", "readline", "pcre2"],
     binDeps: ["autoconf", "automake", "m4", "perl"],
   }),
+  sourceDir: true,
   script: `
 
 # Copy source to a writable directory for autoreconf.
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Generate configure from configure.ac using bundled m4 macros.
 # aclocal needs to find automake's aclocal dir and the project's tools/ dir.
@@ -68,10 +68,7 @@ export CPPFLAGS="-I/deps/readline/include -I/deps/libiconv/include -I/deps/pcre2
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binary
-/deps/toolchain/bin/strip $OUT/bin/tig 2>/dev/null || true
-
-# Remove docs and man pages
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
 rmdir $OUT/share 2>/dev/null || true
 `,

@@ -26,6 +26,7 @@ import { expatRecipe } from "../expat/expat.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { gitSourceRecipe } from "./git-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -33,11 +34,8 @@ const recipe = await shellBuild({
     libDeps: ["curl", "expat", "libiconv", "openssl", "zlib"],
     pkgConfigDeps: ["curl", "expat", "openssl", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Allow shared lib resolution during build for test programs / generated code
 export LD_LIBRARY_PATH=/deps/curl/lib:/deps/openssl/lib:/deps/zlib/lib:/deps/expat/lib:/deps/libiconv/lib
 
@@ -71,8 +69,7 @@ sed -i "s|__HOD_DUMMY_RPATH__|$HOD_DUMMY_RPATH|" config.mak
 make -j$(nproc) prefix=/
 make install DESTDIR=$OUT prefix=/
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 
 # Clean up — remove docs and unneeded files

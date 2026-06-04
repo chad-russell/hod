@@ -27,11 +27,8 @@ const recipe = await shellBuild({
     CC: "/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin",
     CXX: "/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin",
   },
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/
 

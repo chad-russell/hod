@@ -29,6 +29,7 @@ import {
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goProfile } from "../../helpers/go.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { ageSourceRecipe } from "./age-source.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 
@@ -51,12 +52,8 @@ const recipe = await shellBuild({
     // CA certificates for HTTPS module downloads.
     SSL_CERT_FILE: "/deps/cacert/etc/ssl/certs/ca-certificates.crt",
   },
+  sourceDir: true,
   script: `
-# Copy source to a writable build directory
-cp -a /deps/source/. /tmp/build
-
-cd /tmp/build
-
 # Build age (encryption/decryption tool)
 go build -trimpath \
   -ldflags '-s -w -X main.Version=v1.3.1' \
@@ -67,8 +64,7 @@ go build -trimpath \
   -ldflags '-s -w -X main.Version=v1.3.1' \
   -o $OUT/bin/age-keygen ./cmd/age-keygen
 
-# Strip binaries (should already be stripped via -s -w)
-/deps/toolchain/bin/strip $OUT/bin/age $OUT/bin/age-keygen 2>/dev/null || true
+${STRIP_BINARIES}
 `,
   unsafe_flags: 0x01, // networking needed for go mod download
 });

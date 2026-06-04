@@ -47,6 +47,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { RELOCATE_PKG_CONFIG, STRIP_BINARIES } from "../../helpers/strip.js";
 
 // Transitive runtime deps: GTK3 needs all shared libs in its dependency chain.
 // Sorted alphabetically for determinism.
@@ -62,6 +63,7 @@ export const gtk3RuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["glib", "gdk-pixbuf", "shared-mime-info"],
     includeDeps: [
@@ -103,11 +105,8 @@ const recipe = await shellBuild({
       "/deps/shared-mime-info/share/pkgconfig",
     ],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Ensure glib tools (glib-mkenums, glib-compile-resources, gio-querymodules)
 # and gdk-pixbuf tools (gdk-pixbuf-query-loaders) are findable.
 # mesonProfile + binDeps already adds them to PATH.
@@ -115,7 +114,6 @@ cd /tmp/build
 export LD_LIBRARY_PATH="/deps/glib/lib:/deps/pango/lib:/deps/cairo/lib:/deps/gdk-pixbuf/lib:/deps/at-spi2-core/lib:/deps/libepoxy/lib:/deps/harfbuzz/lib:/deps/fontconfig/lib:/deps/freetype/lib:/deps/fribidi/lib:/deps/libpng/lib:/deps/pixman/lib:/deps/zlib/lib:/deps/expat/lib:/deps/bzip2/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/libX11/lib:/deps/libXext/lib:/deps/libXrender/lib:/deps/libXi/lib:/deps/libXrandr/lib:/deps/libXcursor/lib:/deps/libXinerama/lib:/deps/libXdamage/lib:/deps/libXcomposite/lib:/deps/libXfixes/lib:/deps/libXau/lib:/deps/libXcb/lib:/deps/libXdmcp/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 export CPPFLAGS="-I/deps/freetype/include/freetype2"
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CXXFLAGS="-O2 -I/deps/freetype/include/freetype2"
 export LDFLAGS="$HOD_DUMMY_RPATH \
   -L/deps/glib/lib -L/deps/pango/lib -L/deps/cairo/lib -L/deps/gdk-pixbuf/lib \
@@ -165,17 +163,10 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Strip binaries and libraries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 # Do not strip .so files — the default strip can corrupt the dynamic symbol table
 # and make the library un-linkable by downstream consumers.
 rm -rf $OUT/share/doc $OUT/share/gtk-doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true

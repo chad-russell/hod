@@ -12,6 +12,7 @@ import { xcbUtilRenderutilRecipe } from "../xcb-util-renderutil/xcb-util-renderu
 import { xcbUtilRecipe } from "../xcb-util/xcb-util.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { m4Recipe } from "../m4/m4.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const xcbUtilCursorRuntimeDeps = [
   "libXau",
@@ -30,23 +31,16 @@ const recipe = await shellBuild({
     libDeps: ["libXau", "libXcb", "libXdmcp", "xcb-util-image", "xcb-util-renderutil"],
     pkgConfigDeps: ["libXau", "libXcb", "libXdmcp", "xcb-util-image", "xcb-util-renderutil", "xorgproto"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 ./configure --prefix=/ --enable-shared --disable-static
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
 `,
   deps: [

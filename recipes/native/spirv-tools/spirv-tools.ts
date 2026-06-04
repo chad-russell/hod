@@ -15,14 +15,13 @@ import { spirvToolsSourceRecipe } from "./spirv-tools-source.js";
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     binDeps: ["cmake", "ninja", "python"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
 
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CFLAGS="-O2"
-export CXXFLAGS="-O2"
 
 mkdir -p /tmp/cmake-bin
 cat > /tmp/cmake-bin/cc << 'EOF'

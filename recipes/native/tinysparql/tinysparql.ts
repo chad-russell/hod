@@ -35,7 +35,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const tinysparqlRuntimeDeps = [
   "dbus", "expat", "glib", "json-glib", "libffi", "libiconv", "libidn2",
@@ -75,10 +75,8 @@ const recipe = await shellBuild({
       "libidn2", "libunistring", "zlib", "xz", "expat",
     ],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export LDFLAGS="$HOD_DUMMY_RPATH \\
   ${rpathLinkFlags}"
@@ -201,14 +199,7 @@ for root, dirs, files in os.walk('$OUT'):
                 f.write(data)
 " 2>/dev/null || true
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

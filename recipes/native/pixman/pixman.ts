@@ -10,15 +10,14 @@ import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const pixmanRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export LD_LIBRARY_PATH="/deps/zlib/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -36,15 +35,9 @@ meson setup build \
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true
 `,
   deps: [

@@ -15,6 +15,7 @@ import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { opensshSourceRecipe } from "./openssh-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -22,10 +23,8 @@ const recipe = await shellBuild({
     libDeps: ["openssl", "zlib"],
     pkgConfigDeps: ["openssl", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # pkg-config provides -I/-L/-l flags from the relocatable .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"
@@ -56,8 +55,8 @@ export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip all binaries
-find $OUT/bin $OUT/sbin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
+find $OUT/sbin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 
 # Clean up — remove docs, man pages, but keep config in etc/ssh

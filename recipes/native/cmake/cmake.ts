@@ -14,17 +14,13 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cmakeSourceRecipe } from "./cmake-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
-  ...cProfile(),
+  ...cProfile({ cxx: true }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-# shellBuild sets CC, but CMake bootstrap also needs a matching C++ compiler.
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CFLAGS="-O2"
-export CXXFLAGS="-O2"
 
 # Build CMake using the shipped bootstrap path so no host cmake is required.
 ./bootstrap \
@@ -39,8 +35,8 @@ export CXXFLAGS="-O2"
 make -j$(nproc)
 DESTDIR=$OUT make install
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man $OUT/doc 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/doc 2>/dev/null || true
 
 echo "=== cmake version ==="
 $OUT/bin/cmake --version

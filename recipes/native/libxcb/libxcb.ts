@@ -19,6 +19,7 @@ import { libpthreadStubsRecipe } from "../libpthread-stubs/libpthread-stubs.js";
 import { pythonRecipe } from "../python/python.js";
 import { expatRecipe } from "../expat/expat.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 export const libXcbRuntimeDeps = ["libXau", "libXdmcp", "toolchain"];
 
@@ -33,11 +34,8 @@ const recipe = await shellBuild({
     // Add "xorgproto", "xcb-proto" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig", "/deps/xcb-proto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export PYTHON="/deps/python/bin/python3"
 export LD_LIBRARY_PATH="/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -50,14 +48,10 @@ export LD_LIBRARY_PATH="/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
 # Strip shared libraries
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true

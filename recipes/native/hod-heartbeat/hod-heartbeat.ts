@@ -1,6 +1,7 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
@@ -27,7 +28,7 @@ int main(void) {
 CEOF
 
 $CC $CFLAGS $LDFLAGS -o $OUT/bin/hod-heartbeat /tmp/hod-heartbeat.c
-/deps/toolchain/bin/strip $OUT/bin/hod-heartbeat 2>/dev/null || true
+${STRIP_BINARIES}
 
 cat > $OUT/lib/systemd/system/hod-heartbeat.service << 'SVEOF'
 [Unit]

@@ -11,10 +11,8 @@ import { distroboxSourceRecipe } from "./distrobox-source.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./install --prefix "$OUT" --no-color
 
 # NixOS commonly exposes /etc/hostname as a symlink into /etc/static. In a

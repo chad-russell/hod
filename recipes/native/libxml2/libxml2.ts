@@ -13,6 +13,7 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { xzRecipe } from "../xz/xz.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -20,11 +21,8 @@ const recipe = await shellBuild({
     libDeps: ["zlib", "xz", "libiconv"],
     pkgConfigDeps: ["zlib", "xz"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Make dependency headers and libs discoverable
 export CPPFLAGS="-I/deps/zlib/include -I/deps/xz/include -I/deps/libiconv/include"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/zlib/lib -L/deps/xz/lib -L/deps/libiconv/lib -Wl,-rpath-link,/deps/zlib/lib -Wl,-rpath-link,/deps/xz/lib -Wl,-rpath-link,/deps/libiconv/lib"
@@ -45,18 +43,9 @@ export PKG_CONFIG_PATH="/deps/zlib/lib/pkgconfig:/deps/xz/lib/pkgconfig"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip binaries and libraries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Fix xmllint and xmlcatalog to find their catalog at the dep mount point
 # --prefix=/ produces references to //etc and //share

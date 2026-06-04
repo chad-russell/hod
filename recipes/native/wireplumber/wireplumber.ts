@@ -18,7 +18,7 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { expatRecipe } from "../expat/expat.js";
 import { luaRecipe } from "../lua/lua.js";
 import { wireplumberSourceRecipe } from "./wireplumber-source.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
@@ -27,9 +27,8 @@ const recipe = await shellBuild({
     libDeps: ["glib", "pipewire", "libffi", "lua", "pcre2", "zlib"],
     pkgConfigDeps: ["glib", "pipewire", "libffi", "lua", "pcre2", "zlib"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Avoid gettext/libintl while keeping English CLI output.
 python3 - <<'PY'
@@ -90,13 +89,7 @@ EOF
   chmod +x "$bin"
 done
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 find $OUT/bin -type f -name '*-real' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true

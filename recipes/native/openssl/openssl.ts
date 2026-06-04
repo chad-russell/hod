@@ -13,13 +13,12 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { perlRecipe } from "../perl/perl.js";
 import { opensslSourceRecipe } from "./openssl-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["perl"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export PATH=/deps/toolchain/bin:/deps/perl/bin
 export PERL5LIB=/deps/perl/lib/perl5/5.40.0:/deps/perl/lib/perl5/5.40.0/x86_64-linux
@@ -50,24 +49,12 @@ perl ./Configure \\
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip shared libraries (all .so.N files, not symlinks)
-find $OUT/lib -name 'lib*.so.*' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
-# Strip the openssl binary
-/deps/toolchain/bin/strip $OUT/bin/openssl 2>/dev/null || true
+${STRIP_ALL}
 
 # Remove unnecessary files, keep pkgconfig and headers for downstream deps
 rm -rf $OUT/etc/ssl/private 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true
 # Remove empty dirs from no-module build
 rmdir $OUT/lib/engines-3 $OUT/lib/ossl-modules 2>/dev/null || true
 find $OUT -name '*.la' -delete 2>/dev/null || true`,

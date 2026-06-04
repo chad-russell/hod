@@ -45,6 +45,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { yaziSourceRecipe } from "./yazi-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "yazi",
@@ -58,10 +59,7 @@ const recipe = await cargoBuild({
     dep("ca-certs", caCertificatesRecipe),
   ],
   env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    // Add --sysroot so build scripts (e.g., tikv-jemalloc-sys configure) that invoke
-    // the compiler directly can find system headers and libraries.
+    ...caCertEnv(),
     CFLAGS: "-O2 --sysroot=/deps/toolchain/sysroot -I/deps/toolchain/sysroot/include",
   },
   // Network access required for cargo to download crate dependencies.

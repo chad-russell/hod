@@ -8,6 +8,7 @@
 import { shellBuild, dep, importToStore, hermeticPreamble } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { hwdataSourceRecipe } from "./hwdata-source.js";
+import { RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   shell: "/deps/toolchain/bin/busybox",
@@ -15,21 +16,17 @@ const recipe = await shellBuild({
   env: {
     PATH: "/deps/toolchain/bin",
   },
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Run configure to generate Makefile.inc and hwdata.pc
 ./configure
 
 # Install to output with prefix=/
 make install DESTDIR=$OUT datadir=/share libdir=/lib blacklist=false
 
-# Fix hwdata.pc to use pcfiledir-based path
+${RELOCATE_PKG_CONFIG}
 for pc in $OUT/share/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc"
   sed -i 's|^datadir=.*|datadir=\${prefix}/share|' "$pc"
   sed -i 's|^pkgdatadir=.*|pkgdatadir=\${datadir}/hwdata|' "$pc"
 done

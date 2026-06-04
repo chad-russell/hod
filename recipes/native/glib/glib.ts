@@ -14,7 +14,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const glibRuntimeDeps = ["libffi", "pcre2", "toolchain", "zlib"];
 
@@ -25,11 +25,8 @@ const recipe = await shellBuild({
     libDeps: ["libffi", "pcre2", "zlib"],
     pkgConfigDeps: ["libffi", "pcre2", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export LD_LIBRARY_PATH="/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/pcre2/lib -L/deps/libffi/lib -L/deps/zlib/lib -Wl,-rpath-link,/deps/pcre2/lib -Wl,-rpath-link,/deps/libffi/lib -Wl,-rpath-link,/deps/zlib/lib"
 
@@ -56,14 +53,7 @@ meson setup build \
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 find $OUT/bin $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}

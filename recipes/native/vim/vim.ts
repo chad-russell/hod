@@ -20,6 +20,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { vimSourceRecipe } from "./vim-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -27,10 +28,8 @@ const recipe = await shellBuild({
     libDeps: ["ncurses"],
     pkgConfigDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Point at shared ncursesw via relocatable .pc files.
 export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
@@ -81,8 +80,7 @@ bash auto/configure \\
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip the binaries
-/deps/toolchain/bin/strip $OUT/bin/vim 2>/dev/null || true
+${STRIP_BINARIES}
 # Create vi symlink
 cd $OUT/bin && ln -sf vim vi
 

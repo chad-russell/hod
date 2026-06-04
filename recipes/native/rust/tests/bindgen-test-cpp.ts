@@ -14,6 +14,7 @@ import { bindgenClangRecipe } from "../../llvm/bindgen-clang.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "bindgen-test-cpp",
@@ -66,10 +67,7 @@ fn main() {
     dep("bindgen-clang", bindgenClangRecipe),
     dep("zlib", zlibRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],
 });

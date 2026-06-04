@@ -6,6 +6,7 @@ import { rustRecipe } from "../rust.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 import { ruffSourceRecipe } from "./ruff-source.js";
 
 const recipe = await cargoBuild({
@@ -18,10 +19,7 @@ const recipe = await cargoBuild({
     dep("ca-certs", caCertificatesRecipe),
     dep("zlib", zlibRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   preBuildScript: `
 # The default Linux build enables tikv-jemallocator, whose configure test
 # binaries do not run under Hod's current sandbox. Use Rust's platform default

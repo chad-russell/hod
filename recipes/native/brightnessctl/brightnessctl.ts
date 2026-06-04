@@ -15,13 +15,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { brightnessctlSourceRecipe } from "./brightnessctl-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Build — CC, CFLAGS, LDFLAGS etc. come from cProfile() via process env.
 # Override VERSION so the Makefile's -DVERSION macro picks up the correct value.
 make -j$(nproc) VERSION=0.5.1
@@ -29,10 +28,7 @@ make -j$(nproc) VERSION=0.5.1
 # Install (no udev rules, no systemd)
 make install DESTDIR=$OUT PREFIX=/ INSTALL_UDEV_RULES=0
 
-# Strip
-/deps/toolchain/bin/strip $OUT/bin/brightnessctl 2>/dev/null || true
-
-# Clean up man pages
+${STRIP_BINARIES}
 rm -rf $OUT/share/man $OUT/share/doc 2>/dev/null || true
 `,
   deps: [

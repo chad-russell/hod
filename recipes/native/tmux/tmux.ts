@@ -13,6 +13,7 @@ import { libeventRecipe } from "../libevent/libevent.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -21,10 +22,8 @@ const recipe = await shellBuild({
     libDeps: ["libevent", "ncurses"],
     pkgConfigDeps: ["libevent", "ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # pkg-config provides all -I/-L/-l flags from the relocatable .pc files.
 export PATH="/deps/bison/bin:$PATH"
@@ -40,10 +39,7 @@ export PKG_CONFIG_PATH="/deps/libevent/lib/pkgconfig:/deps/ncurses/lib/pkgconfig
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip the binary
-/deps/toolchain/bin/strip $OUT/bin/tmux 2>/dev/null || true
-
-# Clean up — remove docs, man, la files.
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
 
 # Verify key output

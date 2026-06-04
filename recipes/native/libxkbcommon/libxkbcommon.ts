@@ -28,17 +28,14 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { m4Recipe } from "../m4/m4.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libxkbcommonRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({ binDeps: ["bison", "m4"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Python (used by meson) needs libz.so at runtime
 export LD_LIBRARY_PATH="/deps/zlib/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -55,14 +52,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

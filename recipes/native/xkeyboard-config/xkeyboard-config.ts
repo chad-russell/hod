@@ -28,16 +28,15 @@ import { xzRecipe } from "../xz/xz.js";
 import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
     python: "python",
     binDeps: ["python"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Python links against zlib, openssl, libffi, expat, ncurses, bzip2, xz.
 # Set LD_LIBRARY_PATH so meson's internal executor can spawn python3
@@ -63,17 +62,11 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config file relocatable. The xkeyboard-config .pc file uses
-# datadir and xkb_base directly (no prefix). Fix both.
+${RELOCATE_PKG_CONFIG}
 for pc in $OUT/share/pkgconfig/*.pc $OUT/lib/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) pcdir='\${pcfiledir}/../..' ;;
-    */lib/pkgconfig/*)   pcdir='\${pcfiledir}/../..' ;;
-  esac
-  # Replace hardcoded /share paths with pcfiledir-relative ones
-  sed -i "s|^datadir=.*|datadir=\${pcdir}/share|" "$pc"
-  sed -i "s|^xkb_base=.*|xkb_base=\${pcdir}/share/X11/xkb|" "$pc"
+  sed -i 's|^datadir=.*|datadir=\${pcfiledir}/../share|' "$pc"
+  sed -i 's|^xkb_base=.*|xkb_base=\${pcfiledir}/../share/X11/xkb|' "$pc"
 done
 `,
   deps: [

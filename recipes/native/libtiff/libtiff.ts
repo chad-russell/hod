@@ -11,23 +11,19 @@ import { libjpegRecipe } from "../libjpeg/libjpeg.js";
 import { xzRecipe } from "../xz/xz.js";
 import { zstdRecipe } from "../zstd/zstd.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libtiffRuntimeDeps = ["libjpeg", "toolchain", "xz", "zlib", "zstd"];
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     includeDeps: ["zlib", "libjpeg", "xz", "zstd"],
     libDeps: ["zlib", "libjpeg", "xz", "zstd"],
     pkgConfigDeps: ["zlib", "libjpeg", "xz", "zstd"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\
@@ -48,14 +44,7 @@ export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/to
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

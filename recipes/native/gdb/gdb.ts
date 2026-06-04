@@ -31,6 +31,7 @@ import { expatRecipe } from "../expat/expat.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { xzRecipe } from "../xz/xz.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   // GDB is C++17 — cProfile() only sets CC, not CXX.
@@ -99,8 +100,7 @@ make -j$(nproc) all-gdb
 # Install only the gdb subdirectory
 make install-gdb DESTDIR=$OUT
 
-# Strip the gdb binary
-/deps/toolchain/bin/strip $OUT/bin/gdb 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info 2>/dev/null || true

@@ -8,7 +8,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libunistringSourceRecipe } from "./libunistring-source.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libunistringRuntimeDeps = ["libiconv", "toolchain"];
 
@@ -17,11 +17,8 @@ const recipe = await shellBuild({
     includeDeps: ["libiconv"],
     libDeps: ["libiconv"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\
@@ -31,14 +28,7 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

@@ -11,14 +11,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libffiSourceRecipe } from "./libffi-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # libffi's configure checks for a C++ compiler and preprocessor.
 # The toolchain has g++ but it's not fully functional. Use gcc -E as the
 # C++ preprocessor to pass the sanity check; the C++ support is only used
@@ -34,21 +32,12 @@ export CXXCPP="/deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Ensure the static library archive is properly indexed
 /deps/toolchain/bin/ranlib $OUT/lib/libffi.a 2>/dev/null || true
 
-# Strip shared library
-/deps/toolchain/bin/strip $OUT/lib/libffi.so.*.*.* 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up — keep lib/pkgconfig and headers for downstream deps
 rm -rf $OUT/share/info $OUT/share/man $OUT/lib/*.la 2>/dev/null || true

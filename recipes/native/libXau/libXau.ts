@@ -8,6 +8,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libXauSourceRecipe } from "./libXau-source.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 export const libXauRuntimeDeps = ["toolchain"];
 
@@ -19,11 +20,8 @@ const recipe = await shellBuild({
     // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\
@@ -32,17 +30,10 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Strip shared library
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true

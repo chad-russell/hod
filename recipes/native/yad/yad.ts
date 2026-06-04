@@ -48,6 +48,7 @@ import { libXtstRecipe } from "../libXtst/libXtst.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { sharedMimeInfoRecipe } from "../shared-mime-info/shared-mime-info.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 export const yadRuntimeDeps = [...gtk3RuntimeDeps, "gtk3"].sort();
 
@@ -74,10 +75,8 @@ const recipe = await shellBuild({
       "/deps/shared-mime-info/share/pkgconfig",
     ],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Set up LD_LIBRARY_PATH and LDFLAGS for the full transitive dep chain
 # so configure test compilations and the final link succeed.
@@ -131,8 +130,7 @@ export LDFLAGS="$HOD_DUMMY_RPATH \
 make -j$(nproc)
 DESTDIR=$OUT make install
 
-# Strip the binary
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true
 `,
   deps: [

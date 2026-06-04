@@ -9,14 +9,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { gzipSourceRecipe } from "./gzip-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Configure: no NLS, no docs, no dependency tracking
 ./configure \\
   --prefix=/ \\
@@ -26,10 +24,7 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binaries
-/deps/toolchain/bin/strip $OUT/bin/gzip 2>/dev/null || true
-
-# Clean up - remove docs and unneeded files
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share $OUT/lib/charset.alias 2>/dev/null || true
 `,
   deps: [

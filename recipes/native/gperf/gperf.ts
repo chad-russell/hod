@@ -6,16 +6,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { gperfSourceRecipe } from "./gperf-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
-  ...cProfile(),
+  ...cProfile({ cxx: true }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-
 ./configure \
   --prefix=/ \
   --disable-dependency-tracking
@@ -23,8 +19,8 @@ export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/to
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/info 2>/dev/null || true
 `,
   deps: [
     dep("source", gperfSourceRecipe),

@@ -8,13 +8,12 @@ import { pythonRecipe } from "../python/python.js";
 
 import { zlibRecipe } from "../zlib/zlib.js";
 import { m4Recipe } from "../m4/m4.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({ python: "python", libDeps: ["zlib"], binDeps: ["m4"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Make sndfile dependency optional (only needed by daemon, not client lib).
 sed -i "s/sndfile_dep = dependency('sndfile', version : '>= 1.0.20')/sndfile_dep = dependency('sndfile', version : '>= 1.0.20', required : false)/" meson.build
@@ -69,15 +68,9 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
 
 # Create symlink so libpulsecommon is findable alongside libpulse.so.

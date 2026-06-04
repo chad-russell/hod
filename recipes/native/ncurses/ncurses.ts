@@ -12,14 +12,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesSourceRecipe } from "./ncurses-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --srcdir=. \\
   --prefix=/ \\
@@ -39,15 +37,7 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Add parent include path so <ncursesw/...> cross-includes resolve.
 for pc in $OUT/lib/pkgconfig/*.pc; do
@@ -60,10 +50,7 @@ done
 # in the ncursesw include directory.
 [ -e $OUT/include/ncursesw/ncurses.h ] || cp $OUT/include/ncursesw/curses.h $OUT/include/ncursesw/ncurses.h
 
-# Strip shared libraries
-for f in $OUT/lib/lib*.so.*.*.*; do
-  /deps/toolchain/bin/strip "$f" 2>/dev/null || true
-done
+${STRIP_LIBRARIES}
 
 # Create non-widec compatibility symlinks
 cd $OUT/lib

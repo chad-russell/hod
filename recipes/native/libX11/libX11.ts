@@ -13,6 +13,7 @@ import { libXauRecipe } from "../libXau/libXau.js";
 import { libXdmcpRecipe } from "../libXdmcp/libXdmcp.js";
 import { xtransRecipe } from "../xtrans/xtrans.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 export const libX11RuntimeDeps = ["libXau", "libXcb", "libXdmcp", "toolchain"];
 
@@ -26,11 +27,8 @@ const recipe = await shellBuild({
     // Add "xorgproto", "xtrans" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig", "/deps/xtrans/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 cat > /tmp/build/rawcpp <<'EOF'
 #!/bin/sh
 exec /deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin -E "$@" -
@@ -48,14 +46,10 @@ export RAWCPP=/tmp/build/rawcpp
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
 # Strip shared libraries
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up — keep pkgconfig for downstream deps
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true

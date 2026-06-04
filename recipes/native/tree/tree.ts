@@ -10,13 +10,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { treeSourceRecipe } from "./tree-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Build using upstream Makefile. CC, CFLAGS, LDFLAGS are auto-injected by
 # shellBuild. Override PREFIX and DESTDIR for staging install.
@@ -26,10 +25,7 @@ make -j$(nproc)
 # directory directly (not a staging prefix), so set it to $OUT/bin.
 make install PREFIX=/ DESTDIR=$OUT/bin
 
-# Strip binary
-/deps/toolchain/bin/strip $OUT/bin/tree 2>/dev/null || true
-
-# Clean up - remove man pages
+${STRIP_BINARIES}
 rm -rf $OUT/share $OUT/man 2>/dev/null || true
 `,
   deps: [

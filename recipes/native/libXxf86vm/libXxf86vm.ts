@@ -13,6 +13,7 @@ import { libXdmcpRecipe } from "../libXdmcp/libXdmcp.js";
 import { libXxf86vmSourceRecipe } from "./libXxf86vm-source.js";
 import { libXextRecipe } from "../libXext/libXext.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 export const libXxf86vmRuntimeDeps = ["libX11", "libXau", "libXcb", "libXdmcp", "libXext", "toolchain"];
 
@@ -23,11 +24,8 @@ const recipe = await shellBuild({
     pkgConfigDeps: ["libX11", "libXau", "libXcb", "libXdmcp", "libXext"],
     pkgConfigPaths: ["/deps/xorgproto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \
   --prefix=/ \
   --enable-shared \
@@ -36,16 +34,9 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
 `,
   deps: [

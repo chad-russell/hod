@@ -8,16 +8,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { expatSourceRecipe } from "./expat-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
-  ...cProfile(),
+  ...cProfile({ cxx: true }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXCPP="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin -E"
 ./configure \
   --prefix=/ \
   --enable-shared \
@@ -30,22 +26,10 @@ export CXXCPP="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip the xmlwf binary and shared library
-/deps/toolchain/bin/strip $OUT/bin/xmlwf 2>/dev/null || true
-/deps/toolchain/bin/strip $OUT/lib/libexpat.so.*.*.* 2>/dev/null || true
-
-# Clean up — keep lib/pkgconfig for downstream deps
-rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la $OUT/lib/cmake 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/lib/cmake 2>/dev/null || true
 rmdir $OUT/share 2>/dev/null || true
 `,
   deps: [

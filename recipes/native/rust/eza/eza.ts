@@ -42,6 +42,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { ezaSourceRecipe } from "./eza-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "eza",
@@ -53,10 +54,7 @@ const recipe = await cargoBuild({
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   // Default features include git support (git2/libgit2 compiled from source).
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],

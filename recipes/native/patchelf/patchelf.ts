@@ -29,14 +29,14 @@ import { automakeRecipe } from "../automake/automake.js";
 import { m4Recipe } from "../m4/m4.js";
 import { perlRecipe } from "../perl/perl.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["autoconf", "automake", "m4", "perl"] }),
+  sourceDir: true,
   script: `
 
 # Copy source to writable directory (autoreconf needs to write autom4te.cache)
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Set PERL5LIB so autoreconf's underlying autom4te can find Perl modules
 export PERL5LIB="/deps/perl/lib/perl5/5.40.0:/deps/perl/lib/perl5/5.40.0/x86_64-linux"
@@ -53,11 +53,8 @@ export CXXFLAGS="-O2 --sysroot=/deps/toolchain/sysroot -I/deps/toolchain/sysroot
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binary
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share/aclocal 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/info $OUT/share/aclocal 2>/dev/null || true
 `,
   deps: [
     dep("source", patchelfSourceRecipe),

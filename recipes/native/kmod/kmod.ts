@@ -16,7 +16,7 @@ import { zstdRecipe } from "../zstd/zstd.js";
 import { xzRecipe } from "../xz/xz.js";
 import { opensslRecipe } from "../openssl/openssl.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const kmodRuntimeDeps = ["openssl", "toolchain", "xz", "zlib", "zstd"];
 
@@ -25,11 +25,8 @@ const recipe = await shellBuild({
     pkgConfigDeps: ["zlib", "zstd", "xz", "openssl"],
     includeDeps: ["zlib", "zstd", "xz", "openssl"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 meson setup build \\
   --prefix=/ \\
   --libdir=lib \\
@@ -42,11 +39,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

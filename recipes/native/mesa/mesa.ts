@@ -78,7 +78,7 @@ import { libclcRecipe } from "../libclc/libclc.js";
 import { spirvLlvmTranslatorRecipe } from "../spirv-llvm-translator/spirv-llvm-translator.js";
 import { spirvToolsRecipe } from "../spirv-tools/spirv-tools.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 // All deps that provide shared libs — used for LD_LIBRARY_PATH.
 const libDepNames = [
@@ -120,23 +120,17 @@ export const mesaRuntimeDeps = [
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["flex", "bison", "llvm", "m4"],
     includeDeps: allIncludeDeps,
     libDeps: libDepNames,
     pkgConfigDeps: allPkgConfigDeps,
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # === PYTHONPATH for mako, pyyaml, packaging ===
 export PYTHONPATH="/deps/mako/lib/python3/site-packages:/deps/pyyaml/lib/python3/site-packages:/deps/packaging/lib/python3/site-packages"
-
-# === C++ compiler (needed for LLVM/llvmpipe C++ code) ===
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXFLAGS="-O2"
 
 # === LD_LIBRARY_PATH for meson's cc.run() checks ===
 export LD_LIBRARY_PATH="${ldLibraryPath}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
@@ -229,14 +223,7 @@ DESTDIR=$OUT ninja -C build install
 
 echo "=== Mesa install complete ==="
 
-# === Make pkg-config files relocatable ===
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # === Strip shared libraries ===
 ${STRIP_ALL}

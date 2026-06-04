@@ -20,6 +20,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
@@ -31,10 +32,8 @@ const recipe = await shellBuild({
     // Add "wayland-protocols" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/wayland-protocols/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # wl-clipboard's meson.build uses find_program('wayland-scanner', native: true)
 # so it needs to be on PATH.
@@ -51,10 +50,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up docs and man pages
+${STRIP_BINARIES}
 rm -rf $OUT/share/doc $OUT/share/info 2>/dev/null || true
 `,
   deps: [

@@ -18,7 +18,7 @@ import { mtdevRecipe } from "../mtdev/mtdev.js";
 import { eudevRecipe } from "../eudev/eudev.js";
 import { seatdRecipe } from "../seatd/seatd.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const libinputRuntimeDeps = ["eudev", "libevdev", "mtdev", "seatd", "toolchain"];
 
@@ -28,11 +28,8 @@ const recipe = await shellBuild({
     includeDeps: ["libevdev", "mtdev", "eudev", "seatd"],
     libDeps: ["mtdev"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 meson setup build \\
   --prefix=/ \\
   --libdir=lib \\
@@ -45,10 +42,9 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
+${RELOCATE_PKG_CONFIG}
 for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc"
   sed -i 's|^exec_prefix=.*|exec_prefix=\\\${prefix}|' "$pc"
   sed -i 's|^libdir=.*|libdir=\\\${prefix}/lib|' "$pc"
   sed -i 's|^includedir=.*|includedir=\\\${prefix}/include|' "$pc"

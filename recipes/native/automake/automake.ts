@@ -21,11 +21,8 @@ import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["autoconf", "m4", "perl"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Make autoconf, m4, and perl discoverable by configure
 export PATH="/deps/autoconf/bin:/deps/m4/bin:/deps/perl/bin:$PATH"
 

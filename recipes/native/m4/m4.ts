@@ -9,14 +9,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { m4SourceRecipe } from "./m4-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --disable-nls \\
@@ -26,7 +24,7 @@ make -j$(nproc)
 make install DESTDIR=$OUT
 
 # Strip the binary
-/deps/toolchain/bin/strip $OUT/bin/m4 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share $OUT/lib/charset.alias 2>/dev/null || true

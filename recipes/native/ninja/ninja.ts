@@ -14,17 +14,15 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ninjaSourceRecipe } from "./ninja-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { pythonRecipe } from "../python/python.js";
 
 const recipe = await shellBuild({
   ...cProfile({
     binDeps: ["python"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Generate inline header for browse.py (used by browse.cc)
 mkdir -p build
 bash src/inline.sh kBrowsePy < src/browse.py > build/browse_py.h
@@ -65,7 +63,7 @@ $CXX $HOD_DUMMY_RPATH -O2 -o ninja build/ninja_main.o -Lbuild -lninja -lpthread
 # Install
 mkdir -p $OUT/bin
 cp ninja $OUT/bin/ninja
-/deps/toolchain/bin/strip $OUT/bin/ninja
+${STRIP_BINARIES}
 
 # Verify it runs
 ./ninja --version

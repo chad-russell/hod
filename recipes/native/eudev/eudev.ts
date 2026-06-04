@@ -27,25 +27,19 @@ import { m4Recipe } from "../m4/m4.js";
 import { pkgconfRecipe } from "../pkgconf/pkgconf.js";
 import { gperfRecipe } from "../gperf/gperf.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const eudevRuntimeDeps = ["kmod", "toolchain", "util-linux"];
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     pkgConfigDeps: ["util-linux", "kmod", "zlib", "zstd", "xz", "openssl"],
     includeDeps: ["util-linux", "kmod"],
     binDeps: ["autoconf", "automake", "libtool", "m4", "pkgconf", "gperf"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-# Disable C++ checks (eudev is C only, but libtool checks for C++)
-# Set CXX to g++ from toolchain to pass the check
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-
 # Perl needs its library path set (perl built with prefix=/)
 export PERL5LIB="/deps/perl/lib/perl5/site_perl/5.40.0/x86_64-linux:/deps/perl/lib/perl5/site_perl/5.40.0:/deps/perl/lib/perl5/5.40.0/x86_64-linux:/deps/perl/lib/perl5/5.40.0"
 export LIBTOOLIZE=/deps/libtool/bin/libtoolize
@@ -84,10 +78,9 @@ autoreconf -f -i -v 2>&1
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable
+${RELOCATE_PKG_CONFIG}
 for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
   [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc"
   sed -i 's|^exec_prefix=.*|exec_prefix=\\\${prefix}|' "$pc"
   sed -i 's|^libdir=.*|libdir=\\\${prefix}/lib|' "$pc"
   sed -i 's|^includedir=.*|includedir=\\\${prefix}/include|' "$pc"

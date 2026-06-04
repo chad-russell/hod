@@ -20,16 +20,14 @@ import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const seatdRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Disable werror (treats warnings as errors, may fail with newer compilers)
 meson setup build \\
@@ -47,11 +45,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

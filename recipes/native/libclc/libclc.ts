@@ -17,11 +17,12 @@ import { libclcSourceRecipe } from "./libclc-source.js";
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     binDeps: ["cmake", "ninja", "spirv-tools"],
     libDeps: ["zlib", "zstd"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
 mkdir -p /tmp/libclc-build
 
 # LLVM 22's SPIR-V backend can leave OpenCL C header inline helpers as
@@ -29,9 +30,7 @@ mkdir -p /tmp/libclc-build
 # unit so the final SPIR-V link has no dangling references.
 sed -i 's|#define _CLC_INLINE inline|#define _CLC_INLINE static inline|' /tmp/build/libclc/clc/include/clc/clcfunc.h
 
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CFLAGS="-O2"
-export CXXFLAGS="-O2"
 
 cmake -G Ninja \
   -S /tmp/build/libclc \

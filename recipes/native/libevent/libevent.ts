@@ -13,6 +13,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { libeventSourceRecipe } from "./libevent-source.js";
 import { opensslRecipe } from "../openssl/openssl.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -20,11 +21,8 @@ const recipe = await shellBuild({
     libDeps: ["openssl"],
     pkgConfigDeps: ["openssl"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Make openssl discoverable
 export CPPFLAGS="-I/deps/openssl/include"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/openssl/lib"
@@ -40,21 +38,10 @@ export PKG_CONFIG_PATH="/deps/openssl/lib/pkgconfig"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up — remove docs, man, la files. Keep pkgconfig.
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/info 2>/dev/null || true
 
 # Verify key outputs
 ls -la $OUT/lib/libevent.so

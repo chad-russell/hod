@@ -17,21 +17,21 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const sharedMimeInfoRuntimeDeps = ["glib", "libffi", "libiconv", "libxml2", "pcre2", "toolchain", "xz", "zlib"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["glib", "libxml2"],
     includeDeps: ["glib", "libxml2", "zlib", "libffi", "pcre2", "libiconv", "xz"],
     libDeps: ["glib", "libxml2", "zlib", "libffi", "pcre2", "libiconv", "xz"],
     pkgConfigDeps: ["glib", "libxml2", "zlib", "libffi", "pcre2", "xz"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # Avoid requiring gettext/msgfmt during this bootstrap pass. Install the
 # untranslated MIME XML template directly as freedesktop.org.xml.
@@ -68,8 +68,6 @@ if xmlto.found()
 endif
 EOF
 
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXFLAGS="-O2"
 export LD_LIBRARY_PATH="/tmp/build/build/src:/deps/glib/lib:/deps/libxml2/lib:/deps/zlib/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/libiconv/lib:/deps/xz/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \
   -Wl,-rpath-link,/deps/glib/lib -Wl,-rpath-link,/deps/libxml2/lib -Wl,-rpath-link,/deps/zlib/lib \
@@ -88,17 +86,10 @@ meson setup build \
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/bin $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true
+${STRIP_ALL}
+find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 `,
   deps: [
     dep("source", sharedMimeInfoSourceRecipe),

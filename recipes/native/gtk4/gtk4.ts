@@ -56,7 +56,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 // Transitive runtime deps: GTK4 needs all shared libs in its dependency chain.
 export const gtk4RuntimeDeps = [
@@ -89,6 +89,7 @@ const rpathLinkFlags = libDepNames.map((d) => `-Wl,-rpath-link,/deps/${d}/lib`).
 
 const recipe = await shellBuild({
   ...mesonProfile({
+    cxx: true,
     python: "python",
     binDeps: ["glib", "gdk-pixbuf", "shared-mime-info"],
     includeDeps: [
@@ -133,11 +134,8 @@ const recipe = await shellBuild({
       "/deps/shared-mime-info/share/pkgconfig",
     ],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Pre-generate profile_conf.h and patch meson.build to avoid the
 # capture: true custom_target that triggers meson --internal exe.
 mkdir -p build
@@ -262,7 +260,6 @@ export CFLAGS="$CFLAGS -I/tmp/egl-stub"
 export CXXFLAGS="$CXXFLAGS -I/tmp/egl-stub"
 
 # C++ compiler — GTK4 has C++ code
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CXXFLAGS="-O2 -I/deps/freetype/include/freetype2"
 
 # Ensure shared libs can be found by meson's cc.run() checks and at link time
@@ -300,14 +297,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 # Compile GSettings schemas — GTK4 ships org.gtk.gtk4.Settings.FileChooser etc.
 # Downstream apps (nautilus) call g_settings_new() which requires compiled schemas.

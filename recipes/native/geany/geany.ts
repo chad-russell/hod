@@ -48,11 +48,13 @@ import { libXtstRecipe } from "../libXtst/libXtst.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { sharedMimeInfoRecipe } from "../shared-mime-info/shared-mime-info.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 export const geanyRuntimeDeps = [...gtk3RuntimeDeps, "gtk3"].sort();
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     // GTK3's .pc files reference all transitive deps, so pkg-config
     // needs to find them all.
     pkgConfigDeps: [
@@ -75,11 +77,8 @@ const recipe = await shellBuild({
     ],
     binDeps: ["glib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Patch utils_resource_dir() to detect the install prefix at runtime on
 # Linux. Geany hardcodes GEANY_DATADIR/LIBDIR/LOCALEDIR at compile time
 # for the Linux code path (unlike macOS/Windows which use runtime APIs).
@@ -112,10 +111,6 @@ mv src/utils.c.new src/utils.c
 # Set up LD_LIBRARY_PATH and LDFLAGS for the full transitive dep chain
 # so configure test compilations and the final link succeed.
 export LD_LIBRARY_PATH="/deps/gtk3/lib:/deps/glib/lib:/deps/pango/lib:/deps/cairo/lib:/deps/gdk-pixbuf/lib:/deps/at-spi2-core/lib:/deps/libepoxy/lib:/deps/harfbuzz/lib:/deps/fontconfig/lib:/deps/freetype/lib:/deps/fribidi/lib:/deps/libpng/lib:/deps/pixman/lib:/deps/zlib/lib:/deps/expat/lib:/deps/bzip2/lib:/deps/libffi/lib:/deps/pcre2/lib:/deps/libX11/lib:/deps/libXext/lib:/deps/libXrender/lib:/deps/libXi/lib:/deps/libXrandr/lib:/deps/libXcursor/lib:/deps/libXinerama/lib:/deps/libXdamage/lib:/deps/libXcomposite/lib:/deps/libXfixes/lib:/deps/libXau/lib:/deps/libXcb/lib:/deps/libXdmcp/lib:/deps/dbus/lib:/deps/libxml2/lib:/deps/libiconv/lib:/deps/xz/lib:/deps/libXtst/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-# Geany's scintilla component requires C++ compilation.
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
-export CXXFLAGS="-O2"
 
 export LDFLAGS="$HOD_DUMMY_RPATH \
   -L/deps/gtk3/lib \
@@ -173,7 +168,7 @@ test -f geany.desktop || cp geany.desktop.in geany.desktop
 make install DESTDIR=$OUT
 
 # Strip binaries and libraries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Clean up
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true

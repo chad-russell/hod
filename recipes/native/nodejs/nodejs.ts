@@ -32,20 +32,19 @@ import { xzRecipe } from "../xz/xz.js";
 import { libffiRecipe } from "../libffi/libffi.js";
 import { expatRecipe } from "../expat/expat.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     python: "python",
     includeDeps: ["openssl", "zlib", "nghttp2"],
     libDeps: ["openssl", "zlib", "nghttp2"],
     pkgConfigDeps: ["openssl", "zlib", "nghttp2"],
   }),
+  sourceDir: true,
   script: `
 
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export LD_LIBRARY_PATH="/deps/openssl/lib:/deps/zlib/lib:/deps/nghttp2/lib:/deps/bzip2/lib:/deps/ncurses/lib:/deps/readline/lib:/deps/xz/lib:/deps/libffi/lib:/deps/expat/lib"
 
 python3 ./configure \\
@@ -65,7 +64,7 @@ python3 ./configure \\
 make -j$(nproc)
 make install DESTDIR=$OUT PREFIX=/
 
-/deps/toolchain/bin/strip $OUT/bin/node 2>/dev/null || true
+${STRIP_BINARIES}
 cd $OUT/bin && ln -sf node nodejs 2>/dev/null || true
 
 rm -rf $OUT/share/doc $OUT/share/man 2>/dev/null || true

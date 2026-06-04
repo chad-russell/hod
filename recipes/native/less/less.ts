@@ -11,6 +11,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { lessSourceRecipe } from "./less-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -18,11 +19,8 @@ const recipe = await shellBuild({
     libDeps: ["ncurses"],
     pkgConfigDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # pkg-config provides -I/-L/-l flags from the relocatable ncurses .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"
 export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
@@ -35,10 +33,7 @@ export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip the binary
-/deps/toolchain/bin/strip $OUT/bin/less $OUT/bin/lessecho $OUT/bin/lesskey 2>/dev/null || true
-
-# Remove docs
+${STRIP_BINARIES}
 rm -rf $OUT/share/man 2>/dev/null || true
 `,
   deps: [

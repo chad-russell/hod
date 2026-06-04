@@ -37,6 +37,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { ripgrepSourceRecipe } from "./ripgrep-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "rg",
@@ -48,13 +49,7 @@ const recipe = await cargoBuild({
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],
-  env: {
-    // Point cargo's HTTP client at the CA certificate bundle for HTTPS.
-    // The prebuilt cargo uses rustls (bundled roots), but setting this
-    // explicitly ensures certificate verification works in the sandbox.
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   // Network access required for cargo to download crate dependencies.
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],

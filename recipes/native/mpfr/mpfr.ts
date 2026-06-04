@@ -12,6 +12,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { gmpRecipe } from "../gmp/gmp.js";
 import { mpfrSourceRecipe } from "./mpfr-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -19,11 +20,8 @@ const recipe = await shellBuild({
     libDeps: ["gmp"],
     pkgConfigDeps: ["gmp"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export LDFLAGS="$HOD_DUMMY_RPATH"
 
 ./configure \\
@@ -36,18 +34,9 @@ export LDFLAGS="$HOD_DUMMY_RPATH"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip shared libraries
-find $OUT/lib -name 'lib*.so.*' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up — keep lib/pkgconfig and headers for downstream deps (GDB)
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true

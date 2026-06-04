@@ -20,16 +20,14 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { flexRecipe } from "../flex/flex.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const utilLinuxRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({ python: "python", binDeps: ["bison", "flex"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export LD_LIBRARY_PATH="/deps/zlib/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -75,11 +73,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

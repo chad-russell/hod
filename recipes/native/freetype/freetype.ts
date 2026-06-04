@@ -9,6 +9,7 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { libpngRecipe } from "../libpng/libpng.js";
 import { bzip2Recipe } from "../bzip2/bzip2.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_ALL } from "../../helpers/strip.js";
 
 export const freetypeRuntimeDeps = ["bzip2", "libpng", "toolchain", "zlib"];
 
@@ -18,11 +19,8 @@ const recipe = await shellBuild({
     libDeps: ["zlib", "libpng", "bzip2"],
     pkgConfigDeps: ["zlib", "libpng", "bzip2"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \
   --prefix=/ \
   --enable-shared \
@@ -36,18 +34,10 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/aclocal $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/aclocal 2>/dev/null || true
 `,
   deps: [
     dep("source", freetypeSourceRecipe),

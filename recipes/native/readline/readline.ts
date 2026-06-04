@@ -14,6 +14,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { readlineSourceRecipe } from "./readline-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_LIBRARIES, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -21,10 +22,8 @@ const recipe = await shellBuild({
     libDeps: ["ncurses"],
     pkgConfigDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # pkg-config provides ncurses -I/-L/-l flags from the relocatable .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"
@@ -39,20 +38,9 @@ export PKG_CONFIG_PATH="/deps/ncurses/lib/pkgconfig"
 make -j$(nproc) SHLIB_LIBS="-L/deps/ncurses/lib -lncursesw"
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip shared libraries
-for f in $OUT/lib/lib*.so.*.*.*; do
-  /deps/toolchain/bin/strip "$f" 2>/dev/null || true
-done
+${STRIP_LIBRARIES}
 
 # Clean up — keep lib/pkgconfig, headers, .so symlinks for downstream deps
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true

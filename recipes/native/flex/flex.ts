@@ -16,21 +16,16 @@ import { flexSourceRecipe } from "./flex-source.js";
 import { m4Recipe } from "../m4/m4.js";
 import { bisonRecipe } from "../bison/bison.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
-  ...cProfile({ binDeps: ["m4", "bison"] }),
+  ...cProfile({ cxx: true, binDeps: ["m4", "bison"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Make m4 and bison discoverable by configure
 export PATH="/deps/m4/bin:/deps/bison/bin:$PATH"
 export M4="/deps/m4/bin/m4"
 export YACC="bison -y"
-
-# shellBuild sets CC with --sysroot but not CXX. Flex uses C++, so set it.
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 
 ./configure \\
   --prefix=/ \\
@@ -44,7 +39,7 @@ make -j$(nproc)
 make install DESTDIR=$OUT
 
 # Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Fix symlinks to be relative
 cd $OUT/bin

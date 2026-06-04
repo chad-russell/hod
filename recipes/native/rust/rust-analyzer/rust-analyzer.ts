@@ -6,6 +6,7 @@ import { rustRecipe } from "../rust.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 import { rustAnalyzerSourceRecipe } from "./rust-analyzer-source.js";
 
 const recipe = await cargoBuild({
@@ -18,10 +19,7 @@ const recipe = await cargoBuild({
     dep("ca-certs", caCertificatesRecipe),
     dep("zlib", zlibRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],
 });

@@ -2,14 +2,12 @@ import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { alsaLibSourceRecipe } from "./alsa-lib-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { RELOCATE_PKG_CONFIG, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --libdir=/lib \\
@@ -22,12 +20,9 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-for pc in $OUT/lib/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc"
-done
+${RELOCATE_PKG_CONFIG}
 
-/deps/toolchain/bin/strip $OUT/lib/libasound.so.*.*.* 2>/dev/null || true
+${STRIP_LIBRARIES}
 rm -rf $OUT/share/aclocal $OUT/lib/*.la 2>/dev/null || true
 `,
   deps: [

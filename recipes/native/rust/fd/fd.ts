@@ -41,6 +41,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { fdSourceRecipe } from "./fd-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "fd",
@@ -52,10 +53,7 @@ const recipe = await cargoBuild({
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   // Disable default features to skip jemalloc and keep the recipe surface
   // smaller. Keep completions feature for shell tab completion support.
   cargoFlags: ["--no-default-features", "--features", "completions"],

@@ -10,8 +10,8 @@ const recipe = await shellBuild({
   ...cProfile({
     binDeps: ["cmake"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
 
 mkdir -p /tmp/cmake-bin
 cat > /tmp/cmake-bin/cc << 'EOF'

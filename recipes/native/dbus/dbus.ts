@@ -12,6 +12,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
+import { RELOCATE_PKG_CONFIG, STRIP_ALL } from "../../helpers/strip.js";
 
 export const dbusRuntimeDeps = ["expat", "toolchain"];
 
@@ -22,11 +23,8 @@ const recipe = await shellBuild({
     libDeps: ["expat"],
     pkgConfigDeps: ["expat"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \
   -Wl,-rpath-link,/deps/expat/lib -Wl,-rpath-link,/deps/zlib/lib"
@@ -54,17 +52,9 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
 `,
   deps: [
     dep("source", dbusSourceRecipe),

@@ -21,7 +21,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const gnomeAutoarRuntimeDeps = [
   "bzip2", "glib", "libarchive", "libffi", "libiconv", "openssl",
@@ -43,11 +43,8 @@ const recipe = await shellBuild({
     libDeps: ["glib", "libffi", "pcre2", "zlib", "libarchive", "bzip2", "xz", "openssl", "libxml2", "libiconv"],
     pkgConfigDeps: ["glib", "libffi", "pcre2", "zlib", "libarchive", "bzip2", "xz", "openssl", "libxml2", "libiconv"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 export LDFLAGS="$HOD_DUMMY_RPATH ${rpathLinkFlags}"
 
 meson setup build \\
@@ -64,14 +61,7 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

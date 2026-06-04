@@ -13,11 +13,8 @@ export const libjpegRuntimeDeps = ["toolchain"];
 
 const recipe = await shellBuild({
   ...cProfile(),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\

@@ -118,7 +118,7 @@ import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
 import { mesonProfile } from "../../helpers/meson.js";
-import { STRIP_ALL } from "../../helpers/strip.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 // ---------- runtime_deps ----------
 // Composed from upstream runtime dep lists (libadwaita ⊃ gtk4, tinysparql ⊃ libsoup3)
@@ -236,11 +236,8 @@ const recipe = await shellBuild({
       "/deps/iso-codes/share/pkgconfig",
     ],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Patch g_variant_builder_init_static → g_variant_builder_init in C source.
 # init_static was added in GLib 2.84, our GLib is 2.82.5.
 # For static type constants like G_VARIANT_TYPE_VARDICT, init() is equivalent.
@@ -383,14 +380,7 @@ EOF
 # glib-compile-schemas is provided by the glib dep.
 /deps/glib/bin/glib-compile-schemas $OUT/share/glib-2.0/schemas
 
-# Make pkg-config files relocatable.
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
 `,

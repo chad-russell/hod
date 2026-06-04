@@ -13,16 +13,14 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { m4Recipe } from "../m4/m4.js";
 import { gmpSourceRecipe } from "./gmp-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
     binDeps: ["m4"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 ./configure \\
   --prefix=/ \\
   --enable-shared \\
@@ -32,8 +30,7 @@ cd /tmp/build
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip shared libraries
-find $OUT/lib -name 'lib*.so.*' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
+${STRIP_LIBRARIES}
 
 # Clean up — keep lib/pkgconfig and headers for downstream deps (MPFR, GDB)
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true

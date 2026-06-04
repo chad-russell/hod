@@ -12,6 +12,7 @@ import { expatRecipe } from "../expat/expat.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 
 import { eudevRecipe } from "../eudev/eudev.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
@@ -20,10 +21,8 @@ const recipe = await shellBuild({
     libDeps: ["dbus", "alsa", "openssl", "expat", "zlib", "eudev"],
     pkgConfigDeps: ["dbus", "alsa", "openssl", "expat", "eudev"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export LD_LIBRARY_PATH="/deps/dbus/lib:/deps/alsa/lib:/deps/openssl/lib:/deps/expat/lib:/deps/zlib/lib:/deps/eudev/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH -Wl,-rpath-link,/deps/dbus/lib -Wl,-rpath-link,/deps/openssl/lib -Wl,-rpath-link,/deps/zlib/lib -Wl,-rpath-link,/deps/expat/lib -Wl,-rpath-link,/deps/eudev/lib"
@@ -79,18 +78,9 @@ meson setup build \\
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
-# Fix pkg-config paths
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/lib -name '*.so*' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
 `,
   deps: [
     dep("source", pipewireSourceRecipe),

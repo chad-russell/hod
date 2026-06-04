@@ -36,19 +36,17 @@ import { cProfile } from "../../helpers/c.js";
 
 const recipe = await shellBuild({
   ...cProfile({
+    cxx: true,
     python: "python",
     binDeps: ["cmake", "ninja"],
   }),
+  sourceDir: true,
   script: `
-cp -a /deps/source/. /tmp/build
 mkdir -p /tmp/llvm-build
 
 cd /tmp/llvm-build
 
-# shellBuild sets CC, but LLVM is a C++ build and needs a matching CXX.
-export CXX="/deps/toolchain/bin/g++ --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin"
 export CFLAGS="-O2"
-export CXXFLAGS="-O2"
 
 cmake -G Ninja \
   -S /tmp/build/llvm \

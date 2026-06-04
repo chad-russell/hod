@@ -61,10 +61,8 @@ const recipe = await shellBuild({
     // Add "wayland-protocols", "xorgproto" to pkgConfigDeps and remove this block.
     pkgConfigPaths: ["/deps/wayland-protocols/share/pkgconfig", "/deps/xorgproto/share/pkgconfig"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 # wayland-scanner is used by protocol/meson.build and needs its shared library
 # dependencies at runtime during the build.

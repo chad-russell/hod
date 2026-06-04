@@ -39,6 +39,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { tokeiSourceRecipe } from "./tokei-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "tokei",
@@ -50,10 +51,7 @@ const recipe = await cargoBuild({
     dep("zlib", zlibRecipe),
     dep("ca-certs", caCertificatesRecipe),
   ],
-  env: {
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-  },
+  env: caCertEnv(),
   // Network access required for cargo to download crate dependencies.
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],

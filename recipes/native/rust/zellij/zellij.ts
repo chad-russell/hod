@@ -44,6 +44,7 @@ import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { perlRecipe } from "../../perl/perl.js";
 import { zellijSourceRecipe } from "./zellij-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
+import { caCertEnv } from "../../../helpers/net.js";
 
 const recipe = await cargoBuild({
   name: "zellij",
@@ -57,18 +58,11 @@ const recipe = await cargoBuild({
     dep("perl", perlRecipe),
   ],
   env: {
-    // Add perl bin to PATH for openssl-sys vendored build.
-    // Add --sysroot to CFLAGS so vendored build scripts (aws-lc-sys, openssl-sys)
-    // that invoke the compiler directly (not via CC) can still find system headers.
-    // Set PERL5LIB so perl can find its standard modules (strict.pm etc.) which
-    // are needed by OpenSSL's Configure script.
     PATH: "/deps/toolchain/bin:/deps/rust/bin:/deps/perl/bin",
     CFLAGS: "-O2 --sysroot=/deps/toolchain/sysroot -I/deps/toolchain/sysroot/include",
     PERL5LIB: "/deps/perl/lib/perl5/5.40.0:/deps/perl/lib/perl5/5.40.0/x86_64-linux:/deps/perl/lib/perl5/site_perl/5.40.0:/deps/perl/lib/perl5/site_perl/5.40.0/x86_64-linux",
-    CARGO_HTTP_CAINFO: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
-    SSL_CERT_FILE: "/deps/ca-certs/etc/ssl/certs/ca-certificates.crt",
+    ...caCertEnv(),
   },
-  // Network access required for cargo to download crate dependencies.
   unsafe_flags: 0x01,
   runtime_deps: ["toolchain"],
 });

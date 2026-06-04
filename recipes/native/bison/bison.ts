@@ -16,11 +16,8 @@ import { STRIP } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({ binDeps: ["m4"] }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Make m4 discoverable by configure
 export PATH="/deps/m4/bin:$PATH"
 export M4="/deps/m4/bin/m4"

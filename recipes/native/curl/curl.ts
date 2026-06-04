@@ -14,6 +14,7 @@ import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { curlSourceRecipe } from "./curl-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -21,11 +22,8 @@ const recipe = await shellBuild({
     libDeps: ["openssl", "zlib"],
     pkgConfigDeps: ["openssl", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # pkg-config provides all -I/-L/-l flags from the relocatable .pc files.
 export LDFLAGS="$HOD_DUMMY_RPATH"
 export PKG_CONFIG_PATH=/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig
@@ -62,22 +60,10 @@ export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Make pkg-config files relocatable via pcfiledir (pkgconf extension).
-for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
-  [ -f "$pc" ] || continue
-  case "$pc" in
-    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../../..|' "$pc" ;;
-    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\${pcfiledir}/../..|' "$pc" ;;
-  esac
-done
+${RELOCATE_PKG_CONFIG}
 
-# Strip binary and shared library
-/deps/toolchain/bin/strip $OUT/bin/curl 2>/dev/null || true
-find $OUT/lib -name 'lib*.so.*' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
-
-# Clean up - remove docs and unneeded files, keep lib/pkgconfig for downstream
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/aclocal $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
+rm -rf $OUT/share/aclocal 2>/dev/null || true
 rmdir $OUT/share 2>/dev/null || true`,
   deps: [
     dep("source", curlSourceRecipe),

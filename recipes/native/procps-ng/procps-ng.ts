@@ -16,6 +16,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { procpsNgSourceRecipe } from "./procps-ng-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -23,10 +24,8 @@ const recipe = await shellBuild({
     includePaths: ["/deps/ncurses/include/ncursesw"],
     libDeps: ["ncurses"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
 
 export CPPFLAGS="-I/deps/ncurses/include -I/deps/ncurses/include/ncursesw"
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib"
@@ -44,8 +43,7 @@ export NCURSES_LIBS="-L/deps/ncurses/lib -lncursesw"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-# Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 find $OUT/sbin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 
 # Remove docs, man, la files

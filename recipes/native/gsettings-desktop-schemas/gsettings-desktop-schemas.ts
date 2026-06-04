@@ -33,11 +33,8 @@ const recipe = await shellBuild({
     ],
     libDeps: ["glib", "libffi", "pcre2", "zlib"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # Patch out po/ subdir (needs gettext)
 sed -i "/subdir('po')/d" meson.build
 

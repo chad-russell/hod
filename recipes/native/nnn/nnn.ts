@@ -16,6 +16,7 @@ import { ncursesRecipe } from "../ncurses/ncurses.js";
 import { readlineRecipe } from "../readline/readline.js";
 import { nnnSourceRecipe } from "./nnn-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -23,11 +24,8 @@ const recipe = await shellBuild({
     libDeps: ["ncurses", "readline"],
     pkgConfigDeps: ["ncurses", "readline"],
   }),
+  sourceDir: true,
   script: `
-
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
-
 # pkg-config provides ncurses -I/-L/-l flags from the relocatable .pc files.
 # readline is linked directly (not via pkg-config), so we need explicit paths.
 export CPPFLAGS="-I/deps/readline/include"
@@ -44,7 +42,7 @@ make -j$(nproc) \\
 make install DESTDIR=$OUT PREFIX=/
 
 # Strip binary
-/deps/toolchain/bin/strip $OUT/bin/nnn 2>/dev/null || true
+${STRIP_BINARIES}
 
 # Remove man pages
 rm -rf $OUT/share/man 2>/dev/null || true

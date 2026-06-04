@@ -110,37 +110,35 @@ nix develop --accept-flake-config --command cargo test -- --test-threads=1
 
 Avoid ignored bootstrap/sandbox tests unless explicitly asked.
 
-For end-to-end VM validation (boot a fresh Alpine snapshot, deploy
-profiles, run smoke suites, tear down), use the framework in `tests/vm/`:
+For end-to-end VM validation, use `just build-vm` + `just run-local-gl`
+and verify interactively or via SSH.
 
-```bash
-nix develop --accept-flake-config --command scripts/hod-vm-test
-nix develop --accept-flake-config --command scripts/hod-vm-test --suite invariants
-```
+After changes to `src/build.rs`, `src/sandbox.rs`, `src/wrap.rs`,
+`src/relocate.rs`, or `src/packed.rs`, use `hod restage` on affected
+packages to re-run relocation without rebuilding.
 
-See `tests/vm/README.md` for full options. The framework is the canonical
-way to confirm closure transfer + runtime relocation still hold after
-changes to `src/build.rs`, `src/sandbox.rs`, `src/wrap.rs`, `src/relocate.rs`,
-or `src/packed.rs`.
+## Recent milestones
 
-## Recent milestone
+**Niri desktop on Arch VM (Milestone 1 done):**
 
-The current tree has crossed an important portability milestone:
+- `profiles/niri-desktop.ts` builds and activates
+- VM boots via `just run-local-gl`, niri session auto-launches on tty1
+- `Mod+Return` opens alacritty, `Mod+Shift+E` brings up quit dialog
+- Fixed `relocate.rs` bug: dlopen'd libraries (e.g., `libwayland-client.so`) were missing from RUNPATH because the relocation pass only included `DT_NEEDED` matches. Now all runtime_deps with `lib/` dirs are included.
 
-- build **Nautilus 48.7** from source
-- copy its closure to another machine (NixOS + niri)
-- run it there — window rendering, schema resolution, and "Open With" app launching all work
+**Nautilus 48.7 portability:**
 
-This means closure transfer + relocation + wrapper/runtime setup are now good enough for a complex GTK4/libadwaita GUI app with a deep dependency tree.
+- Build from source, copy closure to another machine (NixOS + niri), run — window rendering, schema resolution, "Open With" all work.
+- Closure transfer + relocation + wrapper/runtime setup proven for complex GTK4/libadwaita apps.
 
-Additionally, the COSMIC desktop environment build is complete:
+**COSMIC build (paused):**
 
-- **All 19** COSMIC components build from source (8 core + 10 supporting + pop-launcher + cosmic-icons + xdg-desktop-portal-cosmic)
-- Full dependency chain: Mesa → eudev/libinput/seatd → PulseAudio/pipewire → cosmic-comp → all apps
-- xdg-desktop-portal-cosmic was unblocked by source-built bindgen infrastructure (LLVM 18/Clang built from source, cmake built from source)
-- Ready to proceed to Phase 5 (bootable VM image) with all 19 components
+- 18/19 components build from source (xdg-desktop-portal-cosmic blocked by bindgen)
+- Distro-integration gaps prevent usable shell; paused pending portal/DBUS/install-target infrastructure.
 
 ## Likely next fronts
 
-1. enable Vulkan/GL in GTK4 build to eliminate `GSK_RENDERER=cairo` workaround
-2. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
+1. **Niri Milestone 2** — background, notifications, launcher (`swaybg`, `mako-notifier`, `fuzzel`)
+2. **Tech debt cleanup** — strip standardization, recipe ergonomics
+3. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic` and COSMIC resume
+4. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)

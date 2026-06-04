@@ -164,6 +164,16 @@ fn relocate_single_elf(
         dep_lib_dirs.insert((dep_name.clone(), *dep_hash));
     }
 
+    // Also add any runtime_dep that has a lib/ directory. This covers
+    // libraries loaded dynamically via dlopen (e.g., libwayland-client
+    // loaded by winit/wayland-rs) which don't appear in DT_NEEDED.
+    for (dep_name, dep_hash) in runtime_dep_outputs {
+        let dep_staging = artifact_staging_path(store, dep_hash);
+        if dep_staging.join("lib").is_dir() {
+            dep_lib_dirs.insert((dep_name.clone(), *dep_hash));
+        }
+    }
+
     // Step 5: Build the RUNPATH string.
     //
     // The binary lives at output_staging_dir/<subpath>/binary.

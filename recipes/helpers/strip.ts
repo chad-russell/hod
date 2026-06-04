@@ -1,12 +1,13 @@
-//! Standard stripping snippets for Hod recipes.
+//! Standard stripping and post-install snippets for Hod recipes.
 //!
 //! Import these constants and use them in your shellBuild script block
-//! to strip binaries and shared libraries consistently.
+//! to strip binaries and shared libraries consistently, and to make
+//! pkg-config files relocatable.
 //!
 //! Usage:
-//!   import { STRIP_ALL } from "../../helpers/strip.js";
+//!   import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 //!   shellBuild({
-//!     script: `...\nDESTDIR=\$OUT make install\n\${STRIP_ALL}\n`,
+//!     script: `...\nDESTDIR=\$OUT make install\n\${RELOCATE_PKG_CONFIG}\n\${STRIP_ALL}\n`,
 //!     ...
 //!   });
 
@@ -33,4 +34,22 @@ export const STRIP_ALL = `
 ${STRIP_BINARIES}
 ${STRIP_LIBRARIES}
 rm -rf $OUT/share/doc $OUT/share/gtk-doc $OUT/share/man $OUT/lib/*.la 2>/dev/null || true
+`;
+
+/**
+ * Make pkg-config files relocatable using pcfiledir.
+ *
+ * Replaces the hardcoded prefix= line in each .pc file with a
+ * pcfiledir-relative reference so that pkg-config resolves paths
+ * correctly regardless of where the output is installed.
+ */
+export const RELOCATE_PKG_CONFIG = `
+for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig/*.pc; do
+  [ -f "$pc" ] || continue
+  case "$pc" in
+    */lib64/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../../..|' "$pc" ;;
+    */share/pkgconfig/*) sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
+    */lib/pkgconfig/*)   sed -i 's|^prefix=.*|prefix=\\\${pcfiledir}/../..|' "$pc" ;;
+  esac
+done
 `;

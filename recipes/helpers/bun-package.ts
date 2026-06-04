@@ -11,6 +11,7 @@ import { bunRecipe } from "../native/bun/bun.js";
 import { caCertificatesRecipe } from "../native/ca-certificates/ca-certificates.js";
 import { nativeToolchainRecipe } from "../toolchain/native-toolchain.js";
 import { cProfile } from "./c.js";
+import { caCertEnv } from "./net.js";
 
 export interface BunPackageBin {
   /** Executable name exposed in $OUT/bin. */
@@ -49,14 +50,15 @@ EOF
 chmod +x $OUT/bin/${bin.name}
 `).join("\n");
 
+  const profile = cProfile({ binDeps: ["bun"] });
   const recipe = await shellBuild({
-    ...cProfile({ binDeps: ["bun"] }),
+    ...profile,
+    env: { ...profile.env, ...caCertEnv() },
     script: `
 mkdir -p /tmp/npm $OUT/bin
 cd /tmp/npm
 
 export HOME=/tmp
-export SSL_CERT_FILE=/deps/ca-certs/etc/ssl/certs/ca-certificates.crt
 export BUN_INSTALL_CACHE_DIR=/tmp/bun-cache
 
 # Bun's upstream binary is musl-linked and keeps its loader in the Bun output.

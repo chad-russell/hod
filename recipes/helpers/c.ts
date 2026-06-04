@@ -45,6 +45,12 @@ export interface CProfileOptions {
    * Use this for any build that invokes Python scripts (meson, glib, etc.).
    */
   python?: string;
+
+  /**
+   * Enable C++ compiler setup. When true, adds CXX and CXXFLAGS to env,
+   * and CXXCPP if needed by autoconf-based builds.
+   */
+  cxx?: boolean;
 }
 
 /**
@@ -91,6 +97,11 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
     HOD_DUMMY_RPATH: rpathFlag,
     LDFLAGS: rpathFlag,
   };
+
+  if (opts.cxx) {
+    env.CXX = `${depSubpath(tc, "bin/g++")} --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`;
+    env.CXXFLAGS = "-O2";
+  }
 
   const includePath = pathList([
     ...(opts.includeDeps ?? []).map((dep) => depSubpath(dep, "include")),

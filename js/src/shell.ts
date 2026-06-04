@@ -16,6 +16,16 @@ export interface ShellBuildOptions {
   /** Shell script to execute. */
   script: string;
 
+  /**
+   * Auto-copy source dependency to a build directory and cd into it.
+   *
+   * - `true` or `"/tmp/build"` (default when set): copies `/deps/source/.`
+   *   to `/tmp/build` and cds there before running `script`.
+   * - A custom path: copies to that path instead.
+   * - `false` or undefined: no auto-copy (caller handles source setup).
+   */
+  sourceDir?: string | boolean;
+
   /** Optional setup commands injected before the script (e.g., linker symlinks). */
   preamble?: string;
 
@@ -34,17 +44,18 @@ export interface ShellBuildOptions {
   /** Optional initial output directory contents hash. */
   output_scaffold_hash?: string;
 
-  /** Bitmask of unsafe flags. Bit 0 = allow networking. */
+  /** Bitmask of unsafe_flags. Bit 0 = allow networking. */
   unsafe_flags?: number;
 }
 
 /**
  * Build a shell-driven Process recipe.
  *
- * Concatenates the optional preamble with the user script, wraps in
- * `set -e`, and delegates to process(). All build environment setup
- * (PATH, CC, LDFLAGS, linker symlinks, etc.) is the caller's
- * responsibility via the `preamble` and `env` fields.
+ * Concatenates the optional source copy, preamble, and user script, wraps in
+ * `set -e`, and delegates to process(). When `sourceDir` is set, the source
+ * dependency is auto-copied to a build directory before the script runs.
+ * All build environment setup (PATH, CC, LDFLAGS, linker symlinks, etc.) is
+ * the caller's responsibility via the `preamble` and `env` fields.
  *
  * Use a profile helper for common build systems:
  *
@@ -52,9 +63,10 @@ export interface ShellBuildOptions {
  * import { cProfile } from "../helpers/c.js";
  * shellBuild({
  *   ...cProfile(),
+ *   sourceDir: true,
  *   deps: [dep("source", src), dep("toolchain", tc)],
  *   runtime_deps: ["toolchain"],
- *   script: `cd /deps/source && ./configure --prefix=/ && make`,
+ *   script: `./configure --prefix=/ && make && make install`,
  * });
  * ```
  */
@@ -66,8 +78,17 @@ export async function shellBuild(opts: ShellBuildOptions): Promise<BuiltRecipe> 
     throw new Error("shellBuild(): script is required");
   }
 
+  const dir = opts.sourceDir === true ? "/tmp/build"
+    : opts.sourceDir === false || opts.sourceDir === undefined ? null
+    : opts.sourceDir;
+
+  const sourceSetup = dir
+    ? `mkdir -p ${dir} && cp -a /deps/source/. ${dir} && cd ${dir}`
+    : "";
+
   const fullScript = [
     "set -e",
+    sourceSetup ? `\n${sourceSetup}` : "",
     opts.preamble ? `\n${opts.preamble}` : "",
     `\n${opts.script}`,
   ].join("");

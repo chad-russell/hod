@@ -10,7 +10,7 @@ import { rustRecipe } from "../rust.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { zlibRecipe } from "../../zlib/zlib.js";
 import { cargoBuild } from "../../../helpers/rust.js";
-import { caCertEnv } from "../../../helpers/net.js";
+import { caCertEnv } from "../../../helpers/build-env.js";
 import { styluaSourceRecipe } from "./stylua-source.js";
 
 const recipe = await cargoBuild({

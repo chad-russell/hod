@@ -13,7 +13,7 @@ import { depSubpath, pathList } from "../../js/src/index.js";
  * (cargo, curl, pip, etc.) can verify HTTPS connections.
  *
  * Usage:
- *   import { caCertEnv } from "../../helpers/net.js";
+ *   import { caCertEnv } from "../../helpers/build-env.js";
  *   cargoBuild({ env: caCertEnv(), ... });
  */
 export function caCertEnv(caDepName: string = "ca-certs"): Record<string, string> {

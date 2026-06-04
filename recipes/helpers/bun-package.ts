@@ -11,7 +11,7 @@ import { bunRecipe } from "../native/bun/bun.js";
 import { caCertificatesRecipe } from "../native/ca-certificates/ca-certificates.js";
 import { nativeToolchainRecipe } from "../toolchain/native-toolchain.js";
 import { cProfile } from "./c.js";
-import { caCertEnv } from "./net.js";
+import { caCertEnv } from "./build-env.js";
 
 export interface BunPackageBin {
   /** Executable name exposed in $OUT/bin. */

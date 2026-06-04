@@ -10,7 +10,7 @@ import {
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { rustRecipe } from "../rust/rust.js";
 import { cargoBuild } from "../../helpers/rust.js";
-import { caCertEnv, depEnvFromList } from "../../helpers/net.js";
+import { caCertEnv, depEnvFromList } from "../../helpers/build-env.js";
 import { alacrittySourceRecipe } from "./alacritty-source.js";
 
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";

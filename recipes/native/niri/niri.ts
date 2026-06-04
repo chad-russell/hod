@@ -6,7 +6,7 @@
 
 import { dep, HOD_DUMMY_RPATH_FLAG, importToStore } from "../../../js/src/index.js";
 import { cargoBuild } from "../../helpers/rust.js";
-import { caCertEnv, depEnvFromList } from "../../helpers/net.js";
+import { caCertEnv, depEnvFromList } from "../../helpers/build-env.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { rustRecipe } from "../rust/rust.js";
 import { niriSourceRecipe } from "./niri-source.js";

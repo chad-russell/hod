@@ -22,7 +22,7 @@ import { xcbUtilRecipe } from "../xcb-util/xcb-util.js";
 import { xorgprotoRecipe } from "../xorgproto/xorgproto.js";
 import { xwaylandSatelliteSourceRecipe } from "./xwayland-satellite-source.js";
 import { cargoBuild } from "../../helpers/rust.js";
-import { caCertEnv, depEnvFromList } from "../../helpers/net.js";
+import { caCertEnv, depEnvFromList } from "../../helpers/build-env.js";
 
 const recipe = await cargoBuild({
   name: "xwayland-satellite",

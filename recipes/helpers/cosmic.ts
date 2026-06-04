@@ -23,7 +23,7 @@ import {
 import type { BuiltRecipe } from "../../js/src/file.js";
 import { nativeToolchainRecipe } from "../toolchain/native-toolchain.js";
 import { rustRecipe } from "../native/rust/rust.js";
-import { caCertEnv, depEnvFromList } from "./net.js";
+import { caCertEnv, depEnvFromList } from "./build-env.js";
 import { cargoBuild } from "./rust.js";
 
 // C toolchain

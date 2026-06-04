@@ -44,7 +44,7 @@ import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { perlRecipe } from "../../perl/perl.js";
 import { zellijSourceRecipe } from "./zellij-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
-import { caCertEnv } from "../../../helpers/net.js";
+import { caCertEnv } from "../../../helpers/build-env.js";
 
 const recipe = await cargoBuild({
   name: "zellij",

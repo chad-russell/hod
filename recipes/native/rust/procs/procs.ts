@@ -40,7 +40,7 @@ import { zlibRecipe } from "../../zlib/zlib.js";
 import { caCertificatesRecipe } from "../../ca-certificates/ca-certificates.js";
 import { procsSourceRecipe } from "./procs-source.js";
 import { cargoBuild } from "../../../helpers/rust.js";
-import { caCertEnv } from "../../../helpers/net.js";
+import { caCertEnv } from "../../../helpers/build-env.js";
 
 const recipe = await cargoBuild({
   name: "procs",

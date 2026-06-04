@@ -3,6 +3,7 @@ import { process, dep, importToStore, hermeticPreamble } from "../../js/src/inde
 import { hodSeedRootRecipe } from "../bootstrap/hod-seed-root.js";
 import { shimsBundleRecipe } from "../shims/shims-bundle.js";
 import { binutilsSourceRecipe } from "./binutils-source.js";
+import { COPY_SOURCE } from "../helpers/build-env.js";
 
 const preamble = hermeticPreamble({ shell: "seed", muslLinker: "seed", shims: "shims" });
 
@@ -27,9 +28,8 @@ FEOF
 chmod +x /tmp/fake-bin/file
 export PATH=/tmp/fake-bin:$PATH
 
-cp -a /deps/source/. /tmp/build
+${COPY_SOURCE}
 
-# Build in a separate directory
 mkdir -p /tmp/binutils-build && cd /tmp/binutils-build
 
 # Force static linking by wrapping gcc with -static

@@ -6,6 +6,7 @@ import { gccStage1Recipe } from "../cross/gcc-stage1.js";
 import { glibcRecipe } from "../cross/glibc.js";
 import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { coreutilsSourceRecipe } from "./coreutils-source.js";
+import { COPY_SOURCE } from "../helpers/build-env.js";
 
 const preamble = hermeticPreamble({
   shims: "shims",
@@ -25,8 +26,7 @@ const recipe = await process({
 
 ${preamble}
 
-cp -a /deps/source/. /tmp/build
-cd /tmp/build
+${COPY_SOURCE}
 cd /tmp/build
 
 # Configure coreutils as cross-compile (musl build -> glibc target)

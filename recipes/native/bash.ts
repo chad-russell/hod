@@ -6,6 +6,7 @@ import { gccStage1Recipe } from "../cross/gcc-stage1.js";
 import { glibcRecipe } from "../cross/glibc.js";
 import { linuxHeadersRecipe } from "../cross/linux-headers.js";
 import { bashSourceRecipe } from "./bash-source.js";
+import { COPY_SOURCE } from "../helpers/build-env.js";
 
 const preamble = hermeticPreamble({
   shell: "seed",
@@ -25,7 +26,7 @@ const recipe = await process({
 
 ${preamble}
 
-cp -a /deps/source/. /tmp/build
+${COPY_SOURCE}
 cd /tmp/build
 
 # Configure bash as a cross-compile (musl build machine -> glibc target)

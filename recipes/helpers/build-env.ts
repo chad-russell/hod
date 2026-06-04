@@ -7,6 +7,20 @@
 import { depSubpath, pathList } from "../../js/src/index.js";
 
 /**
+ * Shell snippet to copy the source dependency into /tmp/build.
+ *
+ * Recipes using `process()` directly (instead of `shellBuild()` with
+ * `sourceDir: true`) can interpolate this into their script. Add
+ * `cd /tmp/build` (or another dir) after it as needed.
+ *
+ * Usage:
+ *   import { COPY_SOURCE } from "../../helpers/build-env.js";
+ *   ...
+ *   script: `${COPY_SOURCE} && cd /tmp/build && ./configure ...`
+ */
+export const COPY_SOURCE = "cp -a /deps/source/. /tmp/build";
+
+/**
  * Return environment variables for TLS certificate verification.
  *
  * Sets both CARGO_HTTP_CAINFO and SSL_CERT_FILE so that any tool

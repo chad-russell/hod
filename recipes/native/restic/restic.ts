@@ -15,7 +15,6 @@
 
 import {
   dep,
-  depSubpath,
   importToStore,
   shellBuild,
 } from "../../../js/src/index.js";
@@ -23,6 +22,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goProfile } from "../../helpers/go.js";
 import { STRIP_BINARIES } from "../../helpers/strip.js";
+import { caCertEnv } from "../../helpers/build-env.js";
 import { resticSourceRecipe } from "./restic-source.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 
@@ -38,10 +38,8 @@ const recipe = await shellBuild({
   ],
   env: {
     ...profile.env,
-    // Prevent Go from auto-downloading a newer toolchain.
     GOTOOLCHAIN: "local",
-    // CA certificates for HTTPS module downloads.
-    SSL_CERT_FILE: "/deps/cacert/etc/ssl/certs/ca-certificates.crt",
+    ...caCertEnv("cacert"),
   },
   sourceDir: true,
   script: `

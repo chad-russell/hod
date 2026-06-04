@@ -48,6 +48,7 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { zstdRecipe } from "../zstd/zstd.js";
 import { llvmSourceRecipe } from "./llvm-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
@@ -59,8 +60,7 @@ const recipe = await shellBuild({
 cp -r /deps/llvm-source/. $OUT
 
 # === Strip executables (but NOT shared libraries) ===
-# Stripping shared libs can remove symbols that downstream tools (Mesa, rustc) need.
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # === Clean up unnecessary files ===
 rm -rf $OUT/share/doc 2>/dev/null || true

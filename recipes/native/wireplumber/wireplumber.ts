@@ -18,7 +18,7 @@ import { zlibRecipe } from "../zlib/zlib.js";
 import { expatRecipe } from "../expat/expat.js";
 import { luaRecipe } from "../lua/lua.js";
 import { wireplumberSourceRecipe } from "./wireplumber-source.js";
-import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
+import { STRIP, STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
@@ -92,8 +92,7 @@ done
 ${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
-find $OUT/bin -type f -name '*-real' -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-rm -rf $OUT/share/doc $OUT/lib/*.la 2>/dev/null || true
+find $OUT/bin -type f -name '*-real' -exec ${STRIP} {} + 2>/dev/null || true
 `,
   deps: [
     dep("source", wireplumberSourceRecipe),

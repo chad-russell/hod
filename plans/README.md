@@ -10,8 +10,13 @@ Active planning notes. Implemented plans are deleted once absorbed into
 | `minimal-hod-vm-roadmap.md` | Top-level product roadmap: bootable QEMU VM with Hod-owned desktop | Active |
 | `niri-desktop-roadmap.md` | Niri compositor + minimal desktop on the Arch VM | Active — Milestone 1 done |
 | `bindgen-infrastructure.md` | Hermetic bindgen for the sandbox | Active |
-| `standardize-strip-in-profiles.md` | Shared-library stripping cleanup | Active cleanup |
 | `future-tracks.md` | Backlog of well-scoped tracks | Active backlog |
+
+## Done
+
+| File | What | Status |
+|------|------|--------|
+| `standardize-strip-in-profiles.md` | Shared-library stripping cleanup | Done — helpers cover bin/sbin/libexec/lib |
 
 ## Paused
 

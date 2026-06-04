@@ -205,6 +205,33 @@ fn roundtrip_unpack_tar_xz() {
     assert_json_roundtrip(&recipe);
 }
 
+#[test]
+fn roundtrip_unpack_zip() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::Zip,
+        archive_recipe_hash: None,
+        strip_components: None,
+    });
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
+}
+
+#[test]
+fn json_unpack_zip_uses_zip_format() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash_a(),
+        format: ArchiveFormat::Zip,
+        archive_recipe_hash: None,
+        strip_components: None,
+    });
+    let json = serde_json::to_string(&recipe).unwrap();
+    assert!(
+        json.contains("\"format\":\"zip\""),
+        "should use 'zip' format, got: {json}"
+    );
+}
+
 // ===========================================================================
 // JSON format validation
 // ===========================================================================

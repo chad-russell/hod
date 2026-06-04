@@ -345,8 +345,8 @@ fn build_content_file_list(store: &Store, closure: &Closure, quiet: bool) -> Vec
     let mut rel_paths: BTreeSet<String> = BTreeSet::new();
 
     // 1. Staging trees for each output. List every directory entry explicitly
-    // so incremental transfers repair incomplete outputs and include dotfiles
-    // such as generated wrapper payloads (`bin/.foo-wrapped`).
+    // so incremental transfers repair incomplete outputs and include
+    // dotfiles as well as the _hod_wrapped/ wrapper payload directory.
     for entry in &closure.entries {
         if let Some(ref staging) = entry.staging_path {
             if staging.exists() {
@@ -888,7 +888,9 @@ mod tests {
         let output = root.join("staging/f4/output/bin");
         std::fs::create_dir_all(&output).unwrap();
         std::fs::write(output.join("alacritty"), b"wrapper").unwrap();
-        std::fs::write(output.join(".alacritty-wrapped"), b"elf").unwrap();
+        let wrapped_dir = output.join("_hod_wrapped");
+        std::fs::create_dir_all(&wrapped_dir).unwrap();
+        std::fs::write(wrapped_dir.join("alacritty"), b"elf").unwrap();
 
         let mut paths = BTreeSet::new();
         collect_relative_paths(root, &root.join("staging/f4/output"), &mut paths).unwrap();
@@ -896,6 +898,7 @@ mod tests {
         assert!(paths.contains("staging/f4/output"));
         assert!(paths.contains("staging/f4/output/bin"));
         assert!(paths.contains("staging/f4/output/bin/alacritty"));
-        assert!(paths.contains("staging/f4/output/bin/.alacritty-wrapped"));
+        assert!(paths.contains("staging/f4/output/bin/_hod_wrapped"));
+        assert!(paths.contains("staging/f4/output/bin/_hod_wrapped/alacritty"));
     }
 }

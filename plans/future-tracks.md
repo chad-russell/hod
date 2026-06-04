@@ -20,35 +20,35 @@ COSMIC components that need bindgen (`xdg-desktop-portal-cosmic`).
 
 ---
 
-## Track C — Recipe ergonomics cleanup
+## Track C — DONE
 
-Small audits and refactors:
+Recipe ergonomics cleanup. All actionable items completed:
 
-1. **Audit `glibcLinker` usage.** With transitive closure working,
-   many recipes that pass `glibcLinker: "glibc"` could plausibly drop
-   it. Worth a careful pass to see how much simplification is available.
+1. **glibcLinker audit** — Evaluated: genuinely needed by virtually all recipes for intra-build dynamic linker. Not removable.
+2. **`.foo-wrapped` renamed to `_hod_wrapped/`** — Wrapped ELFs now live in `bin/_hod_wrapped/<name>` instead of `bin/.<name>-wrapped`. Eliminates the POSIX glob footgun with `cp -a SRC/* DST/`.
+3. **Strip standardization** — `spirv-tools` and `spirv-llvm-translator` now strip their outputs. `caCertEnv()` migration is 100% complete (6 stragglers migrated). `cxx: true` migration was already complete.
+4. **hermeticPreamble simplification** — Not actionable; depends on item 1 which showed no simplification is possible.
 
-2. **Move `.foo-wrapped` out of dot-prefix.** A wrapping scheme that puts
-   the real ELFs in a non-dotfile location (e.g., `_hod_wrapped/` or
-   `foo.real`) would mean future bundling recipes don't have to remember
-   the trailing-dot trick.
-
-3. **`standardize-strip-in-profiles.md`** is already an active plan.
-
-4. **`hermeticPreamble` simplification.** After item 1 is audited,
-   the preamble's `glibcLinker` block could potentially be shrunk.
-
-**Rough size:** 1–3 days each, mostly mechanical.
+Remaining low-purity work (migrate when touching):
+- ~60 older recipes still using inline strip instead of `STRIP_ALL`
+- 14 recipes with extra inline strip for directories not covered by helpers (`libexec`, `sbin`)
+- 16 seed-path recipes using `/deps/seed/bin/strip` instead of the helper
 
 ---
 
-## Track D — Closure distribution UX
+## Track D — DONE
 
-1. `hod copy-closure --from <remote>` (currently only `--to` works)
-2. Pull-style flow: deploy machine fetches closure by recipe hash
-3. Optional: HTTP-fetchable cache layout
+Closure distribution UX. `hod copy-closure --from` is now implemented (SSH and
+local). `hod closure --list` is also available for machine-readable output.
 
-**Rough size:** 2–4 days for `--from`. Cache layout is a larger effort.
+`hod resolve` subcommand resolves a specifier to a recipe hash (useful
+standalone and for remote resolution). `--remote-resolve` flag on
+`copy-closure --from` falls back to resolving the specifier on the remote via
+SSH when local resolution fails.
+
+Remaining future items:
+1. Pull-style flow with HTTP-fetchable cache layout (Narinfo-like protocol)
+2. Name→hash registry for package-name-based resolution
 
 ---
 
@@ -65,9 +65,9 @@ until the desktop track is stable.
 
 ---
 
-## Track F — `file(1)` magic database resolution
+## Track F — DONE
 
-`file <binary>` fails in deployed Hod environments because `MAGIC` isn't set
-and default search paths don't reach the deployed `share/misc/magic.mgc`.
-
-**Rough size:** small if option 2, medium if option 3.
+`file(1)` magic database resolution. Fixed in `src/wrap.rs`: when generating
+wrappers, `share/misc/magic.mgc` is detected in the output itself (own prefix)
+or in any runtime dep, and `MAGIC` is exported in the wrapper script. Works for
+both `file` run directly and binaries that depend on `file` as a runtime_dep.

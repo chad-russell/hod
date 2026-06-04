@@ -56,12 +56,10 @@ cp -a /deps/binutils/bin/* $OUT/bin/
 
 # Overlay shell and core utilities.
 #
-# Note: post-Phase-5 the K1 deps (bash, coreutils, sed, grep, tar, patch,
-# gawk, make) ship as wrapper-script bundles -- a wrapper at bin/<tool>
-# plus the real ELF at bin/.<tool>-wrapped. POSIX star-glob does NOT match
-# dotfiles, so 'cp -a SRC/* DST/' would silently drop the .<tool>-wrapped
-# ELFs. Use 'cp -a SRC/. DST/' (trailing dot, no glob) to copy everything
-# including dotfiles.
+# K1 deps (bash, coreutils, sed, grep, tar, patch, gawk, make) ship as
+# wrapper-script bundles: a wrapper at bin/<tool> plus the real ELF at
+# bin/_hod_wrapped/<tool>. Use 'cp -a SRC/. DST/' (trailing dot, no glob)
+# to copy everything including the _hod_wrapped/ directory.
 cp -a /deps/bash/bin/. $OUT/bin/
 ln -sf bash $OUT/bin/sh
 

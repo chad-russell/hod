@@ -1,46 +1,32 @@
 # Plan: Standardize Shared Library Stripping in Build Profiles
 
-**Status:** Partially done — helpers created, migration in progress  
+**Status:** DONE
 **Current authority:** `recipes/helpers/strip.ts` and current package recipes
 
 ## What's Done
 
 - `recipes/helpers/strip.ts` created with `STRIP`, `STRIP_BINARIES`, `STRIP_LIBRARIES`, `STRIP_ALL`, and `RELOCATE_PKG_CONFIG`
-- `recipes/helpers/net.ts` created with `caCertEnv()` and `depEnvFromList()`
-- `recipes/helpers/c.ts` — `cProfile()` now has `cxx?: boolean` option for C++ builds
-- `recipes/helpers/meson.ts` — inherits `cxx` option via `CProfileOptions`
-- 103 recipes migrated from inline pkg-config loop to `RELOCATE_PKG_CONFIG`
-- ~43 recipes already use `STRIP_ALL`
-- `cargoBuild()` and `goBuild()` auto-strip their outputs
+- `STRIP_BINARIES` expanded to cover `$OUT/bin`, `$OUT/sbin`, `$OUT/libexec`
+- All toolchain-era recipes migrated to use helpers (14 files)
+  - rust, llvm — switched to `STRIP_BINARIES`
+  - harfbuzz, cairo, wayland, pango — removed redundant inline strip
+  - git, glib, procps-ng, openssh, shared-mime-info — removed inline strip now covered by expanded helpers
+  - python, wireplumber — use `STRIP` constant for special-case dirs
+  - nnn — uses `STRIP` constant for build-time Makefile variable
+- `caCertEnv()` migration 100% complete (all 34 recipes use the helper)
+- `cxx: true` migration 100% complete (no recipe manually exports `CXX`)
+- spirv-tools, spirv-llvm-translator now strip their outputs
 
-## What Remains
+## Remaining (low priority, migrate when touching)
 
-### Strip migration (~60 recipes with inline strip)
+### Seed-era recipes (~16 files)
 
-These still use inline `/deps/toolchain/bin/strip` instead of `STRIP_ALL`:
-```
-bash, coreutils, diffutils, findutils, gawk, grep, sed, tar, make, patch,
-bzip2, lz4, xz, zstd, curl, expat, file, git, gmp, gperf, gzip, hello-x11,
-hod-heartbeat, htop, jq, less, libdrm, libevent, libffi, libglvnd, libiconv,
-libjpeg, libpng, libsncfile, lua, nano, ncdu, ncurses, ninja, nodejs, openssh,
-openssl, patchelf, pcre2, perl, pipewire, pixman, pkgconf, procps-ng,
-pulseaudio, pv, python, readline, shared-mime-info, sqlite, strace, tig,
-tmux, tree, unzip, vim, wget, wl-clipboard, xcb-util, xcb-util-cursor,
-xcb-util-image, xcb-util-renderutil, xxhash, zlib, age, github-cli, restic
-```
+These use `/deps/seed/bin/strip` and run under the seed toolchain. The helpers
+reference `/deps/toolchain/bin/strip` which doesn't exist in the seed
+environment. These can only be migrated if a seed-aware strip constant is added,
+or if the seed path is aliased. Not urgent — these are bootstrap-only recipes.
 
-Migrate when touching these recipes for other reasons, or in a bulk pass.
+### bindgen-clang
 
-### CA cert env migration (~30 recipes)
-
-Replace manual `CARGO_HTTP_CAINFO`/`SSL_CERT_FILE` with `caCertEnv()` from `net.ts`.
-
-### CXX migration (~22 recipes)
-
-Replace `export CXX=...` in scripts with `cxx: true` in `cProfile()` calls.
-
-### Missing strip entirely (3 recipes)
-
-- `bindgen-clang` — installs unstripped `libclang.so*` and `libLLVM.so*`
-- `spirv-tools` — installs unstripped `spirv-link`
-- `spirv-llvm-translator` — installs unstripped `llvm-spirv`
+Installs unstripped `libclang.so*` and `libLLVM.so*`. These are prebuilt
+binaries where stripping risks removing symbols needed by downstream tools.

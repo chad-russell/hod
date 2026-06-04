@@ -92,7 +92,6 @@ if [ -f $OUT/lib/pkgconfig/cairo-ft.pc ]; then
   sed -i 's|^Requires: cairo, freetype2.*|Requires: cairo, freetype2 >=  23.0.17, fontconfig|' $OUT/lib/pkgconfig/cairo-ft.pc
 fi
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}
 `,
   deps: [

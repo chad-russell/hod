@@ -272,7 +272,15 @@ describe("unpack", () => {
   });
 
   test("rejects invalid format", async () => {
-    await expect(unpack({ archive_hash: "a".repeat(64), format: "zip" as any })).rejects.toThrow(/invalid format/);
+    await expect(unpack({ archive_hash: "a".repeat(64), format: "rar" as any })).rejects.toThrow(/invalid format/);
+  });
+
+  test("accepts zip format", async () => {
+    const recipe = await unpack({
+      archive_hash: "a".repeat(64),
+      format: "zip",
+    });
+    expect((recipe.json as any).format).toBe("zip");
   });
 });
 

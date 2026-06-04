@@ -330,6 +330,12 @@ enum Commands {
         /// Override store location.
         #[arg(long)]
         store: Option<PathBuf>,
+
+        /// Print machine-readable closure list instead of human summary.
+        ///
+        /// Format: `<recipe_hash> <output_hash> <size> <dep_name>`
+        #[arg(short = 'l', long)]
+        list: bool,
     },
 
     /// Copy a recipe's runtime closure to another store.
@@ -361,6 +367,9 @@ enum Commands {
 
         /// Copy FROM this source. Same format as --to.
         /// Default: the local store.
+        ///
+        /// With --remote-resolve, the specifier is resolved on the remote
+        /// if local resolution fails (requires hod on the remote).
         #[arg(long)]
         from: Option<String>,
 
@@ -396,6 +405,11 @@ enum Commands {
         /// Suppress progress output.
         #[arg(short, long)]
         quiet: bool,
+
+        /// When using --from, resolve the specifier on the remote if local
+        /// resolution fails. Requires hod on the remote.
+        #[arg(long)]
+        remote_resolve: bool,
     },
 
     /// Print the resolved store root path to stdout.
@@ -403,6 +417,23 @@ enum Commands {
     /// Useful for scripts that need to know where the store lives
     /// (e.g. bootc image builder, closure staging).
     StoreRoot {
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
+    /// Resolve a recipe specifier to its BLAKE3 hash.
+    ///
+    /// Accepts a 64-char hex hash (echoed back) or a path to a .ts file
+    /// (evaluated via bun run). Prints the recipe hash to stdout.
+    ///
+    /// Examples:
+    ///   hod resolve 29d529cad00387beb158f426a7e4f9f96db23710a3a6c7836265fd16d70ae15d
+    ///   hod resolve ./recipes/native/jq/jq.ts
+    Resolve {
+        /// Recipe specifier: a 64-char hex hash or a path to a .ts file.
+        specifier: String,
+
         /// Override store location.
         #[arg(long)]
         store: Option<PathBuf>,
@@ -630,8 +661,9 @@ fn main() {
             store,
             quiet,
         } => cmd_system(action, store, quiet),
-        Commands::Closure { specifier, store } => cmd_closure(specifier, store),
+        Commands::Closure { specifier, store, list } => cmd_closure(specifier, store, list),
         Commands::StoreRoot { store } => cmd_store_root(store),
+        Commands::Resolve { specifier, store } => cmd_resolve(specifier, store),
         Commands::CopyClosure {
             specifier,
             to,
@@ -644,6 +676,7 @@ fn main() {
             output,
             force,
             quiet,
+            remote_resolve,
         } => cmd_copy_closure(
             specifier,
             to,
@@ -656,6 +689,7 @@ fn main() {
             output,
             force,
             quiet,
+            remote_resolve,
         ),
     }
 }
@@ -958,6 +992,24 @@ fn cmd_store_root(store_path: Option<PathBuf>) -> ! {
     let config = StoreConfig { path: store_path };
     println!("{}", config.resolve().display());
     process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// `hod resolve`
+// ---------------------------------------------------------------------------
+
+fn cmd_resolve(specifier: String, store_path: Option<PathBuf>) -> ! {
+    let store_config = StoreConfig { path: store_path };
+    match hod::run::resolve_specifier_no_build(&specifier, &store_config) {
+        Ok(resolved) => {
+            println!("{}", hash_to_hex(&resolved.recipe_hash));
+            process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3089,7 +3141,7 @@ fn list_output(
 // `hod closure`
 // ---------------------------------------------------------------------------
 
-fn cmd_closure(specifier: String, store_path: Option<PathBuf>) -> ! {
+fn cmd_closure(specifier: String, store_path: Option<PathBuf>, list: bool) -> ! {
     let store_config = StoreConfig { path: store_path };
 
     // Resolve specifier to recipe hash
@@ -3118,7 +3170,11 @@ fn cmd_closure(specifier: String, store_path: Option<PathBuf>) -> ! {
         }
     };
 
-    hod::closure::print_closure(&recipe_hash, &closure);
+    if list {
+        hod::closure::print_closure_list(&closure);
+    } else {
+        hod::closure::print_closure(&recipe_hash, &closure);
+    }
     process::exit(0);
 }
 
@@ -3138,6 +3194,7 @@ fn cmd_copy_closure(
     output: Option<PathBuf>,
     force: bool,
     quiet: bool,
+    remote_resolve: bool,
 ) -> ! {
     if let Some(ref from_str) = from {
         return cmd_copy_closure_from(
@@ -3148,6 +3205,7 @@ fn cmd_copy_closure(
             dry_run,
             force,
             quiet,
+            remote_resolve,
         );
     }
 
@@ -3252,6 +3310,7 @@ fn cmd_copy_closure_from(
     dry_run: bool,
     force: bool,
     quiet: bool,
+    remote_resolve: bool,
 ) -> ! {
     let source = match hod::closure::parse_destination(from_str, remote_store_override) {
         Ok(d) => d,
@@ -3281,13 +3340,37 @@ fn cmd_copy_closure_from(
     };
 
     // Resolve specifier locally (recipe hashes are deterministic).
+    // With --remote-resolve, fall back to resolving on the remote if local
+    // resolution fails.
     let store_config = StoreConfig {
         path: store_path.map(|p| p.to_path_buf()),
     };
     let recipe_hash = match hod::run::resolve_specifier(specifier, &store_config) {
         Ok(resolved) => resolved.recipe_hash,
+        Err(local_err) if remote_resolve => {
+            if !quiet {
+                eprintln!(
+                    "[hod] local resolution failed, trying remote resolve on {}",
+                    user_host
+                );
+            }
+            match ssh_resolve(&user_host, specifier) {
+                Ok(hex) => hex_to_hash(&hex).unwrap_or_else(|| {
+                    eprintln!("hod: remote returned invalid hash: '{hex}'");
+                    process::exit(4);
+                }),
+                Err(remote_err) => {
+                    eprintln!("hod: local: {local_err}");
+                    eprintln!("hod: remote: {remote_err}");
+                    process::exit(4);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("hod: {e}");
+            if remote_resolve {
+                eprintln!("hint: the specifier must exist locally or on the remote");
+            }
             process::exit(4);
         }
     };
@@ -3454,7 +3537,7 @@ fn cmd_copy_closure_from_local(
         path: dest_store_path.map(|p| p.to_path_buf()),
     };
 
-    let recipe_hash = match hod::run::resolve_specifier(specifier, &dest_config) {
+    let recipe_hash = match hod::run::resolve_specifier(specifier, &StoreConfig { path: None }) {
         Ok(resolved) => resolved.recipe_hash,
         Err(e) => {
             eprintln!("hod: {e}");
@@ -3533,6 +3616,30 @@ fn ssh_closure_list(
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run `hod resolve <specifier>` on the remote via SSH and capture the hash.
+fn ssh_resolve(user_host: &str, specifier: &str) -> Result<String, String> {
+    let output = process::Command::new("ssh")
+        .args([user_host, "hod", "resolve", specifier])
+        .output()
+        .map_err(|e| format!("failed to ssh to {user_host}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "remote hod resolve failed for '{}': {}",
+            specifier,
+            stderr.trim()
+        ));
+    }
+
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(hash)
+    } else {
+        Err(format!("remote returned invalid hash: '{hash}'"))
+    }
 }
 
 /// Parse the output of `hod closure --list` into structured entries.

@@ -642,3 +642,17 @@ fn unpack_with_strip_components_roundtrips() {
         _ => panic!("expected Unpack recipe"),
     }
 }
+
+#[test]
+fn roundtrip_unpack_zip() {
+    let recipe = Recipe::Unpack(RecipeUnpack {
+        archive_hash: test_hash(),
+        format: ArchiveFormat::Zip,
+        archive_recipe_hash: None,
+        strip_components: None,
+    });
+    let bytes = recipe.encode();
+    assert_eq!(bytes[4], 0x06); // Unpack type tag
+    let decoded = Recipe::decode(&bytes).unwrap();
+    assert_eq!(recipe, decoded);
+}

@@ -89,7 +89,6 @@ DESTDIR=$OUT ninja -C build install
 ${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}
-find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 `,
   deps: [
     dep("source", sharedMimeInfoSourceRecipe),

@@ -55,12 +55,7 @@ export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-${STRIP_BINARIES}
-find $OUT/sbin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Clean up — remove docs, man pages, but keep config in etc/ssh
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info 2>/dev/null || true
+${STRIP_ALL}
 rmdir $OUT/share 2>/dev/null || true
 `,
   deps: [

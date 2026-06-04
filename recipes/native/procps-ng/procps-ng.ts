@@ -43,11 +43,7 @@ export NCURSES_LIBS="-L/deps/ncurses/lib -lncursesw"
 make -j$(nproc)
 make install DESTDIR=$OUT
 
-${STRIP_BINARIES}
-find $OUT/sbin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
-
-# Remove docs, man, la files
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/lib/*.la 2>/dev/null || true
+${STRIP_ALL}
 rmdir $OUT/share 2>/dev/null || true
 `,
   deps: [

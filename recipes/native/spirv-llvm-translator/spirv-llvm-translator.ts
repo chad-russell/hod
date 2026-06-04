@@ -6,6 +6,7 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 import { cmakeRecipe } from "../cmake/cmake.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { llvmRecipe } from "../llvm/llvm.js";
@@ -77,6 +78,9 @@ ninja -C /tmp/build-dir LLVMSPIRVLib llvm-spirv
 mkdir -p $OUT/bin $OUT/include/LLVMSPIRVLib $OUT/lib/pkgconfig
 cp -a /tmp/build-dir/lib/SPIRV/libLLVMSPIRVLib.a $OUT/lib/
 cp -a /tmp/build-dir/tools/llvm-spirv/llvm-spirv $OUT/bin/
+
+${STRIP_BINARIES}
+
 cp -a /tmp/build/include/LLVMSPIRVLib.h $OUT/include/LLVMSPIRVLib/
 cp -a /tmp/build/include/LLVMSPIRVOpts.h $OUT/include/LLVMSPIRVLib/
 cp -a /tmp/build/include/LLVMSPIRVExtensions.inc $OUT/include/LLVMSPIRVLib/

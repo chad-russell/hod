@@ -39,6 +39,7 @@ import {
   rustStdSourceRecipe,
 } from "./rust-source.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_BINARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile(),
@@ -63,8 +64,7 @@ cd /tmp/rust-std-source
 /deps/toolchain/bin/bash ./install.sh --prefix=/ --disable-ldconfig --destdir=$OUT
 
 # === Strip executables (but NOT shared libraries) ===
-# Stripping shared libs can remove symbols that downstream tools need.
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_BINARIES}
 
 # === Clean up docs and man pages ===
 rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info 2>/dev/null || true

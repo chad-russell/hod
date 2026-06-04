@@ -6,6 +6,7 @@
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { cProfile } from "../../helpers/c.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 import { cmakeRecipe } from "../cmake/cmake.js";
 import { expatRecipe } from "../expat/expat.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
@@ -59,6 +60,8 @@ if [ -d $OUT/usr ]; then
   cp -a $OUT/usr/. $OUT/
   rm -rf $OUT/usr
 fi
+
+${STRIP_ALL}
 
 for pc in $OUT/lib/pkgconfig/SPIRV-Tools*.pc; do
   [ -f "$pc" ] || continue

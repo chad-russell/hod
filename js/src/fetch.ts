@@ -37,6 +37,7 @@ const EXTENSION_FORMAT_MAP: [RegExp, ArchiveFormat][] = [
   [/\.txz$/i, "tar_xz"],
   [/\.tar\.bz2$/i, "tar_bz2"],
   [/\.tbz2$/i, "tar_bz2"],
+  [/\.zip$/i, "zip"],
 ];
 
 /**
@@ -76,9 +77,9 @@ export async function fetchTarball(options: FetchTarballOptions): Promise<BuiltR
     );
   }
 
-  if (!["tar_gz", "tar_xz", "tar_bz2"].includes(format)) {
+  if (!["tar_gz", "tar_xz", "tar_bz2", "zip"].includes(format)) {
     throw new Error(
-      `fetchTarball(): unsupported format "${format}". Only "tar_gz", "tar_xz", and "tar_bz2" are currently supported.`,
+      `fetchTarball(): unsupported format "${format}". Supported: "tar_gz", "tar_xz", "tar_bz2", "zip".`,
     );
   }
 

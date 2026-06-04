@@ -25,8 +25,8 @@ ${preamble}
 # bash may be a wrapper script (when bash has runtime_deps that trigger
 # wrapper generation) or a raw ELF. Detect which and pick the file we
 # inspect for ELF/linker checks accordingly.
-if [ -f /deps/bash/bin/.bash-wrapped ]; then
-  BASH_ELF=/deps/bash/bin/.bash-wrapped
+if [ -f /deps/bash/bin/_hod_wrapped/bash ]; then
+  BASH_ELF=/deps/bash/bin/_hod_wrapped/bash
 else
   BASH_ELF=/deps/bash/bin/bash
 fi

@@ -305,13 +305,125 @@ pub fn populate_farm(
         };
 
         let link_path = target_dir.join("pkgs").join(&link_name);
-        std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
-            format!(
-                "cannot symlink {} → {}: {e}",
-                link_path.display(),
-                staging_path.display()
-            )
-        })?;
+
+        // Check if this package has packed binaries (no PT_INTERP).
+        // For packed binaries, create wrapper scripts that exec the actual
+        // store binary. This ensures AT_EXECFN points to the store path,
+        // which is required for the packed binary's interpreter bootstrap
+        // (relative path resolution).
+        let staging_bin = staging_path.join("bin");
+        if staging_bin.is_dir() {
+            let has_packed = std::fs::read_dir(&staging_bin)
+                .ok()
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| is_packed_elf(&e.path()))
+                })
+                .unwrap_or(false);
+
+            if has_packed {
+                // Create a directory farm instead of a single symlink.
+                // This allows wrapper scripts for packed binaries while
+                // keeping other paths as symlinks.
+                let pkg_dir = link_path;
+                std::fs::create_dir_all(&pkg_dir).map_err(|e| {
+                    format!("cannot create pkg dir {}: {e}", pkg_dir.display())
+                })?;
+
+                // Symlink everything from the staging output into the pkg dir.
+                for entry in std::fs::read_dir(&staging_path).ok().into_iter().flatten() {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    let name = entry.file_name();
+                    let name_str = match name.to_str() {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let src = entry.path();
+                    let dst = pkg_dir.join(&name);
+
+                    if name_str == "bin" && src.is_dir() {
+                        // Create bin/ with wrappers for packed binaries.
+                        std::fs::create_dir_all(&dst).map_err(|e| {
+                            format!("cannot create bin dir {}: {e}", dst.display())
+                        })?;
+                        for bin_entry in
+                            std::fs::read_dir(&src).ok().into_iter().flatten()
+                        {
+                            let bin_entry = match bin_entry {
+                                Ok(e) => e,
+                                Err(_) => continue,
+                            };
+                            let bin_name = bin_entry.file_name();
+                            let bin_src = bin_entry.path();
+                            let bin_dst = dst.join(&bin_name);
+
+                            if is_packed_elf(&bin_src) {
+                                // Write a wrapper script that execs the store binary.
+                                // Set _LIBCONTAINER_CLONED_BINARY=1 to prevent crun
+                                // from re-exec'ing itself via memfd (which breaks
+                                // packed binary AT_EXECFN resolution). Harmless for
+                                // non-crun binaries.
+                                let wrapper = format!(
+                                    "#!/bin/sh\nexport _LIBCONTAINER_CLONED_BINARY=1\nexec {} \"$@\"\n",
+                                    bin_src.display()
+                                );
+                                std::fs::write(&bin_dst, &wrapper).map_err(|e| {
+                                    format!(
+                                        "cannot write wrapper {}: {e}",
+                                        bin_dst.display()
+                                    )
+                                })?;
+                                use std::os::unix::fs::PermissionsExt;
+                                std::fs::set_permissions(
+                                    &bin_dst,
+                                    std::fs::Permissions::from_mode(0o755),
+                                )
+                                .map_err(|e| {
+                                    format!(
+                                        "cannot chmod wrapper {}: {e}",
+                                        bin_dst.display()
+                                    )
+                                })?;
+                            } else {
+                                // Regular binary — just symlink.
+                                std::os::unix::fs::symlink(&bin_src, &bin_dst)
+                                    .map_err(|e| {
+                                        format!(
+                                            "cannot symlink bin {}: {e}",
+                                            bin_dst.display()
+                                        )
+                                    })?;
+                            }
+                        }
+                    } else {
+                        // Non-bin — symlink the whole directory/file.
+                        std::os::unix::fs::symlink(&src, &dst).map_err(|e| {
+                            format!("cannot symlink {}: {e}", dst.display())
+                        })?;
+                    }
+                }
+            } else {
+                std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
+                    format!(
+                        "cannot symlink {} → {}: {e}",
+                        link_path.display(),
+                        staging_path.display()
+                    )
+                })?;
+            }
+        } else {
+            std::os::unix::fs::symlink(&staging_path, &link_path).map_err(|e| {
+                format!(
+                    "cannot symlink {} → {}: {e}",
+                    link_path.display(),
+                    staging_path.display()
+                )
+            })?;
+        }
 
         entries.push(FarmEntry {
             link_name,
@@ -336,7 +448,77 @@ pub fn populate_farm(
             .map_err(|e| format!("cannot symlink runtime dep {}: {e}", dep_name))?;
     }
 
+    // Create hash-based symlinks at the profile root for each runtime dep's
+    // output hash. Packed binaries use AT_EXECFN + relative paths to find
+    // their dynamic linker (e.g. ../../../7d/7d010ed4.../lib/ld-linux-x86-64.so.2).
+    // When accessed through the profile symlink farm, these relative traversals
+    // resolve against the profile root, so we must mirror the store's
+    // shard/hex directory structure here.
+    {
+        let mut seen_staging: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for (_dep_name, dep_staging) in &runtime_deps {
+            // dep_staging is .../store/staging/<shard>/<hex>/
+            // Extract shard and hex from the path components.
+            let hex_opt = dep_staging.file_name().and_then(|n| n.to_str());
+            let shard_opt = dep_staging.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str());
+            let (shard, hex) = match (shard_opt, hex_opt) {
+                (Some(s), Some(h)) => (s, h),
+                _ => continue,
+            };
+            if shard.len() != 2 || hex.len() != 64 {
+                continue;
+            }
+                let key = format!("{shard}/{hex}");
+                if seen_staging.contains(&key) {
+                    continue;
+                }
+                seen_staging.insert(key.clone());
+                let shard_dir_path = target_dir.join(shard);
+                if !shard_dir_path.exists() {
+                    std::fs::create_dir(&shard_dir_path).map_err(|e| {
+                        format!("cannot create shard dir {}: {e}", shard_dir_path.display())
+                    })?;
+                }
+                let link_path = target_dir.join(&key);
+                if link_path.exists() || link_path.is_symlink() {
+                    let _ = std::fs::remove_file(&link_path);
+                }
+                std::os::unix::fs::symlink(dep_staging, &link_path).map_err(|e| {
+                    format!("cannot symlink hash path {}: {e}", link_path.display())
+                })?;
+            }
+    }
+
     Ok(entries)
+}
+
+/// Check if a file is a packed ELF binary (has ELF magic but no PT_INTERP).
+fn is_packed_elf(path: &std::path::Path) -> bool {
+    let Ok(data) = std::fs::read(path) else {
+        return false;
+    };
+    if data.len() < 64 || data[0..4] != [0x7f, 0x45, 0x4c, 0x46] {
+        return false;
+    }
+    let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+    let e_phentsize = u16::from_le_bytes(data[54..56].try_into().unwrap_or([0; 2]));
+    let e_phnum = u16::from_le_bytes(data[56..58].try_into().unwrap_or([0; 2]));
+    if e_phentsize == 0 || e_phnum == 0 {
+        return false;
+    }
+    let pt_interp: u32 = 3;
+    for i in 0..e_phnum {
+        let off = e_phoff as usize + (i as usize) * (e_phentsize as usize);
+        if off + 56 > data.len() {
+            return false;
+        }
+        let p_type = u32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4]));
+        if p_type == pt_interp {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +747,49 @@ fn collect_runtime_deps(
 /// binaries that use `DT_RUNPATH` (resolved *after* `LD_LIBRARY_PATH`),
 /// causing them to load Hod's glibc instead of their own. This was the root
 /// cause of segfaults when sourcing `env.sh` on NixOS.
+fn generate_containers_conf(farm_path: &str, pkg_names: &[&str]) -> String {
+    let helper_dir = format!("{farm_path}/pkgs/netavark/bin");
+    let runtime = pkg_names
+        .iter()
+        .find(|n| **n == "crun")
+        .map(|_| format!("{farm_path}/pkgs/crun/bin/crun"))
+        .unwrap_or_else(|| "crun".to_string());
+    let conmon = pkg_names
+        .iter()
+        .find(|n| **n == "conmon")
+        .map(|_| format!("{farm_path}/pkgs/conmon/bin/conmon"))
+        .unwrap_or_else(|| "/usr/bin/conmon".to_string());
+    let network_cmd = pkg_names
+        .iter()
+        .find(|n| **n == "netavark")
+        .map(|_| "netavark".to_string())
+        .unwrap_or_else(|| "cni".to_string());
+    let pasta = pkg_names
+        .iter()
+        .find(|n| **n == "passt")
+        .map(|_| format!("{farm_path}/pkgs/passt/bin/pasta"))
+        .unwrap_or_else(|| "/usr/bin/pasta".to_string());
+
+    format!(
+        r#"[containers]
+volumes = []
+
+[engine]
+helper_binaries_dir = ["{helper_dir}"]
+runtime = "{runtime}"
+conmon_path = ["{conmon}"]
+network_cmd_path = "{network_cmd}"
+cgroup_manager = "cgroupfs"
+events_logger = "file"
+stop_signal = "SIGTERM"
+
+[network]
+network_backend = "netavark"
+pasta_path = "{pasta}"
+"#,
+    )
+}
+
 fn write_env_snippets(
     farm_dir: &Path,
     name: &str,
@@ -577,6 +802,8 @@ fn write_env_snippets(
     let mut path_parts: Vec<String> = Vec::new();
     let mut man_parts: Vec<String> = Vec::new();
     let mut xdg_parts: Vec<String> = Vec::new();
+
+    let pkg_names: Vec<&str> = packages.iter().map(|p| p.link_name.as_str()).collect();
 
     for pkg in packages {
         let p = format!("{farm_path}/pkgs/{}/bin", pkg.link_name);
@@ -592,13 +819,25 @@ fn write_env_snippets(
     let man_val = man_parts.join(":");
     let xdg_val = xdg_parts.join(":");
 
+    let mut extra_env = String::new();
+
+    // Generate containers.conf when the profile includes podman.
+    if pkg_names.iter().any(|n| *n == "podman") {
+        let containers_conf = generate_containers_conf(&farm_path, &pkg_names);
+        std::fs::write(farm_dir.join("containers.conf"), &containers_conf)
+            .map_err(|e| format!("cannot write containers.conf: {e}"))?;
+        extra_env.push_str(&format!(
+            "export CONTAINERS_CONF=\"{farm_path}/containers.conf\"\n"
+        ));
+    }
+
     let env_sh = format!(
         r#"# hod profile: {name}
 export HOD_PROFILE="{name}"
 export PATH="{path_val}:$PATH"
 export MANPATH="{man_val}${{MANPATH:+:$MANPATH}}"
 export XDG_DATA_DIRS="{xdg_val}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
-"#,
+{extra_env}"#,
     );
     std::fs::write(farm_dir.join("env.sh"), &env_sh)
         .map_err(|e| format!("cannot write env.sh: {e}"))?;

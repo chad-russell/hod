@@ -11,10 +11,11 @@
 //!
 //! GOTOOLCHAIN=local prevents Go from auto-downloading a newer toolchain.
 
-import { dep, depSubpath, importToStore } from "../../../js/src/index.js";
+import { dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goBuild } from "../../helpers/go.js";
+import { caCertEnv } from "../../helpers/build-env.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 import { ohMyPoshSourceRecipe } from "./oh-my-posh-source.js";
 
@@ -30,7 +31,7 @@ const recipe = await goBuild({
   ],
   env: {
     GOTOOLCHAIN: "local",
-    SSL_CERT_FILE: `${depSubpath("cacerts", "etc/ssl/certs/ca-certificates.crt")}`,
+    ...caCertEnv("cacerts"),
   },
   ldflags: [
     "-s",

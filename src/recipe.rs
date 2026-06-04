@@ -144,6 +144,8 @@ pub enum ArchiveFormat {
     TarXz = 0x02,
     #[serde(rename = "tar_bz2")]
     TarBz2 = 0x03,
+    #[serde(rename = "zip")]
+    Zip = 0x04,
 }
 
 impl ArchiveFormat {
@@ -152,6 +154,7 @@ impl ArchiveFormat {
             0x01 => Some(Self::TarGz),
             0x02 => Some(Self::TarXz),
             0x03 => Some(Self::TarBz2),
+            0x04 => Some(Self::Zip),
             _ => None,
         }
     }

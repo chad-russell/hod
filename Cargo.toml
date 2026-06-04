@@ -16,6 +16,7 @@ unshare = { git = "https://github.com/brioche-dev/unshare.git" }
 
 goblin = { version = "0.10", default-features = false, features = ["elf32", "elf64", "endian_fd"] }
 memchr = "2"
+zip = "2"
 
 [dev-dependencies]
 tempfile = "3"

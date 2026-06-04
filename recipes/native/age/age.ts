@@ -30,6 +30,7 @@ import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goProfile } from "../../helpers/go.js";
 import { STRIP_BINARIES } from "../../helpers/strip.js";
+import { caCertEnv } from "../../helpers/build-env.js";
 import { ageSourceRecipe } from "./age-source.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 
@@ -45,12 +46,8 @@ const recipe = await shellBuild({
   ],
   env: {
     ...profile.env,
-    // Prevent Go from auto-downloading a newer toolchain.
-    // go.mod specifies toolchain go1.25.5, but we have 1.24.3 which
-    // satisfies the minimum `go 1.24.0` requirement.
     GOTOOLCHAIN: "local",
-    // CA certificates for HTTPS module downloads.
-    SSL_CERT_FILE: "/deps/cacert/etc/ssl/certs/ca-certificates.crt",
+    ...caCertEnv("cacert"),
   },
   sourceDir: true,
   script: `

@@ -5,7 +5,7 @@
 import { encodeJson } from "./cli.js";
 import type { BuiltRecipe } from "./file.js";
 
-export type ArchiveFormat = "tar_gz" | "tar_xz" | "tar_bz2";
+export type ArchiveFormat = "tar_gz" | "tar_xz" | "tar_bz2" | "zip";
 
 export interface UnpackOptions {
   /** BLAKE3 hash of the archive blob (64 hex characters). */
@@ -34,7 +34,7 @@ export async function unpack(options: UnpackOptions): Promise<BuiltRecipe> {
     );
   }
 
-  const validFormats: ArchiveFormat[] = ["tar_gz", "tar_xz", "tar_bz2"];
+  const validFormats: ArchiveFormat[] = ["tar_gz", "tar_xz", "tar_bz2", "zip"];
   if (!validFormats.includes(options.format)) {
     throw new Error(
       `unpack(): invalid format "${options.format}". Expected one of: ${validFormats.join(", ")}.`,

@@ -38,7 +38,7 @@ import { bzip2Recipe } from "../bzip2/bzip2.js";
 import { xzRecipe } from "../xz/xz.js";
 import { expatRecipe } from "../expat/expat.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_BINARIES, STRIP_LIBRARIES } from "../../helpers/strip.js";
+import { STRIP, STRIP_BINARIES, STRIP_LIBRARIES } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -114,7 +114,7 @@ make install DESTDIR=$OUT
 
 ${STRIP_BINARIES}
 ${STRIP_LIBRARIES}
-find $OUT/lib/python3.13/lib-dynload -name '*.so' -type f -exec /deps/toolchain/bin/strip --strip-unneeded {} + 2>/dev/null || true
+find $OUT/lib/python3.13/lib-dynload -name '*.so' -type f -exec ${STRIP} --strip-unneeded {} + 2>/dev/null || true
 
 # Create python -> python3 symlink
 cd $OUT/bin && ln -sf python3 python 2>/dev/null || true

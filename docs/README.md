@@ -12,6 +12,7 @@ This directory is the **current documentation authority** for Hod.
 | Debug a build | `debugging-builds.md` |
 | Understand runtime relocation / portability | `relocatable-binaries-guide.md`, `closure-transfer.md` |
 | Work on profiles / end-user activation | `profiles.md`, `system-profiles.md` |
+| Work on containers / podman | `podman-setup.md` |
 | Work on the Hod OS VM | `../plans/minimal-hod-vm-roadmap.md` |
 | Work on desktop environments | `../plans/niri-desktop-roadmap.md` |
 | Build a bootc-derived Hod OS image | `bootc-image-workflow.md` |
@@ -28,6 +29,7 @@ This directory is the **current documentation authority** for Hod.
 - `profiles.md` — TypeScript profiles and symlink-farm activation.
 - `recipe-compiler-guide.md` — TypeScript SDK / recipe import workflow.
 - `relocatable-binaries-guide.md` — ELF relocation, bootstrap injection, wrappers, portability.
+- `podman-setup.md` — rootless podman + distrobox setup and troubleshooting.
 - `system-profiles.md` — generation-numbered system profile model (`hod system ...`).
 
 ## Current status

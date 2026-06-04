@@ -27,7 +27,7 @@ use crate::store::Store;
 /// directory.
 ///
 /// For each non-wrapper executable in `bin/`:
-/// - Renames it to `bin/.<name>-wrapped`
+/// - Moves it into `bin/_hod_wrapped/<name>`
 /// - Creates a POSIX shell wrapper at `bin/<name>` that sets up the runtime
 ///   environment and execs the wrapped binary.
 ///
@@ -135,6 +135,27 @@ pub fn generate_wrappers(
         })
         .collect();
 
+    // Detect libmagic database from the output itself or runtime deps.
+    // The `file` command needs MAGIC set to find its compiled magic database
+    // since the default compile-time path won't exist in the Hod store layout.
+    // Check own output first, then runtime deps.
+    let magic_path: Option<String> = {
+        if output_staging_dir.join("share/misc/magic.mgc").exists() {
+            Some("$prefix/share/misc/magic.mgc".to_string())
+        } else {
+            runtime_dep_outputs.iter().find_map(|(_name, hash)| {
+                let shard = hash_shard(hash);
+                let hex = hash_to_hex(hash);
+                let staging = store.root().join("staging").join(&shard).join(&hex);
+                if staging.join("share/misc/magic.mgc").exists() {
+                    Some(format!("$staging_root/{shard}/{hex}/share/misc/magic.mgc"))
+                } else {
+                    None
+                }
+            })
+        }
+    };
+
     // Detect whether the runtime deps include GTK4 (via dep names or
     // the presence of libgtk-4.so in staging dirs). When GTK4 is present
     // but was built without Vulkan/GL support (common in hod sandboxes),
@@ -190,6 +211,11 @@ pub fn generate_wrappers(
         )
     };
 
+    let magic_export = match &magic_path {
+        Some(path) => format!("export MAGIC=\"{path}\"\n"),
+        None => String::new(),
+    };
+
     let mut count = 0;
 
     // Read directory entries first, then process — avoids borrow issues
@@ -206,7 +232,11 @@ pub fn generate_wrappers(
         };
 
         // Skip already-wrapped binaries, hidden files, and directories
-        if name.starts_with('.') || name.ends_with("-wrapped") || path.is_dir() {
+        if name.starts_with('.')
+            || name.ends_with("-wrapped")
+            || name == "_hod_wrapped"
+            || path.is_dir()
+        {
             continue;
         }
 
@@ -243,7 +273,9 @@ pub fn generate_wrappers(
             continue;
         }
 
-        let wrapped_name = format!(".{name}-wrapped");
+        let wrapped_dir = bin_dir.join("_hod_wrapped");
+        std::fs::create_dir_all(&wrapped_dir).map_err(WrapError::Io)?;
+        let wrapped_name = format!("_hod_wrapped/{name}");
         let wrapped_path = bin_dir.join(&wrapped_name);
 
         // Rename the real binary
@@ -260,6 +292,7 @@ pub fn generate_wrappers(
             &xlocale_export,
             &mesa_dri_export,
             &egl_vendor_export,
+            &magic_export,
         );
 
         std::fs::write(&path, &wrapper_content).map_err(WrapError::Io)?;
@@ -319,6 +352,7 @@ fn generate_wrapper_script(
     xlocale_export: &str,
     mesa_dri_export: &str,
     egl_vendor_export: &str,
+    magic_export: &str,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
     // Each path is: $staging_root/<shard>/<hex>/share
@@ -409,7 +443,7 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
-{gsk_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}exec "$bin_dir/{wrapped_name}"{extra_exec_args} "$@"
+{gsk_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}exec "$bin_dir/{wrapped_name}"{extra_exec_args} "$@"
 "#
     )
 }
@@ -421,8 +455,9 @@ mod tests {
     fn script_for(name: &str) -> String {
         generate_wrapper_script(
             name,
-            &format!(".{name}-wrapped"),
+            &format!("_hod_wrapped/{name}"),
             &[("aa".to_string(), "aabbcc".to_string())],
+            "",
             "",
             "",
             "",
@@ -438,7 +473,7 @@ mod tests {
 
         assert!(!script.contains("export LD_LIBRARY_PATH="));
         assert!(script.contains("do not export Hod LD_LIBRARY_PATH"));
-        assert!(script.contains("exec \"$bin_dir/.bat-wrapped\" \"$@\""));
+        assert!(script.contains("exec \"$bin_dir/_hod_wrapped/bat\" \"$@\""));
     }
 
     #[test]

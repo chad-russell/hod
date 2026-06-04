@@ -88,7 +88,6 @@ DESTDIR=$OUT ninja -C build install
 
 ${RELOCATE_PKG_CONFIG}
 
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}
 `,
   deps: [

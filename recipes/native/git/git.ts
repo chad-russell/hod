@@ -26,7 +26,7 @@ import { expatRecipe } from "../expat/expat.js";
 import { libiconvRecipe } from "../libiconv/libiconv.js";
 import { gitSourceRecipe } from "./git-source.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_BINARIES } from "../../helpers/strip.js";
+import { STRIP, STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({
@@ -45,7 +45,7 @@ cat > config.mak <<'EOF'
 CC = /deps/toolchain/bin/gcc --sysroot=/deps/toolchain/sysroot -B/deps/toolchain/bin
 AR = /deps/toolchain/bin/ar
 RANLIB = /deps/toolchain/bin/ranlib
-STRIP = /deps/toolchain/bin/strip
+STRIP = __HOD_STRIP__
 CFLAGS = -O2
 LDFLAGS = __HOD_DUMMY_RPATH__ -L/deps/curl/lib -L/deps/openssl/lib -L/deps/zlib/lib -L/deps/expat/lib -L/deps/libiconv/lib
 NEEDS_LIBICONV = YesPlease
@@ -65,16 +65,15 @@ EOF
 # Replace the placeholder with the actual dummy RPATH (config.mak is single-quoted so
 # $HOD_DUMMY_RPATH wasn't expanded — do it here).
 sed -i "s|__HOD_DUMMY_RPATH__|$HOD_DUMMY_RPATH|" config.mak
+sed -i "s|__HOD_STRIP__|${STRIP}|" config.mak
 
 make -j$(nproc) prefix=/
 make install DESTDIR=$OUT prefix=/
 
-${STRIP_BINARIES}
-find $OUT/libexec -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
+${STRIP_ALL}
 
-# Clean up — remove docs and unneeded files
-rm -rf $OUT/share/doc $OUT/share/man $OUT/share/info $OUT/share/perl 2>/dev/null || true
-rm -rf $OUT/share/git-gui $OUT/share/gitweb 2>/dev/null || true
+# Clean up — remove unneeded files
+rm -rf $OUT/share/perl $OUT/share/git-gui $OUT/share/gitweb 2>/dev/null || true
 # Keep share/git-core for completion scripts, etc.
 # Keep share/git-core/templates — git init needs it
 `,

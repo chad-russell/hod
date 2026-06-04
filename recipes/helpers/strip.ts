@@ -13,9 +13,9 @@
 
 export const STRIP = "/deps/toolchain/bin/strip";
 
-/** Strip debug symbols from executables in $OUT/bin. */
+/** Strip debug symbols from executables in $OUT/bin, $OUT/sbin, $OUT/libexec. */
 export const STRIP_BINARIES = `
-find $OUT/bin -type f -exec ${STRIP} {} + 2>/dev/null || true
+find $OUT/bin $OUT/sbin $OUT/libexec -type f -exec ${STRIP} {} + 2>/dev/null || true
 `;
 
 /**

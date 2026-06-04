@@ -54,7 +54,6 @@ DESTDIR=$OUT ninja -C build install
 ${RELOCATE_PKG_CONFIG}
 
 # Strip binaries
-find $OUT/bin -type f -exec /deps/toolchain/bin/strip {} + 2>/dev/null || true
 ${STRIP_ALL}
 
 # Clean up — keep pkgconfig, aclocal, protocol data, headers

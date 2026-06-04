@@ -13,6 +13,7 @@ import { dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { goRecipe } from "../go/go.js";
 import { goBuild } from "../../helpers/go.js";
+import { caCertEnv } from "../../helpers/build-env.js";
 import { fzfSourceRecipe } from "./fzf-source.js";
 import { caCertificatesRecipe } from "../ca-certificates/ca-certificates.js";
 
@@ -26,10 +27,8 @@ const recipe = await goBuild({
     dep("cacert", caCertificatesRecipe),
   ],
   env: {
-    // Prevent Go from auto-downloading a newer toolchain.
     GOTOOLCHAIN: "local",
-    // CA certificates for HTTPS module downloads.
-    SSL_CERT_FILE: "/deps/cacert/etc/ssl/certs/ca-certificates.crt",
+    ...caCertEnv("cacert"),
   },
   ldflags: [
     "-s",

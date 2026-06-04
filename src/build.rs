@@ -842,54 +842,126 @@ fn build_symlink(s: &RecipeSymlink) -> Artifact {
 fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
     use std::io::Write;
 
-    // Read the archive blob from the store
     let archive_data = store.read_blob(&u.archive_hash)?;
 
-    // Write the archive to a temp file
     let tmp_dir = store.tmp_dir();
     std::fs::create_dir_all(&tmp_dir)?;
-    let archive_path = tmp_dir.join(format!("unpack-{}.tar", hash_to_hex(&u.archive_hash)));
-    {
-        let mut f = std::fs::File::create(&archive_path)?;
-        f.write_all(&archive_data)?;
-    }
 
-    // Create extraction directory
     let extract_dir = tmp_dir.join(format!("unpack-extract-{}", hash_to_hex(&u.archive_hash)));
     if extract_dir.exists() {
         std::fs::remove_dir_all(&extract_dir)?;
     }
     std::fs::create_dir_all(&extract_dir)?;
 
-    // Extract using tar
-    let format_arg = match u.format {
-        ArchiveFormat::TarGz => "-xzf",
-        ArchiveFormat::TarXz => "-xJf",
-        ArchiveFormat::TarBz2 => "-xjf",
-    };
-    let mut tar_args = vec![
-        format_arg.to_string(),
-        archive_path.to_str().unwrap().to_string(),
-        "-C".to_string(),
-        extract_dir.to_str().unwrap().to_string(),
-    ];
-    if let Some(n) = u.strip_components {
-        tar_args.push(format!("--strip-components={}", n));
-    }
-    let tar_output = std::process::Command::new("tar").args(&tar_args).output()?;
+    match u.format {
+        ArchiveFormat::TarGz | ArchiveFormat::TarXz | ArchiveFormat::TarBz2 => {
+            let ext = match u.format {
+                ArchiveFormat::TarGz => ".tar.gz",
+                ArchiveFormat::TarXz => ".tar.xz",
+                ArchiveFormat::TarBz2 => ".tar.bz2",
+                _ => unreachable!(),
+            };
+            let archive_path =
+                tmp_dir.join(format!("unpack-{}{ext}", hash_to_hex(&u.archive_hash)));
+            {
+                let mut f = std::fs::File::create(&archive_path)?;
+                f.write_all(&archive_data)?;
+            }
 
-    if !tar_output.status.success() {
-        let stderr = String::from_utf8_lossy(&tar_output.stderr);
-        return Err(BuildError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("tar extraction failed: {}", stderr.trim()),
-        )));
+            let format_arg = match u.format {
+                ArchiveFormat::TarGz => "-xzf",
+                ArchiveFormat::TarXz => "-xJf",
+                ArchiveFormat::TarBz2 => "-xjf",
+                _ => unreachable!(),
+            };
+            let mut tar_args = vec![
+                format_arg.to_string(),
+                archive_path.to_str().unwrap().to_string(),
+                "-C".to_string(),
+                extract_dir.to_str().unwrap().to_string(),
+            ];
+            if let Some(n) = u.strip_components {
+                tar_args.push(format!("--strip-components={}", n));
+            }
+            let tar_output = std::process::Command::new("tar").args(&tar_args).output()?;
+
+            if !tar_output.status.success() {
+                let stderr = String::from_utf8_lossy(&tar_output.stderr);
+                return Err(BuildError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("tar extraction failed: {}", stderr.trim()),
+                )));
+            }
+
+            let _ = std::fs::remove_file(&archive_path);
+        }
+        ArchiveFormat::Zip => {
+            let reader = std::io::Cursor::new(&archive_data);
+            let mut archive = zip::ZipArchive::new(reader).map_err(|e| {
+                BuildError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("zip open failed: {e}"),
+                ))
+            })?;
+
+            let strip_n = u.strip_components.unwrap_or(0) as usize;
+
+            let raw_extract_dir =
+                tmp_dir.join(format!("unpack-zip-raw-{}", hash_to_hex(&u.archive_hash)));
+            if raw_extract_dir.exists() {
+                std::fs::remove_dir_all(&raw_extract_dir)?;
+            }
+            std::fs::create_dir_all(&raw_extract_dir)?;
+
+            archive.extract(&raw_extract_dir).map_err(|e| {
+                BuildError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("zip extraction failed: {e}"),
+                ))
+            })?;
+
+            if strip_n > 0 {
+                let mut src_path = raw_extract_dir.clone();
+                for _ in 0..strip_n {
+                    let mut entries =
+                        std::fs::read_dir(&src_path)
+                            .map_err(|e| BuildError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("zip strip_components: read_dir failed: {e}"),
+                            )))?;
+                    let first = entries.next().ok_or_else(|| {
+                        BuildError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "zip strip_components: empty directory level",
+                        ))
+                    })?.map_err(|e| BuildError::Io(e))?;
+                    if entries.next().is_some() {
+                        return Err(BuildError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "zip strip_components: expected exactly one entry per level",
+                        )));
+                    }
+                    src_path = first.path();
+                }
+                copy_dir_recursive(&src_path, &extract_dir)?;
+                let _ = std::fs::remove_dir_all(&raw_extract_dir);
+            } else {
+                for entry in std::fs::read_dir(&raw_extract_dir)? {
+                    let entry = entry?;
+                    let dest = extract_dir.join(entry.file_name());
+                    if entry.file_type()?.is_dir() {
+                        copy_dir_recursive(&entry.path(), &dest)?;
+                    } else {
+                        std::fs::copy(entry.path(), dest)?;
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&raw_extract_dir);
+            }
+        }
     }
 
-    // Capture the output as an Artifact (extraction root, no auto-unwrap)
     let artifact = path_to_artifact(&extract_dir, store)?;
 
-    // Stage the output
     let output_hash = artifact_to_hash(&artifact);
     let staging_path = artifact_staging_path(store, &output_hash);
     if !staging_path.exists() {
@@ -899,8 +971,6 @@ fn build_unpack(store: &Store, u: &RecipeUnpack) -> Result<Artifact> {
         copy_dir_recursive(&extract_dir, &staging_path)?;
     }
 
-    // Clean up temp files
-    let _ = std::fs::remove_file(&archive_path);
     let _ = std::fs::remove_dir_all(&extract_dir);
 
     Ok(artifact)

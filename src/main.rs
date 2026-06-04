@@ -3,7 +3,7 @@
 //! This file defines the clap surface and dispatches to the Rust modules that
 //! implement each subcommand.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -3139,10 +3139,16 @@ fn cmd_copy_closure(
     force: bool,
     quiet: bool,
 ) -> ! {
-    if from.is_some() {
-        eprintln!("hod: --from is not yet implemented for copy-closure");
-        eprintln!("    hint: mount the remote store locally or use rsync directly");
-        process::exit(3);
+    if let Some(ref from_str) = from {
+        return cmd_copy_closure_from(
+            &specifier,
+            from_str,
+            store_path.as_deref(),
+            remote_store.as_deref(),
+            dry_run,
+            force,
+            quiet,
+        );
     }
 
     let store_config = StoreConfig { path: store_path };
@@ -3227,6 +3233,526 @@ fn cmd_copy_closure(
             process::exit(10);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// `hod copy-closure --from`
+// ---------------------------------------------------------------------------
+
+/// Pull a closure from a remote store into the local store.
+///
+/// Resolves the specifier locally (recipe hashes are deterministic), queries
+/// the remote for closure entries via `hod closure --list`, then rsync-pulls
+/// the staging directories, recipe files, and metadata from remote to local.
+fn cmd_copy_closure_from(
+    specifier: &str,
+    from_str: &str,
+    store_path: Option<&Path>,
+    remote_store_override: Option<&Path>,
+    dry_run: bool,
+    force: bool,
+    quiet: bool,
+) -> ! {
+    let source = match hod::closure::parse_destination(from_str, remote_store_override) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(3);
+        }
+    };
+
+    let (user_host, remote_store) = match source {
+        hod::closure::Destination::Ssh {
+            user_host,
+            remote_store,
+        } => (user_host, remote_store),
+        hod::closure::Destination::Local { path } => {
+            // Local --from: just resolve the closure from the other store and
+            // copy into the current store using the local transfer path.
+            return cmd_copy_closure_from_local(
+                specifier,
+                &path,
+                store_path,
+                dry_run,
+                force,
+                quiet,
+            );
+        }
+    };
+
+    // Resolve specifier locally (recipe hashes are deterministic).
+    let store_config = StoreConfig {
+        path: store_path.map(|p| p.to_path_buf()),
+    };
+    let recipe_hash = match hod::run::resolve_specifier(specifier, &store_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+    let recipe_hex = hash_to_hex(&recipe_hash);
+
+    if !quiet {
+        eprintln!(
+            "[hod] pulling closure for {} from {}:{}",
+            &recipe_hex[..16],
+            user_host,
+            remote_store.display(),
+        );
+    }
+
+    // Query remote closure list via SSH.
+    let closure_output = match ssh_closure_list(&user_host, &remote_store, &recipe_hex) {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    let entries = match parse_closure_list(&closure_output) {
+        Ok(entries) => entries,
+        Err(e) => {
+            eprintln!("hod: failed to parse remote closure list: {e}");
+            eprintln!("    remote output:\n{closure_output}");
+            process::exit(10);
+        }
+    };
+
+    if entries.is_empty() {
+        eprintln!("hod: remote closure is empty — nothing to pull");
+        process::exit(0);
+    }
+
+    // Check for unbuilt entries on remote.
+    let unbuilt: Vec<_> = entries.iter().filter(|e| e.output_hash.is_none()).collect();
+    if !unbuilt.is_empty() {
+        eprintln!(
+            "hod: {} recipe(s) in the remote closure have not been built:",
+            unbuilt.len()
+        );
+        for entry in unbuilt {
+            let name = entry.dep_name.as_deref().unwrap_or("(root)");
+            eprintln!("  {} ({})", name, hash_to_hex(&entry.recipe_hash));
+        }
+        process::exit(4);
+    }
+
+    // Build file lists for rsync pull.
+    let mut content_paths: BTreeSet<String> = BTreeSet::new();
+    let local_store_config = StoreConfig {
+        path: store_path.map(|p| p.to_path_buf()),
+    };
+    let local_store = match Store::open(&local_store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    for entry in &entries {
+        // Recipe file
+        let shard = hod::hash::hash_shard(&entry.recipe_hash);
+        let recipe_rel = format!("recipes/{shard}/{}", hash_to_hex(&entry.recipe_hash));
+        content_paths.insert(recipe_rel);
+
+        // Staging tree
+        if let Some(ref output_hash) = entry.output_hash {
+            let staging_rel = format!(
+                "staging/{}/{}",
+                &hod::hash::hash_to_hex(output_hash)[..2],
+                hod::hash::hash_to_hex(output_hash)
+            );
+            // We need the full tree — rsync -a with --files-from handles this
+            // but we should also enumerate on the remote side for completeness.
+            // For now, we'll do a targeted rsync of just the staging dir.
+            content_paths.insert(staging_rel);
+        }
+    }
+
+    let rel_paths: Vec<String> = content_paths.into_iter().collect();
+
+    if dry_run {
+        eprintln!(
+            "[hod] dry run: would pull {} paths for {} closure entries",
+            rel_paths.len(),
+            entries.len(),
+        );
+        for p in &rel_paths {
+            eprintln!("  {p}");
+        }
+        process::exit(0);
+    }
+
+    // Pull via rsync from remote.
+    let remote_source = format!("{user_host}:{}", remote_store.display());
+    let local_root = local_store.root().to_path_buf();
+
+    // Ensure staging subdirectories exist locally.
+    for entry in &entries {
+        if let Some(ref output_hash) = entry.output_hash {
+            let staging = hod::build::artifact_staging_path(&local_store, output_hash);
+            if let Some(parent) = staging.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+    }
+
+    // Pull content files.
+    if !rel_paths.is_empty() {
+        if let Err(e) = rsync_pull(
+            &remote_source,
+            &local_root,
+            &rel_paths,
+            !force,
+            quiet,
+        ) {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    }
+
+    // Pull and merge remote hod.db entries.
+    if let Err(e) = pull_and_merge_db(
+        &user_host,
+        &remote_store,
+        &local_store,
+        &entries,
+        quiet,
+    ) {
+        eprintln!("hod: {e}");
+        process::exit(10);
+    }
+
+    if !quiet {
+        eprintln!(
+            "[hod] pull complete: {} closure entries from {}:{}",
+            entries.len(),
+            user_host,
+            remote_store.display(),
+        );
+    }
+
+    process::exit(0);
+}
+
+/// Pull a closure from another local store.
+fn cmd_copy_closure_from_local(
+    specifier: &str,
+    source_store_path: &Path,
+    dest_store_path: Option<&Path>,
+    dry_run: bool,
+    force: bool,
+    quiet: bool,
+) -> ! {
+    let source_config = StoreConfig {
+        path: Some(source_store_path.to_path_buf()),
+    };
+    let dest_config = StoreConfig {
+        path: dest_store_path.map(|p| p.to_path_buf()),
+    };
+
+    let recipe_hash = match hod::run::resolve_specifier(specifier, &dest_config) {
+        Ok(resolved) => resolved.recipe_hash,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(4);
+        }
+    };
+
+    let source_store = match Store::open(&source_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: source store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let closure = match hod::closure::resolve_closure(&source_store, &recipe_hash) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    let dest_store = match Store::open(&dest_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: destination store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let dest = hod::closure::Destination::Local {
+        path: dest_store.root().to_path_buf(),
+    };
+
+    match hod::closure::copy_closure(&source_store, &closure, &dest, dry_run, force, quiet) {
+        Ok(()) => process::exit(0),
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    }
+}
+
+struct ClosureListEntry {
+    recipe_hash: [u8; 32],
+    output_hash: Option<[u8; 32]>,
+    dep_name: Option<String>,
+}
+
+/// Run `hod closure --list` on the remote via SSH and capture output.
+fn ssh_closure_list(
+    user_host: &str,
+    remote_store: &Path,
+    recipe_hex: &str,
+) -> Result<String, String> {
+    let output = process::Command::new("ssh")
+        .args([
+            user_host,
+            "hod",
+            "closure",
+            recipe_hex,
+            "--list",
+            "--store",
+            &remote_store.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| format!("failed to ssh to {user_host}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "remote hod closure failed for {recipe_hex}: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Parse the output of `hod closure --list` into structured entries.
+///
+/// Format: `<recipe_hash> <output_hash> <size> <dep_name>`
+/// Also parses the "Total: N entries" footer.
+fn parse_closure_list(output: &str) -> Result<Vec<ClosureListEntry>, String> {
+    let mut entries = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("Total:") {
+            continue;
+        }
+
+        let mut parts = line.splitn(4, char::is_whitespace);
+        let recipe_hex = parts.next().ok_or("missing recipe hash")?;
+        let output_hex = parts.next().ok_or("missing output hash")?;
+        // Skip size field
+        let _size = parts.next();
+        let dep_name = parts.next().map(|s| s.to_string());
+
+        let recipe_hash = hex_to_hash(recipe_hex).ok_or_else(|| {
+            format!("invalid recipe hash: '{recipe_hex}'")
+        })?;
+
+        let output_hash = if output_hex == "-" {
+            None
+        } else {
+            hex_to_hash(output_hex)
+                .map(Some)
+                .ok_or_else(|| format!("invalid output hash: '{output_hex}'"))?
+        };
+
+        entries.push(ClosureListEntry {
+            recipe_hash,
+            output_hash,
+            dep_name,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Pull files from a remote store via rsync.
+fn rsync_pull(
+    remote_source: &str,
+    local_root: &Path,
+    rel_paths: &[String],
+    ignore_existing: bool,
+    quiet: bool,
+) -> Result<(), String> {
+    let tmp_dir = std::env::temp_dir().join("hod-rsync-pull-staging");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("error creating temp dir: {e}"))?;
+
+    let filelist_path = tmp_dir.join(format!(
+        "rsync-pull-files-{}-{}.txt",
+        std::process::id(),
+        rel_paths.len()
+    ));
+    std::fs::write(&filelist_path, rel_paths.join("\n"))
+        .map_err(|e| format!("error writing file list: {e}"))?;
+
+    if !quiet {
+        eprintln!(
+            "[hod] rsync: pulling {} paths from {remote_source}",
+            rel_paths.len(),
+        );
+    }
+
+    let mut rsync_args = vec![
+        "-arz".to_string(),
+        "--files-from".to_string(),
+        filelist_path.to_string_lossy().to_string(),
+    ];
+
+    if ignore_existing {
+        rsync_args.push("--ignore-existing".to_string());
+    }
+
+    rsync_args.push(remote_source.to_string());
+    rsync_args.push(local_root.to_string_lossy().to_string());
+
+    let output = std::process::Command::new("rsync")
+        .args(&rsync_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("failed to run rsync: {e}.\nIs rsync installed?"))?;
+
+    let _ = std::fs::remove_file(&filelist_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("rsync pull failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+/// Pull the remote hod.db to a temp file, read relevant entries, and merge
+/// them into the local store's database.
+fn pull_and_merge_db(
+    user_host: &str,
+    remote_store: &Path,
+    local_store: &Store,
+    entries: &[ClosureListEntry],
+    quiet: bool,
+) -> Result<(), String> {
+    let tmp_db_path = std::env::temp_dir().join(format!(
+        "hod-remote-db-{}.db",
+        std::process::id()
+    ));
+
+    // Pull remote hod.db via scp.
+    let remote_db = format!("{user_host}:{}/hod.db", remote_store.display());
+    let scp_status = process::Command::new("scp")
+        .args(["-q", &remote_db, &tmp_db_path.to_string_lossy()])
+        .status()
+        .map_err(|e| format!("failed to scp remote hod.db: {e}"))?;
+
+    if !scp_status.success() {
+        return Err(format!("failed to pull hod.db from {remote_db}"));
+    }
+
+    // Open the remote DB (read-only) and merge entries.
+    let remote_conn = rusqlite::Connection::open_with_flags(
+        &tmp_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| format!("failed to open remote hod.db: {e}"))?;
+
+    let mut merged = 0usize;
+
+    for entry in entries {
+        let recipe_hex = hash_to_hex(&entry.recipe_hash);
+
+        // Ensure recipe is registered locally by reading the file we just
+        // rsync'd and re-importing it.
+        if local_store.get_recipe(&entry.recipe_hash).is_err() {
+            let shard = &recipe_hex[..2];
+            let recipe_path = local_store
+                .root()
+                .join(format!("recipes/{shard}/{recipe_hex}"));
+            if recipe_path.exists() {
+                if let Ok(bytes) = std::fs::read(&recipe_path) {
+                    let _ = local_store.store_recipe(&bytes);
+                }
+            }
+        }
+
+        // Read output mapping from remote DB.
+        if let Some(ref output_hash) = entry.output_hash {
+            let _output_hex = hash_to_hex(output_hash);
+
+            // Check if we already have this mapping.
+            match local_store.get_output(&entry.recipe_hash) {
+                Ok(Some(_)) => {
+                    // Already registered.
+                }
+                Ok(None) => {
+                    // Read build_ms from remote DB if available.
+                    let build_ms: u64 = remote_conn
+                        .query_row(
+                            "SELECT build_ms FROM outputs WHERE recipe_hash = ?1",
+                            rusqlite::params![recipe_hex],
+                            |row| row.get::<_, u64>(0),
+                        )
+                        .unwrap_or(0);
+
+                    local_store
+                        .store_output(&entry.recipe_hash, output_hash, build_ms, None)
+                        .map_err(|e| {
+                            format!("failed to register output for {recipe_hex}: {e}")
+                        })?;
+                    merged += 1;
+                }
+                Err(e) => {
+                    if !quiet {
+                        eprintln!(
+                            "[hod] warning: could not check local output for {recipe_hex}: {e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Copy dependency edges from remote DB.
+    for entry in entries {
+        let recipe_hex = hash_to_hex(&entry.recipe_hash);
+        let mut stmt = remote_conn
+            .prepare("SELECT dep_name, dep_recipe_hash FROM dependencies WHERE recipe_hash = ?1")
+            .map_err(|e| format!("failed to query remote dependencies: {e}"))?;
+
+        let dep_rows: Vec<(String, String)> = stmt
+            .query_map(rusqlite::params![recipe_hex], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("failed to read remote dependencies: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if !dep_rows.is_empty() {
+            for (dep_name, dep_hash) in &dep_rows {
+                let _ = local_store.conn().execute(
+                    "INSERT OR IGNORE INTO dependencies (recipe_hash, dep_name, dep_recipe_hash) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![recipe_hex, dep_name, dep_hash],
+                );
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(&tmp_db_path);
+
+    if !quiet && merged > 0 {
+        eprintln!("[hod] registered {} new output(s) in local store", merged);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

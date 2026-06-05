@@ -46,7 +46,10 @@ sed -i '/checking whether we are cross compiling/,+1{/running in a cross environ
   --enable-languages= \\
   --disable-gpg-test \\
   --disable-gpgsm-test \\
-  --disable-gpgconf-test
+  --disable-gpgconf-test \\
+  --with-gpg=gpg \\
+  --with-gpgsm=/nonexistent \\
+  --with-gpgconf=/nonexistent
 
 make -j$(nproc)
 make install DESTDIR=$OUT

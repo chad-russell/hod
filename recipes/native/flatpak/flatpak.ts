@@ -51,14 +51,19 @@ import { libjpegRecipe } from "../libjpeg/libjpeg.js";
 import { libpngRecipe } from "../libpng/libpng.js";
 import { libtiffRecipe } from "../libtiff/libtiff.js";
 import { pyparsingRecipe } from "../pyparsing/pyparsing.js";
+import { gnupgRecipe } from "../gnupg/gnupg.js";
+import { libgcryptRecipe } from "../libgcrypt/libgcrypt.js";
+import { libksbaRecipe } from "../libksba/libksba.js";
+import { npthRecipe } from "../npth/npth.js";
 import { mesonProfile } from "../../helpers/meson.js";
 import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 export const flatpakRuntimeDeps = [
-  "appstream", "curl", "fuse3", "gdk-pixbuf", "glib", "gpgme", "json-glib",
-  "libXau", "libarchive", "libassuan", "libcap", "libffi", "libgpg-error",
-  "libseccomp", "libxml2", "nghttp2", "openssl", "ostree", "pcre2",
-  "tinysparql", "toolchain", "util-linux", "wayland", "xz", "zlib", "zstd",
+  "appstream", "curl", "fuse3", "gdk-pixbuf", "glib", "gnupg", "gpgme",
+  "json-glib", "libXau", "libarchive", "libassuan", "libcap", "libffi",
+  "libgcrypt", "libgpg-error", "libksba", "libseccomp", "libxml2", "nghttp2",
+  "npth", "openssl", "ostree", "pcre2", "tinysparql", "toolchain",
+  "util-linux", "wayland", "xz", "zlib", "zstd",
 ];
 
 const recipe = await shellBuild({
@@ -173,6 +178,10 @@ rm -rf $OUT/share/gtk-doc $OUT/share/man $OUT/share/info $OUT/share/doc
     dep("libpng", libpngRecipe),
     dep("libtiff", libtiffRecipe),
     dep("pyparsing", pyparsingRecipe),
+    dep("gnupg", gnupgRecipe),
+    dep("libgcrypt", libgcryptRecipe),
+    dep("libksba", libksbaRecipe),
+    dep("npth", npthRecipe),
   ],
   runtime_deps: flatpakRuntimeDeps,
 });

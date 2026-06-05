@@ -42,7 +42,7 @@ export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
   --disable-ldaps \\
   --with-openssl \\
   --with-zlib \\
-  --without-ca-bundle \\
+  --with-ca-bundle=/etc/ssl/certs/ca-bundle.crt \\
   --without-ca-path \\
   --without-libpsl \\
   --without-brotli \\

@@ -8,7 +8,86 @@ use hod::packed::{find_rpath, is_elf, patch_rpath_in_place, RpathInfo};
 use hod::recipe::*;
 use hod::store::Store;
 
+use std::sync::LazyLock;
 use tempfile::TempDir;
+
+// ---------------------------------------------------------------------------
+// Test fixtures — generated at first use via gcc
+// ---------------------------------------------------------------------------
+
+struct ElfFixtures {
+    with_long_rpath: Vec<u8>,
+    with_dt_rpath: Vec<u8>,
+    no_rpath: Vec<u8>,
+    with_rpath: Vec<u8>,
+}
+
+static FIXTURES: LazyLock<ElfFixtures> = LazyLock::new(|| {
+    let dir = tempfile::tempdir().expect("create fixture temp dir");
+    let src = dir.path().join("test.c");
+    std::fs::write(&src, "int main() { return 0; }\n").expect("write test.c");
+
+    let compile = |args: &[&str], out: &std::path::Path| {
+        std::process::Command::new("gcc")
+            .args(["-o"])
+            .arg(out)
+            .arg(&src)
+            .arg("-Wl,--build-id=none")
+            .args(args)
+            .status()
+    };
+
+    let with_long_rpath = {
+        let out = dir.path().join("long_rpath");
+        let s = compile(
+            &[
+                "-Wl,-rpath,/this/is/a/longer/than/target/path/placeholder",
+            ],
+            &out,
+        )
+        .expect("gcc for long_rpath");
+        assert!(s.success(), "gcc long_rpath failed");
+        std::fs::read(&out).expect("read long_rpath")
+    };
+
+    let with_dt_rpath = {
+        let out = dir.path().join("dt_rpath");
+        let s = compile(
+            &["-Wl,--disable-new-dtags", "-Wl,-rpath,/a/testing/rpath/dir"],
+            &out,
+        )
+        .expect("gcc for dt_rpath");
+        assert!(s.success(), "gcc dt_rpath failed");
+        std::fs::read(&out).expect("read dt_rpath")
+    };
+
+    let no_rpath = {
+        let out = dir.path().join("no_rpath");
+        let s = compile(&[], &out).expect("gcc for no_rpath");
+        assert!(s.success(), "gcc no_rpath failed");
+        std::process::Command::new("patchelf")
+            .arg("--remove-rpath")
+            .arg(&out)
+            .status()
+            .expect("patchelf --remove-rpath");
+        let data = std::fs::read(&out).expect("read no_rpath");
+        data
+    };
+
+    let with_rpath = {
+        let out = dir.path().join("with_rpath");
+        let s = compile(&["-Wl,-rpath,/some/rpath"], &out).expect("gcc for with_rpath");
+        assert!(s.success(), "gcc with_rpath failed");
+        std::fs::read(&out).expect("read with_rpath")
+    };
+
+    ElfFixtures {
+        with_long_rpath,
+        with_dt_rpath,
+        no_rpath,
+        with_rpath,
+    }
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,9 +103,20 @@ fn default_opts() -> BuildOptions {
     BuildOptions::default()
 }
 
-/// Read a test ELF binary from the host system.
-fn read_host_elf(path: &str) -> Vec<u8> {
-    std::fs::read(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
+fn read_long_rpath() -> Vec<u8> {
+    FIXTURES.with_long_rpath.clone()
+}
+
+fn read_dt_rpath() -> Vec<u8> {
+    FIXTURES.with_dt_rpath.clone()
+}
+
+fn read_no_rpath() -> Vec<u8> {
+    FIXTURES.no_rpath.clone()
+}
+
+fn read_with_rpath() -> Vec<u8> {
+    FIXTURES.with_rpath.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -35,8 +125,7 @@ fn read_host_elf(path: &str) -> Vec<u8> {
 
 #[test]
 fn find_rpath_detects_runpath_in_host_binary() {
-    // Use a binary we compiled with RUNPATH
-    let data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let data = read_long_rpath();
     assert!(is_elf(&data));
 
     let info = find_rpath(&data).unwrap();
@@ -61,8 +150,7 @@ fn find_rpath_detects_runpath_in_host_binary() {
 
 #[test]
 fn find_rpath_detects_rpath_in_host_binary() {
-    // Use a binary compiled with --disable-new-dtags to get DT_RPATH
-    let data = read_host_elf("/tmp/test_elf_with_dt_rpath");
+    let data = read_dt_rpath();
     assert!(is_elf(&data));
 
     let info = find_rpath(&data).unwrap();
@@ -86,7 +174,7 @@ fn find_rpath_detects_rpath_in_host_binary() {
 
 #[test]
 fn find_rpath_returns_absent_when_no_rpath() {
-    let data = read_host_elf("/tmp/test_elf_no_rpath");
+    let data = read_no_rpath();
     assert!(is_elf(&data));
 
     let info = find_rpath(&data).unwrap();
@@ -113,7 +201,7 @@ fn find_rpath_rejects_truncated_elf() {
 
 #[test]
 fn is_elf_identifies_valid_elf() {
-    let data = read_host_elf("/tmp/test_elf_with_rpath");
+    let data = read_with_rpath();
     assert!(is_elf(&data));
 }
 
@@ -130,7 +218,7 @@ fn is_elf_rejects_non_elf() {
 
 #[test]
 fn patch_runpath_in_place_success() {
-    let mut data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let mut data = read_long_rpath();
 
     // Before patching, verify we have a RUNPATH
     let info_before = find_rpath(&data).unwrap();
@@ -156,7 +244,7 @@ fn patch_runpath_in_place_success() {
 
 #[test]
 fn patch_rpath_in_place_success() {
-    let mut data = read_host_elf("/tmp/test_elf_with_dt_rpath");
+    let mut data = read_dt_rpath();
 
     let info_before = find_rpath(&data).unwrap();
     assert!(matches!(info_before, RpathInfo::Rpath { .. }));
@@ -180,7 +268,7 @@ fn patch_rpath_in_place_success() {
 
 #[test]
 fn patch_rpath_no_rpath_returns_false() {
-    let mut data = read_host_elf("/tmp/test_elf_no_rpath");
+    let mut data = read_no_rpath();
 
     let patched = patch_rpath_in_place(&mut data).unwrap();
     assert!(
@@ -198,7 +286,7 @@ fn patch_rpath_non_elf_returns_error() {
 
 #[test]
 fn patched_rpath_is_null_terminated() {
-    let mut data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let mut data = read_long_rpath();
     patch_rpath_in_place(&mut data).unwrap();
 
     let info = find_rpath(&data).unwrap();
@@ -219,7 +307,7 @@ fn patched_rpath_is_null_terminated() {
 
 #[test]
 fn patched_rpath_padding_is_zeroed() {
-    let mut data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let mut data = read_long_rpath();
     patch_rpath_in_place(&mut data).unwrap();
 
     let info = find_rpath(&data).unwrap();
@@ -264,8 +352,7 @@ fn patch_rpath_too_short_returns_error() {
 fn build_file_with_resources_produces_packed_output() {
     let (tmp, store) = test_store();
 
-    // Create a test ELF binary with a long RPATH
-    let binary_data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let binary_data = read_long_rpath();
     let binary_hash = store.write_blob(&binary_data).unwrap();
 
     // Create a resources directory recipe with a library
@@ -402,11 +489,10 @@ fn build_file_without_resources_is_unpacked() {
 
 #[test]
 fn packed_output_deterministic() {
-    // Build the same packed recipe in two different stores → same output hash
     let (tmp1, store1) = test_store();
     let (tmp2, store2) = test_store();
 
-    let binary_data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let binary_data = read_long_rpath();
     let lib_data = b"fake lib\n";
 
     for store in &[&store1, &store2] {
@@ -493,8 +579,7 @@ fn packed_output_deterministic() {
 fn packed_binary_has_relative_rpath() {
     let (tmp, store) = test_store();
 
-    // Create an ELF binary with a long RPATH that we can patch
-    let binary_data = read_host_elf("/tmp/test_elf_with_long_rpath");
+    let binary_data = read_long_rpath();
     let binary_hash = store.write_blob(&binary_data).unwrap();
 
     // Create empty resources

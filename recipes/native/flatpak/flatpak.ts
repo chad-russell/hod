@@ -69,7 +69,7 @@ export const flatpakRuntimeDeps = [
 const recipe = await shellBuild({
   ...mesonProfile({
     python: "python",
-    binDeps: ["glib", "bison"],
+    binDeps: ["glib", "bison", "bubblewrap", "xdg-dbus-proxy", "fuse3"],
     includeDeps: [
       "glib", "ostree", "curl", "gpgme", "libgpg-error", "libarchive",
       "json-glib", "appstream", "gdk-pixbuf", "libseccomp", "libcap",
@@ -107,9 +107,9 @@ meson setup build \\
   --libdir=lib \\
   --buildtype=release \\
   -Dhttp_backend=curl \\
-  -Dsystem_bubblewrap=${depSubpath("bubblewrap", "bin/bwrap")} \\
-  -Dsystem_dbus_proxy=${depSubpath("xdg-dbus-proxy", "bin/xdg-dbus-proxy")} \\
-  -Dsystem_fusermount=${depSubpath("fuse3", "bin/fusermount3")} \\
+  -Dsystem_bubblewrap=bwrap \\
+  -Dsystem_dbus_proxy=xdg-dbus-proxy \\
+  -Dsystem_fusermount=fusermount3 \\
   -Dsystemd=disabled \\
   -Dsystem_helper=disabled \\
   -Dtests=false \\

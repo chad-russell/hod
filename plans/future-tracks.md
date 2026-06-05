@@ -65,6 +65,16 @@ until the desktop track is stable.
 
 ---
 
+## Track G — Flatpak from source
+
+Promoted to `flatpak-build-plan.md`. 8 new recipes in 4 phases:
+1. fuse3, bubblewrap, xdg-dbus-proxy (simple)
+2. libgpg-error, gpgme (medium)
+3. e2fsprogs-libs, ostree (hard — ostree is the blocker)
+4. flatpak itself
+
+---
+
 ## Track F — DONE
 
 `file(1)` magic database resolution. Fixed in `src/wrap.rs`: when generating

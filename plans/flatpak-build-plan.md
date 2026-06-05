@@ -1,6 +1,6 @@
 # Flatpak Build Plan
 
-**Status:** Active — Phase 1 ready
+**Status:** Done — all 4 phases complete, flatpak 1.16.6 builds and runs from source
 
 Build flatpak and its full dependency tree from source for Hod.
 

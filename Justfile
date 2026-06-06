@@ -83,3 +83,19 @@ info:
 # Remove generated VM artifacts. Does not touch the Hod store.
 clean-vm:
     rm -rf "{{state_dir}}"
+
+# Build, deploy to ThinkPad, restart VM, health-check. Primary test workflow.
+test *args:
+    scripts/deploy-vm --skip-rootfs --profile {{profile}} {{args}}
+
+# Quick iteration: deploy without rebuilding (image must already be built).
+test-quick *args:
+    scripts/deploy-vm --skip-build {{args}}
+
+# Health-check the already-running VM on the ThinkPad.
+test-check:
+    scripts/deploy-vm --check-only
+
+# Full rebuild + deploy (rebuilds Arch rootfs too).
+test-full *args:
+    scripts/deploy-vm --profile {{profile}} {{args}}

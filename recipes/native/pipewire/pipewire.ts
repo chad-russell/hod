@@ -10,27 +10,23 @@ import { alsaLibRecipe } from "../alsa-lib/alsa-lib.js";
 import { opensslRecipe } from "../openssl/openssl.js";
 import { expatRecipe } from "../expat/expat.js";
 import { zlibRecipe } from "../zlib/zlib.js";
-
 import { eudevRecipe } from "../eudev/eudev.js";
+import { libsndfileRecipe } from "../libsndfile/libsndfile.js";
 import { STRIP_ALL, RELOCATE_PKG_CONFIG } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...mesonProfile({
     python: "python",
-    includeDeps: ["dbus", "alsa", "openssl", "expat", "eudev"],
-    libDeps: ["dbus", "alsa", "openssl", "expat", "zlib", "eudev"],
-    pkgConfigDeps: ["dbus", "alsa", "openssl", "expat", "eudev"],
+    includeDeps: ["dbus", "alsa", "openssl", "expat", "eudev", "libsndfile"],
+    libDeps: ["dbus", "alsa", "openssl", "expat", "zlib", "eudev", "libsndfile"],
+    pkgConfigDeps: ["dbus", "alsa", "openssl", "expat", "eudev", "libsndfile"],
   }),
   sourceDir: true,
   script: `
 
-export LD_LIBRARY_PATH="/deps/dbus/lib:/deps/alsa/lib:/deps/openssl/lib:/deps/expat/lib:/deps/zlib/lib:/deps/eudev/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-export LDFLAGS="$HOD_DUMMY_RPATH -Wl,-rpath-link,/deps/dbus/lib -Wl,-rpath-link,/deps/openssl/lib -Wl,-rpath-link,/deps/zlib/lib -Wl,-rpath-link,/deps/expat/lib -Wl,-rpath-link,/deps/eudev/lib"
+export LD_LIBRARY_PATH="/deps/dbus/lib:/deps/alsa/lib:/deps/openssl/lib:/deps/expat/lib:/deps/zlib/lib:/deps/eudev/lib:/deps/libsndfile/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export LDFLAGS="$HOD_DUMMY_RPATH -Wl,-rpath-link,/deps/dbus/lib -Wl,-rpath-link,/deps/openssl/lib -Wl,-rpath-link,/deps/zlib/lib -Wl,-rpath-link,/deps/expat/lib -Wl,-rpath-link,/deps/eudev/lib -Wl,-rpath-link,/deps/libsndfile/lib"
 
-# Disable docs, man, tests, examples
-# Disable features we don't need: bluez, jack, v4l2, ffmpeg, gstreamer,
-# webrtc, opus, sndfile, avahi, sdl2, flatpak, snap, selinux, libsystemd, logind,
-# roc, raop, libpulse (separate lib), canberra, libusb, x11
 meson setup build \\
   --prefix=/ \\
   --libdir=lib \\
@@ -59,7 +55,7 @@ meson setup build \\
   -Davahi=disabled \\
   -Dsdl2=disabled \\
   -Dopus=disabled \\
-  -Dsndfile=disabled \\
+  -Dsndfile=enabled \\
   -Dlibpulse=disabled \\
   -Draop=disabled \\
   -Droc=disabled \\
@@ -72,7 +68,7 @@ meson setup build \\
   -Dgsettings=disabled \\
   -Decho-cancel-webrtc=disabled \\
   -Dlibffado=disabled \\
-  -Dpw-cat=disabled \\
+  -Dpw-cat=enabled \\
   -Dsession-managers=[]
 
 ninja -C build
@@ -94,8 +90,9 @@ ${STRIP_ALL}
     dep("expat", expatRecipe),
     dep("zlib", zlibRecipe),
     dep("eudev", eudevRecipe),
+    dep("libsndfile", libsndfileRecipe),
   ],
-  runtime_deps: ["alsa", "dbus", "eudev", "openssl", "toolchain"],
+  runtime_deps: ["alsa", "dbus", "eudev", "libsndfile", "openssl", "toolchain"],
 });
 
 await importToStore(recipe);

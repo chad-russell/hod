@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# generate-composefs — generate a composefs image from a hod profile generation
+#
+# Resolves the full transitive runtime closure for every profile package,
+# merges all outputs into a standard FHS tree, and produces a composefs image.
+#
+# Usage: ./scripts/generate-composefs <generation-dir> <output-dir> [hod-binary]
+#
+# Example:
+#   ./scripts/generate-composefs \
+#     ~/.local/share/hod/system/generations/44 \
+#     /tmp/composefs-full \
+#     target/release/hod
+set -euo pipefail
+
+GENERATION="${1:?Usage: $0 <generation-dir> <output-dir> [hod-binary]}"
+OUTDIR="${2:?Usage: $0 <generation-dir> <output-dir> [hod-binary]}"
+HOD="${3:-hod}"
+
+PKGS="$GENERATION/pkgs"
+STORE_ROOT="${HOD_STORE:-$HOME/.local/share/hod}"
+
+if [ ! -d "$PKGS" ]; then
+    echo "error: $PKGS not found" >&2
+    exit 1
+fi
+
+if ! command -v "$HOD" &>/dev/null; then
+    echo "error: hod binary not found ($HOD). Pass path as 3rd arg." >&2
+    exit 1
+fi
+
+MKCOMPOSEFS=""
+for candidate in \
+    "$STORE_ROOT/staging/d1/d1cdbd7b569f91ec7ec37b3e6ed6c97966f0948ea10ea9c432c2d427859a0365/bin/mkcomposefs" \
+    /usr/bin/mkcomposefs \
+    /usr/local/bin/mkcomposefs; do
+    if [ -x "$candidate" ]; then
+        MKCOMPOSEFS="$candidate"
+        break
+    fi
+done
+
+if [ -z "$MKCOMPOSEFS" ]; then
+    echo "error: mkcomposefs not found. Build the composefs recipe first." >&2
+    exit 1
+fi
+
+FHS_TREE="$OUTDIR/fhs-tree"
+OBJECT_STORE="$OUTDIR/objects"
+IMAGE="$OUTDIR/rootfs.cfs"
+
+rm -rf "$OUTDIR"
+mkdir -p "$FHS_TREE/usr/bin" "$FHS_TREE/usr/lib" "$FHS_TREE/usr/libexec" \
+         "$FHS_TREE/usr/share" "$FHS_TREE/usr/include" \
+         "$FHS_TREE/usr/lib/systemd" \
+         "$OBJECT_STORE"
+
+ln -sf usr/bin "$FHS_TREE/bin"
+ln -sf usr/bin "$FHS_TREE/sbin"
+ln -sf usr/lib "$FHS_TREE/lib"
+ln -sf usr/lib "$FHS_TREE/lib64"
+
+# ── Step 1: Collect all recipe hashes from the profile metadata ──
+
+METADATA="$GENERATION/metadata.json"
+if [ ! -f "$METADATA" ]; then
+    echo "error: $METADATA not found" >&2
+    exit 1
+fi
+
+# Extract recipe hashes using jq (already a profile dep)
+mapfile -t RECIPE_HASHES < <(jq -r '.recipe_hashes[]' "$METADATA")
+echo "Profile has ${#RECIPE_HASHES[@]} top-level recipe hashes"
+
+# ── Step 2: Resolve closures for all recipe hashes ──
+# Collect unique staging output paths, tracking which are "root" (top-level)
+# vs "dep" (transitive runtime dependency).
+
+declare -A SEEN_OUTPUTS=()    # output_hash → 1
+declare -A STAGING_PATHS=()   # output_hash → staging_path
+declare -A IS_ROOT=()         # output_hash → 1 if it's a top-level package
+declare -A DEP_NAMES=()       # output_hash → dep_name
+
+for hash in "${RECIPE_HASHES[@]}"; do
+    # Parse closure output: <recipe_hash> <output_hash> <size> <dep_name>
+    while IFS=' ' read -r r_hash o_hash size dep_name; do
+        if [ -z "$o_hash" ]; then
+            continue
+        fi
+        shard="${o_hash:0:2}"
+        staging="$STORE_ROOT/staging/$shard/$o_hash"
+
+        if [ -z "${SEEN_OUTPUTS[$o_hash]+x}" ]; then
+            SEEN_OUTPUTS[$o_hash]=1
+            STAGING_PATHS[$o_hash]="$staging"
+            DEP_NAMES[$o_hash]="$dep_name"
+
+            if [ "$dep_name" = "(root)" ]; then
+                IS_ROOT[$o_hash]=1
+            else
+                IS_ROOT[$o_hash]=0
+            fi
+        fi
+    done < <($HOD closure --list "$hash" 2>/dev/null)
+done
+
+TOTAL_ENTRIES=${#SEEN_OUTPUTS[@]}
+ROOT_COUNT=0
+DEP_COUNT=0
+for h in "${!SEEN_OUTPUTS[@]}"; do
+    if [ "${IS_ROOT[$h]}" = "1" ]; then
+        ROOT_COUNT=$((ROOT_COUNT + 1))
+    else
+        DEP_COUNT=$((DEP_COUNT + 1))
+    fi
+done
+
+echo "Resolved closure: $ROOT_COUNT root packages + $DEP_COUNT transitive deps = $TOTAL_ENTRIES total"
+
+# ── Step 3: Merge staging outputs into the FHS tree ──
+# - Root packages: merge bin/, sbin/, lib/, libexec/, share/
+# - Dep packages:  merge lib/ only (shared libraries for runtime)
+
+merge_dir() {
+    local src="$1" dest="$2"
+    if [ -d "$src" ]; then
+        mkdir -p "$dest"
+        cp -an "$src"/. "$dest/" 2>/dev/null || true
+    fi
+}
+
+for o_hash in "${!SEEN_OUTPUTS[@]}"; do
+    staging="${STAGING_PATHS[$o_hash]}"
+    is_root="${IS_ROOT[$o_hash]}"
+
+    if [ ! -d "$staging" ]; then
+        echo "  warning: staging dir missing: $staging" >&2
+        continue
+    fi
+
+    if [ "$is_root" = "1" ]; then
+        # Top-level package: merge everything into FHS
+        merge_dir "$staging/bin"    "$FHS_TREE/usr/bin"
+        merge_dir "$staging/sbin"   "$FHS_TREE/usr/bin"
+        merge_dir "$staging/lib"    "$FHS_TREE/usr/lib"
+        merge_dir "$staging/libexec" "$FHS_TREE/usr/libexec"
+        merge_dir "$staging/share"  "$FHS_TREE/usr/share"
+        merge_dir "$staging/include" "$FHS_TREE/usr/include"
+
+        # lib/systemd → usr/lib/systemd
+        if [ -d "$staging/lib/systemd" ]; then
+            merge_dir "$staging/lib/systemd" "$FHS_TREE/usr/lib/systemd"
+        fi
+    else
+        # Transitive dep: merge lib/ and share/ only
+        # lib/ has shared libraries needed at runtime
+        # share/ has schemas, icons, mime data, etc.
+        merge_dir "$staging/lib"   "$FHS_TREE/usr/lib"
+        merge_dir "$staging/share" "$FHS_TREE/usr/share"
+    fi
+done
+
+# ── Step 4: Ensure the dynamic linker exists ──
+# Binaries have PT_INTERP = /lib64/ld-linux-x86-64.so.2
+# Since /lib64 → usr/lib, we need ld-linux in /usr/lib/
+
+if [ ! -e "$FHS_TREE/usr/lib/ld-linux-x86-64.so.2" ]; then
+    # Find it in the toolchain staging output
+    for o_hash in "${!SEEN_OUTPUTS[@]}"; do
+        candidate="${STAGING_PATHS[$o_hash]}/lib/ld-linux-x86-64.so.2"
+        if [ -e "$candidate" ]; then
+            cp -a "$candidate" "$FHS_TREE/usr/lib/ld-linux-x86-64.so.2"
+            echo "Added dynamic linker from ${DEP_NAMES[$o_hash]}"
+            break
+        fi
+    done
+fi
+
+# ── Step 5: Patch RPATH on ELF binaries ──
+# Staging binaries have RPATH entries pointing to store staging dirs:
+#   $ORIGIN/../lib:$ORIGIN/../../../<shard>/<hash>/lib:...
+# In the composefs FHS tree, only $ORIGIN/../lib is needed (resolves to /usr/lib).
+# The staging-specific entries must be stripped or the dynamic linker will fail
+# to find the interpreter (it searches RPATH entries for ld-linux).
+
+echo ""
+echo "Patching RPATH on ELF binaries..."
+
+PATCHELF=""
+for candidate in \
+    "$STORE_ROOT/staging/84/84778b3d7c3c1c08cf47b2e15db7f5a22c40d0a709be38e30bbee56b1a26b242/bin/patchelf" \
+    /usr/bin/patchelf \
+    /nix/store/*/bin/patchelf; do
+    if [ -x "$candidate" ]; then
+        PATCHELF="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PATCHELF" ]; then
+    PATCHELF=$(nix develop --accept-flake-config --command which patchelf 2>/dev/null || true)
+fi
+
+if [ -n "$PATCHELF" ]; then
+    patched=0
+    for dir in "$FHS_TREE/usr/bin" "$FHS_TREE/usr/libexec"; do
+        [ -d "$dir" ] || continue
+        for elf in "$dir"/*; do
+            [ -f "$elf" ] || continue
+            if "$PATCHELF" --set-rpath '$ORIGIN/../lib' "$elf" 2>/dev/null; then
+                patched=$((patched + 1))
+            fi
+        done
+    done
+    while IFS= read -r -d '' elf; do
+        if "$PATCHELF" --remove-rpath "$elf" 2>/dev/null; then
+            patched=$((patched + 1))
+        fi
+    done < <(find "$FHS_TREE/usr/lib" -maxdepth 1 -type f -print0 2>/dev/null)
+    echo "Patched $patched ELF files (RPATH)"
+else
+    echo "  warning: patchelf not found, skipping RPATH fix" >&2
+fi
+
+# ── Step 5b: Patch Hod bootstrap metadata ──
+# Hod-packed binaries use an AT_EXECFN bootstrap stub that looks for ld-linux
+# at a relative path embedded in the binary metadata. The original path points
+# to the staging directory (e.g., ../../7d/<hash>/lib/ld-linux-x86-64.so.2).
+# For the FHS tree, we need ../lib/ld-linux-x86-64.so.2.
+#
+# The trampoline signature is: 48 89 e5 48 83 e4 f0 48 89 ef 48 8d 35
+# followed by a 4-byte RIP-relative displacement to the metadata struct:
+#   i64  entry_delta   (8 bytes)
+#   u16  rel_path_len  (2 bytes)
+#   char rel_path[]    (NUL-terminated)
+
+echo "Patching Hod bootstrap metadata..."
+NEW_REL_PATH="../lib/ld-linux-x86-64.so.2"
+bootstrap_patched=0
+
+for dir in "$FHS_TREE/usr/bin" "$FHS_TREE/usr/libexec"; do
+    [ -d "$dir" ] || continue
+    for elf in "$dir"/*; do
+        [ -f "$elf" ] || continue
+        [ "$(wc -c < "$elf")" -gt 1000 ] || continue
+
+        result=$(perl -e '
+            my $elf = $ARGV[0];
+            my $new = $ARGV[1];
+            open(F, "<", $elf) or die "open: $!";
+            binmode F; local $/; my $data = <F>; close F;
+            my $magic = "\x48\x89\xe5\x48\x83\xe4\xf0\x48\x89\xef\x48\x8d\x35";
+            my $pos = index($data, $magic);
+            die "no trampoline" if $pos < 0;
+            my $disp = unpack("V", substr($data, $pos + 13, 4));
+            my $meta_off = $pos + 17 + $disp;
+            my $rplen = unpack("v", substr($data, $meta_off + 8, 2));
+            my $old = substr($data, $meta_off + 10, $rplen);
+            $old =~ s/\0.*//s;
+            die "already patched" if $old eq $new;
+            my $new_len = length($new);
+            substr($data, $meta_off + 8, 2) = pack("v", $new_len);
+            substr($data, $meta_off + 10, length($old) + 1) = $new . "\0" . ("\0" x (length($old) - $new_len));
+            open(F, ">", $elf) or die "write: $!";
+            binmode F; print F $data; close F;
+            print "ok:$old:$new_len";
+        ' "$elf" "$NEW_REL_PATH" 2>/dev/null) || continue
+
+        if [[ "$result" == ok:* ]]; then
+            bootstrap_patched=$((bootstrap_patched + 1))
+        fi
+    done
+done
+echo "Patched $bootstrap_patched bootstrap metadata entries"
+
+# ── Summary ──
+
+bin_count=$(find "$FHS_TREE/usr/bin" -type f 2>/dev/null | wc -l)
+lib_count=$(find "$FHS_TREE/usr/lib" -type f 2>/dev/null | wc -l)
+share_dirs=$(ls "$FHS_TREE/usr/share" 2>/dev/null | wc -l)
+total_files=$(find "$FHS_TREE" -type f 2>/dev/null | wc -l)
+
+echo ""
+echo "=== FHS tree summary ==="
+echo "bin:        $bin_count files"
+echo "lib:        $lib_count files"
+echo "share dirs: $share_dirs"
+echo "total:      $total_files files"
+
+# ── Step 5: Generate composefs image ──
+
+echo ""
+echo "Generating composefs image..."
+"$MKCOMPOSEFS" \
+    --digest-store="$OBJECT_STORE" \
+    --use-epoch \
+    "$FHS_TREE" \
+    "$IMAGE"
+
+image_size=$(du -h "$IMAGE" | cut -f1)
+store_size=$(du -sh "$OBJECT_STORE" | cut -f1)
+obj_count=$(ls "$OBJECT_STORE" | wc -l)
+
+echo ""
+echo "=== Composefs image generated ==="
+echo "Image:       $IMAGE ($image_size)"
+echo "Object store: $OBJECT_STORE ($store_size)"
+echo "Objects:      $obj_count unique content files"
+echo ""
+echo "To mount:"
+echo "  sudo mkdir -p /mnt/composefs-test"
+echo "  sudo mount.composefs $IMAGE -o basedir=$OBJECT_STORE /mnt/composefs-test"

@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+THINKPAD_HOST=crussell@10.10.0.10
+THINKPAD_DIR=~/Code/hod
+IMAGE=.hod-vm/arch/hod-arch.qcow2
+PROFILE=${PROFILE:-profiles/niri-desktop.ts}
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: scripts/deploy-vm [options]
+
+Build VM image, deploy to ThinkPad, restart, and health-check via SSH.
+
+Options:
+  --skip-build        Skip image build (use existing image)
+  --skip-rootfs       Pass --skip-rootfs to hod-arch-build
+  --skip-profile      Pass --skip-profile-build to hod-arch-build
+  --profile <path>    Profile to build (default: profiles/niri-desktop.ts)
+  --check-only        Don't rebuild/redeploy, just health-check running VM
+  -h, --help          Show this help
+USAGE
+}
+
+skip_build=false
+skip_rootfs=false
+skip_profile=false
+check_only=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build)    skip_build=true; shift ;;
+    --skip-rootfs)   skip_rootfs=true; shift ;;
+    --skip-profile)  skip_profile=true; shift ;;
+    --profile)       PROFILE="$2"; shift 2 ;;
+    --check-only)    check_only=true; shift ;;
+    -h|--help)       usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+
+thinkpad_ssh() {
+  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no "$THINKPAD_HOST" "$@"
+}
+
+vm_ssh() {
+  thinkpad_ssh "ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -p 2222 root@localhost $*"
+}
+
+if [[ "$check_only" == true ]]; then
+  echo "[deploy] health-checking running VM..."
+  vm_ssh 'echo "SSH: OK"; ps aux | grep "niri --session" | grep -v grep | head -1 | awk "{print \"Niri: \" \$11}"; tail -5 /home/hod/.local/share/niri/hod-session.log 2>/dev/null | grep -E "error|renderer|connector|picking" || true'
+  exit $?
+fi
+
+if [[ "$skip_build" == false ]]; then
+  build_args=(--efi --profile "$PROFILE")
+  [[ "$skip_rootfs" == true ]] && build_args+=(--skip-rootfs)
+  [[ "$skip_profile" == true ]] && build_args+=(--skip-profile-build)
+
+  echo "[deploy] building image..."
+  nix develop --accept-flake-config --command \
+    bash -c "scripts/hod-arch-build ${build_args[*]}"
+fi
+
+echo "[deploy] syncing run script + image to ThinkPad..."
+rsync -q scripts/run-vm-thinkpad "$THINKPAD_HOST:$THINKPAD_DIR/run-vm.sh"
+rsync -P --inplace "$IMAGE" "$THINKPAD_HOST:$THINKPAD_DIR/hod-arch.qcow2"
+
+echo "[deploy] restarting VM on ThinkPad..."
+thinkpad_ssh 'pkill -f "qemu-system.*hod-arch" 2>/dev/null || true; sleep 2; rm -f ~/.cache/hod-vm-spice.sock ~/.cache/hod-vm-serial.log; nohup bash ~/Code/hod/run-vm.sh </dev/null >/tmp/hod-qemu.log 2>&1 &'
+
+echo "[deploy] waiting for SSH..."
+ok=false
+for i in $(seq 1 40); do
+  if vm_ssh 'echo up' 2>/dev/null; then
+    echo "[deploy] SSH up after ~$((i * 2))s"
+    ok=true
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$ok" == false ]]; then
+  echo "[deploy] WARNING: SSH not responding after 80s" >&2
+  echo "[deploy] Check serial log:" >&2
+  thinkpad_ssh 'tail -20 ~/.cache/hod-vm-serial.log 2>/dev/null' >&2
+  exit 1
+fi
+
+echo "[deploy] health check..."
+vm_ssh '
+  echo "=== Desktop ==="
+  ps aux | grep -E "niri --session|alacritty|mako|pipewire " | grep -v grep | awk "{print \$1, \$11}" | sort
+  echo "=== Niri log (last 10) ==="
+  tail -10 /home/hod/.local/share/niri/hod-session.log 2>/dev/null | grep -v "mod.rt"
+  echo "=== Audio ==="
+  ps aux | grep -E "pipewire|wireplumber" | grep -v grep | grep -v dbus-run | grep -v serial | awk "{print \$1, \$2, \$11}" | sort
+  echo "=== DRI ==="
+  ls /dev/dri/ 2>/dev/null
+'
+
+echo ""
+echo "[deploy] done. On ThinkPad:"
+echo "  virt-viewer --spice-unix=~/.cache/hod-vm-spice.sock"

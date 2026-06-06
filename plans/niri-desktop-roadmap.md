@@ -30,21 +30,7 @@ RUNPATH if they matched a `DT_NEEDED` entry. Libraries loaded dynamically
 via `dlopen` (e.g., `libwayland-client.so` by winit) were missed. Fixed by
 adding all runtime_dep outputs with `lib/` directories to the RUNPATH.
 
-## Milestone 2: Basic Shell
-
-Acceptance criteria:
-
-- background is visible
-- notifications work
-- app launcher works
-
-Likely packages:
-
-- `swaybg`
-- Wayland Mako notification daemon as `mako-notifier`
-- `fuzzel`
-
-## Milestone 3: Polished Session
+## Milestone 2: Polished Session
 
 Acceptance criteria:
 

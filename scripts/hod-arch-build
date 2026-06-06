@@ -5,8 +5,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/hod-arch-build [options]
 
-Build a Hod OS disk image from an Arch Linux seed with direct kernel boot.
-No bootloader, no partition table, no ostree, no composefs.
+Build a Hod OS disk image from an Arch Linux seed.
 
 Steps:
   1. podman run archlinux:latest -> pacstrap minimal rootfs
@@ -14,13 +13,14 @@ Steps:
   3. Build and activate a Hod system profile
   4. Bake Hod layer into rootfs (store, generation, env, systemd units)
   5. Generate initramfs (mkinitcpio in container)
-  6. Create bare ext4 disk image (no partition table)
+  6. Create disk image
 
 Options:
   --profile <path>         System profile .ts file (default: profiles/system-base.ts)
   --ssh-pubkey <path>      SSH public key for root (default: first ~/.ssh/id_*.pub)
   --root-password <pw>     Root password (default: hod)
-  --disk-size <size>       Disk image size (default: 4G)
+  --disk-size <size>       Disk image size (default: 8G)
+  --efi                    Create hybrid BIOS+EFI GPT image (for GNOME Boxes, virt-manager)
   --skip-rootfs            Skip rootfs creation, reuse existing
   --skip-profile-build     Skip building/activating the Hod system profile
   --state-dir <dir>        Build state directory (default: .hod-vm/arch)
@@ -28,8 +28,11 @@ Options:
   -h, --help               Show this help
 
 Examples:
-  # Full build from scratch
+  # Full build from scratch (direct kernel boot)
   scripts/hod-arch-build
+
+  # Hybrid BIOS+EFI image for GNOME Boxes
+  scripts/hod-arch-build --efi
 
   # Rebuild after profile change (reuses rootfs)
   scripts/hod-arch-build --skip-rootfs
@@ -39,7 +42,8 @@ USAGE
 profile_path=""
 ssh_pubkey=""
 root_password=""
-disk_size="4G"
+disk_size="8G"
+efi=false
 skip_rootfs=false
 skip_profile_build=false
 state_dir=""
@@ -51,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-pubkey)        ssh_pubkey="$2"; shift 2 ;;
     --root-password)     root_password="$2"; shift 2 ;;
     --disk-size)         disk_size="$2"; shift 2 ;;
+    --efi)               efi=true; shift ;;
     --skip-rootfs)       skip_rootfs=true; shift ;;
     --skip-profile-build) skip_profile_build=true; shift ;;
     --state-dir)         state_dir="$2"; shift 2 ;;
@@ -89,6 +94,14 @@ root_password=${root_password:-hod}
 rootfs=$state_dir/rootfs
 image_store=/usr/hod/store
 
+copy_rootfs_into_mount() {
+  local dest=$1
+  printf '[hod-arch] copying rootfs into disk image\n' >&2
+  sudo mkdir -p "$dest/dev"
+  sudo tar -C "$rootfs" -cf - --exclude='./dev/*' --owner=0 --group=0 . | sudo tar -C "$dest" -xf -
+  sudo chown -R 1000:1000 "$dest/home/hod"
+}
+
 mkdir -p "$state_dir"
 
 host_store_root=$("$hod_bin" store-root)
@@ -121,7 +134,7 @@ if [[ "$skip_rootfs" == false ]]; then
       set -euo pipefail
       mkdir -p /mnt/var/lib/pacman /mnt/var/cache/pacman/pkg
   pacman -Sy --noconfirm --root /mnt --cachedir /mnt/var/cache/pacman/pkg \
-    base linux systemd openssh mkinitcpio ttf-dejavu
+    base linux systemd openssh mkinitcpio ttf-dejavu adwaita-icon-theme
       # Minimal post-install that pacstrap normally handles
       printf "" > /mnt/etc/machine-id
       rm -f /mnt/etc/localtime
@@ -175,6 +188,11 @@ Name=en*
 DHCP=yes
 EOF
 
+  mkdir -p "$rootfs/etc/udev/rules.d"
+  cat > "$rootfs/etc/udev/rules.d/50-drm.rules" << 'EOF'
+SUBSYSTEM=="drm", MODE="0666"
+EOF
+
   mkdir -p "$rootfs/etc/systemd/system/multi-user.target.wants"
 
   rm -f "$rootfs/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
@@ -218,6 +236,17 @@ EOF
   mkdir -p "$rootfs/var/empty"
   mkdir -p "$rootfs/etc/ssh"
 
+  if [ ! -f "$rootfs/etc/ssh/ssh_host_ed25519_key" ]; then
+    ssh-keygen -t ed25519 -f "$rootfs/etc/ssh/ssh_host_ed25519_key" -N "" -q
+    chmod 600 "$rootfs/etc/ssh/ssh_host_ed25519_key"
+    chmod 644 "$rootfs/etc/ssh/ssh_host_ed25519_key.pub"
+  fi
+  if [ ! -f "$rootfs/etc/ssh/ssh_host_rsa_key" ]; then
+    ssh-keygen -t rsa -b 2048 -f "$rootfs/etc/ssh/ssh_host_rsa_key" -N "" -q
+    chmod 600 "$rootfs/etc/ssh/ssh_host_rsa_key"
+    chmod 644 "$rootfs/etc/ssh/ssh_host_rsa_key.pub"
+  fi
+
   # Create hod user for desktop session (Wayland compositors refuse root)
   # Add hod to video and render groups for DRM/seatd access
   sed -i '/^video:/ s/:$/:hod/' "$rootfs/etc/group"
@@ -245,6 +274,26 @@ EOF
   cp "$rootfs/usr/lib/modules/$kver/vmlinuz" "$rootfs/boot/vmlinuz-linux"
 
   printf '[hod-arch] rootfs configured\n' >&2
+fi
+
+if [[ ! -d "$rootfs/usr/share/icons/Adwaita/cursors" ]]; then
+  printf '[hod-arch] installing adwaita-icon-theme for cursors\n' >&2
+  podman run --rm \
+    --dns 8.8.8.8 --dns 1.1.1.1 \
+    -v "$(realpath "$rootfs")":/mnt:Z \
+    archlinux:latest \
+    bash -c '
+      set -euo pipefail
+      mkdir -p /mnt/var/lib/pacman /mnt/var/cache/pacman/pkg
+      pacman -Sy --noconfirm --root /mnt --cachedir /mnt/var/cache/pacman/pkg \
+        adwaita-icon-theme >/dev/null 2>&1
+      rm -rf /mnt/var/cache/pacman/pkg/*
+    '
+fi
+
+if [[ ! -f "$rootfs/usr/share/icons/default/index.theme" ]]; then
+  mkdir -p "$rootfs/usr/share/icons/default"
+  printf '[Icon Theme]\nName=default\nInherits=Adwaita\n' > "$rootfs/usr/share/icons/default/index.theme"
 fi
 
 # ---------------------------------------------------------------------------
@@ -338,6 +387,43 @@ while IFS= read -r -d '' link; do
 done < <(find "$rootfs/usr/hod/system" -type l -print0)
 
 printf '[hod-arch] rewrote %d symlinks to image paths\n' "$rewrite_count" >&2
+
+sed_count=0
+while IFS= read -r -d '' f; do
+  if grep -q "$host_store_root" "$f" 2>/dev/null; then
+    sed -i "s|$host_store_root|$image_store|g" "$f"
+    sed_count=$((sed_count + 1))
+  fi
+done < <(find "$rootfs/usr/hod/system" -type f -print0)
+printf '[hod-arch] rewrote %d files with image paths\n' "$sed_count" >&2
+
+patch_wrapper_count=0
+set +e
+while IFS= read -r -d '' wrapper; do
+  [[ -x "$wrapper" ]] || continue
+  _wh=$(head -1 "$wrapper" 2>/dev/null)
+  [[ "$_wh" == "#!/bin/sh" ]] || continue
+  grep -q "^exec " "$wrapper" || continue
+  target_bin=$(sed -n 's/^exec \([^ ]*\).*/\1/p' "$wrapper" | head -1)
+  [[ -n "$target_bin" && -x "$rootfs$target_bin" ]] || continue
+  missing_ld=$(LD_LIBRARY_PATH="" ldd "$rootfs$target_bin" 2>/dev/null | grep "not found" | head -1)
+  [[ -n "$missing_ld" ]] || continue
+  _lib_dirs=""
+  for _d in "$rootfs$image_store"/staging/*/*/lib; do
+    [[ -d "$_d" ]] || continue
+    _img_d=${_d#"$rootfs"}
+    case ":$_lib_dirs:" in
+      *:"$_img_d":*) ;;
+      *) _lib_dirs="$_img_d${_lib_dirs:+:$_lib_dirs}" ;;
+    esac
+  done
+  [[ -n "$_lib_dirs" ]] || continue
+  sed -i "s|^exec |export LD_LIBRARY_PATH=\"$_lib_dirs\"\nexec |" "$wrapper"
+  patch_wrapper_count=$((patch_wrapper_count + 1))
+  printf '[hod-arch]   patched %s (missing: %s)\n' "$(basename "$wrapper")" "$missing_ld" >&2
+done < <(find "$rootfs/usr/hod/system/current/pkgs" -type f -print0)
+set -e
+printf '[hod-arch] patched %d wrappers for missing libraries\n' "$patch_wrapper_count" >&2
 
 cat > "$rootfs/etc/profile.d/hod.sh" << 'ENVEOF'
 # Generated by hod-arch-build.
@@ -628,12 +714,14 @@ layout {
 prefer-no-csd
 
 spawn-at-startup "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"
+spawn-at-startup "/usr/hod/system/current/pkgs/mako-notify/bin/mako"
 
 binds {
     Mod+T { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
     Mod+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
     Mod+Shift+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
     Ctrl+Alt+Return { spawn "/usr/hod/system/current/pkgs/alacritty/bin/alacritty"; }
+    Mod+D { spawn "/usr/hod/system/current/pkgs/fuzzel/bin/fuzzel"; }
     Mod+Q { close-window; }
     Mod+Shift+E { quit; }
     Mod+Left  { focus-column-left; }
@@ -664,8 +752,19 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
   export XDG_SESSION_DESKTOP=niri
   export DESKTOP_SESSION=niri
   export LIBSEAT_BACKEND=seatd
-  export FONTCONFIG_FILE=/usr/hod/system/current/pkgs/fontconfig/etc/fonts/fonts.conf
-  export LIBINPUT_QUIRKS_DIR=/usr/hod/system/current/pkgs/libinput/share/libinput
+  export XCURSOR_THEME=Adwaita
+  for _hod_fc in /usr/hod/store/staging/*/*/etc/fonts/fonts.conf; do
+    [ -f "$_hod_fc" ] || continue
+    export FONTCONFIG_FILE="$_hod_fc"
+    break
+  done
+  unset _hod_fc
+  for _hod_lq in /usr/hod/store/staging/*/*/share/libinput; do
+    [ -d "$_hod_lq" ] || continue
+    export LIBINPUT_QUIRKS_DIR="$_hod_lq"
+    break
+  done
+  unset _hod_lq
   mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
   mkdir -p "$HOME/.local/share/niri"
   chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
@@ -763,6 +862,42 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
     export __EGL_VENDOR_LIBRARY_DIRS="$_HOD_EGL"
     export XKB_CONFIG_ROOT="$_HOD_XKB"
     export XDG_DATA_DIRS="${_HOD_DATA:+$_HOD_DATA:}/usr/share"
+    export XCURSOR_THEME=Adwaita
+
+    # Start PipeWire audio session if binaries are available
+    _pw_bin=""
+    for _p in /usr/hod/system/current/pkgs/pipewire/bin/pipewire; do
+      [ -x "$_p" ] || continue
+      _pw_bin="$_p"
+      break
+    done
+    if [ -n "$_pw_bin" ]; then
+      _pw_dir=""
+      for _pd in /usr/hod/store/staging/*/*/share/pipewire/pipewire.conf; do
+        [ -f "$_pd" ] || continue
+        _pw_dir="$(dirname "$(dirname "$(dirname "$_pd")")")"
+        break
+      done
+      if [ -n "$_pw_dir" ]; then
+        SPA_PLUGIN_DIR="$_pw_dir/lib/spa-0.2" \
+        PIPEWIRE_CONFIG_DIR="$_pw_dir/share/pipewire" \
+        PIPEWIRE_MODULE_DIR="$_pw_dir/lib/pipewire-0.3" \
+        "$_pw_bin" &
+        for _pp in /usr/hod/system/current/pkgs/pipewire/bin/pipewire-pulse; do
+          [ -x "$_pp" ] && \
+            SPA_PLUGIN_DIR="$_pw_dir/lib/spa-0.2" \
+            PIPEWIRE_CONFIG_DIR="$_pw_dir/share/pipewire" \
+            PIPEWIRE_MODULE_DIR="$_pw_dir/lib/pipewire-0.3" \
+            "$_pp" &
+        done
+        for _wp in /usr/hod/system/current/pkgs/wireplumber/bin/wireplumber; do
+          [ -x "$_wp" ] && "$_wp" &
+        done
+      fi
+      unset _pw_bin _pp _wp _pw_dir
+      sleep 0.5
+    fi
+
     exec niri --session
   ' > "$HOME/.local/share/niri/hod-session.log" 2>&1
 fi
@@ -773,43 +908,37 @@ BPEOF
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Generate initramfs + set root password
+# 6. Generate initramfs + set root password (always runs)
 # ---------------------------------------------------------------------------
-if [[ "$skip_rootfs" == false ]]; then
-  printf '[hod-arch] generating initramfs\n' >&2
+printf '[hod-arch] generating initramfs\n' >&2
 
-  cat > "$rootfs/etc/mkinitcpio.conf" << 'MKEOF'
-MODULES=(virtio virtio_blk virtio_net virtio_pci drm drm_kms_helper virtio_gpu ext4)
+cat > "$rootfs/etc/mkinitcpio.conf" << 'MKEOF'
+MODULES=(virtio virtio_blk virtio_scsi virtio_pci virtio_net ahci sd_mod sr_mod ata_piix drm drm_kms_helper virtio_gpu ext4)
 BINARIES=()
 FILES=()
-HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)
+HOOKS=(base udev modconf block filesystems keyboard fsck)
 MKEOF
 
-  podman run --rm \
-    --dns 8.8.8.8 --dns 1.1.1.1 \
-    -v "$(realpath "$rootfs")":/mnt:Z \
-    -e ROOT_PW="$root_password" \
-    archlinux:latest \
-    bash -c '
-      set -euo pipefail
+podman run --rm \
+  --network host \
+  -v "$(realpath "$rootfs")":/mnt:Z \
+  -e ROOT_PW="$root_password" \
+  archlinux:latest \
+  bash -c '
+    set -euo pipefail
 
-      # Install mkinitcpio in the container (needed to run it)
-      pacman -Sy --noconfirm mkinitcpio >/dev/null 2>&1
+    pacman -Sy --noconfirm mkinitcpio >/dev/null 2>&1
 
-      # Set root password via shadow file (no chroot needed)
-      hash=$(printf "%s" "$ROOT_PW" | openssl passwd -6 -stdin)
-      sed -i "s|^root:[^:]*|root:${hash}|" /mnt/etc/shadow
+    hash=$(printf "%s" "$ROOT_PW" | openssl passwd -6 -stdin)
+    sed -i "s|^root:[^:]*|root:${hash}|" /mnt/etc/shadow
 
-      # Generate initramfs — symlink kernel modules into container paths
-      # so mkinitcpio can find them without chrooting
-      kver=$(ls /mnt/usr/lib/modules/ | head -1)
-      mkdir -p /usr/lib/modules /boot
-      ln -sf "/mnt/usr/lib/modules/$kver" "/usr/lib/modules/$kver"
-      ln -sf /mnt/boot/vmlinuz-linux /boot/vmlinuz-linux
-      mkinitcpio -k "$kver" -g /mnt/boot/initramfs-linux.img \
-        -c /mnt/etc/mkinitcpio.conf
-    '
-fi
+    kver=$(ls /mnt/usr/lib/modules/ | head -1)
+    mkdir -p /usr/lib/modules /boot
+    ln -sf "/mnt/usr/lib/modules/$kver" "/usr/lib/modules/$kver"
+    ln -sf /mnt/boot/vmlinuz-linux /boot/vmlinuz-linux
+    mkinitcpio -k "$kver" -g /mnt/boot/initramfs-linux.img \
+      -c /mnt/etc/mkinitcpio.conf
+  '
 
 if [[ ! -f "$state_dir/vmlinuz" ]] || [[ "$skip_rootfs" == false ]]; then
   printf '[hod-arch] extracting kernel and initramfs\n' >&2
@@ -818,39 +947,123 @@ if [[ ! -f "$state_dir/vmlinuz" ]] || [[ "$skip_rootfs" == false ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Create disk image (bare ext4, no partition table)
+# 7. Create disk image
 # ---------------------------------------------------------------------------
-printf '[hod-arch] creating disk image\n' >&2
-
 raw_image=$state_dir/hod-arch.raw
 disk_image=$state_dir/hod-arch.qcow2
-mount_point=$state_dir/mnt
 
 rm -f "$raw_image" "$disk_image"
 truncate -s "$disk_size" "$raw_image"
 
-printf '[hod-arch] formatting ext4 (%s)\n' "$disk_size" >&2
-mkfs.ext4 -F -L hod "$raw_image" >/dev/null
+if [[ "$efi" == true ]]; then
+  # ---- Hybrid BIOS+EFI: GPT + BIOS boot + ESP + root ----
+  printf '[hod-arch] creating hybrid BIOS+EFI disk image (GPT + BIOS boot + ESP + root)\n' >&2
 
-mkdir -p "$mount_point"
-sudo mount -o loop "$raw_image" "$mount_point"
+  need sfdisk
+  need mkfs.vfat
+  need losetup
 
-printf '[hod-arch] copying rootfs into disk image\n' >&2
-sudo mkdir -p "$mount_point/dev"
-sudo tar -C "$rootfs" -cf - --exclude='./dev/*' --owner=0 --group=0 . | sudo tar -C "$mount_point" -xf -
+  printf '[hod-arch] partitioning GPT\n' >&2
+  sfdisk "$raw_image" << 'PTABLE'
+label: gpt
+type=21686148-6449-6E6F-744E-656564454649, size=8MiB, name="BIOS Boot"
+type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, size=512MiB, name="EFI System Partition"
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="Hod OS"
+PTABLE
 
-# Fix ownership for hod user's home directory (remapped to root by --owner=0)
-sudo chown -R 1000:1000 "$mount_point/home/hod"
+  root_partuuid=$(sfdisk --part-uuid "$raw_image" 3)
 
-sudo umount "$mount_point"
-rmdir "$mount_point" 2>/dev/null || true
+  loop_dev=$(sudo losetup -f --partscan --show "$raw_image")
+  bios_dev="${loop_dev}p1"
+  esp_dev="${loop_dev}p2"
+  root_dev="${loop_dev}p3"
+  sleep 1
 
-printf '[hod-arch] converting to qcow2\n' >&2
-qemu-img convert -f raw -O qcow2 "$raw_image" "$disk_image"
-rm -f "$raw_image"
+  if [[ ! -b "$bios_dev" ]] || [[ ! -b "$esp_dev" ]] || [[ ! -b "$root_dev" ]]; then
+    printf '[hod-arch] ERROR: partition devices not found (tried %s, %s, %s)\n' "$bios_dev" "$esp_dev" "$root_dev" >&2
+    sudo losetup -d "$loop_dev" 2>/dev/null || true
+    exit 1
+  fi
 
-printf '[hod-arch] done!\n' >&2
-printf '  disk:   %s (%s)\n' "$disk_image" "$(du -sh "$disk_image" | cut -f1)" >&2
-printf '  kernel: %s\n' "$state_dir/vmlinuz" >&2
-printf '  initrd: %s\n' "$state_dir/initramfs.img" >&2
-printf '  run:    scripts/hod-arch-run\n' >&2
+  printf '[hod-arch] formatting ESP (FAT32) and root (ext4)\n' >&2
+  sudo mkfs.vfat -F 32 -n EFI "$esp_dev" >/dev/null 2>&1
+  sudo mkfs.ext4 -F -L hod "$root_dev" >/dev/null
+
+  mount_point=$state_dir/mnt
+  esp_mount=$state_dir/esp
+  mkdir -p "$mount_point" "$esp_mount"
+
+  sudo mount "$root_dev" "$mount_point"
+  copy_rootfs_into_mount "$mount_point"
+
+  sudo mount "$esp_dev" "$esp_mount"
+
+  printf '[hod-arch] installing GRUB for BIOS+EFI\n' >&2
+  sudo podman run --rm \
+    --network host \
+    --privileged \
+    --device "$loop_dev":"$loop_dev" \
+    -v "$(realpath "$mount_point")":/mnt:Z \
+    -v "$(realpath "$esp_mount")":/esp:Z \
+    archlinux:latest \
+    bash -lc '
+      set -euo pipefail
+      pacman -Sy --noconfirm grub efibootmgr >/dev/null
+      grub-install --target=i386-pc --boot-directory=/mnt/boot --modules="part_gpt ext2 biosdisk" "$1"
+      grub-install --target=x86_64-efi --efi-directory=/esp --boot-directory=/mnt/boot --removable --no-nvram
+    ' _ "$loop_dev"
+
+  sudo mkdir -p "$mount_point/boot/grub"
+  sudo tee "$mount_point/boot/grub/grub.cfg" > /dev/null << GRUBEOF
+set timeout=3
+set default=0
+
+menuentry "Hod OS" {
+    linux /boot/vmlinuz-linux root=LABEL=hod rw console=tty0 console=ttyS0,115200
+    initrd /boot/initramfs-linux.img
+}
+GRUBEOF
+
+  printf '[hod-arch] finalizing ESP fallback path\n' >&2
+
+  sudo umount "$esp_mount"
+  sudo umount "$mount_point"
+  rmdir "$esp_mount" 2>/dev/null || true
+  rmdir "$mount_point" 2>/dev/null || true
+  sudo losetup -d "$loop_dev"
+
+  printf '[hod-arch] converting to qcow2\n' >&2
+  qemu-img convert -f raw -O qcow2 "$raw_image" "$disk_image"
+  rm -f "$raw_image"
+
+  printf '[hod-arch] done!\n' >&2
+  printf '  disk:   %s (%s)\n' "$disk_image" "$(du -sh "$disk_image" | cut -f1)" >&2
+  printf '  boot:   Hybrid BIOS+EFI (GRUB, root PARTUUID %s)\n' "$root_partuuid" >&2
+  printf '  import: GNOME Boxes / virt-manager → Import from file\n' >&2
+else
+  # ---- Direct kernel boot: bare ext4, no partition table ----
+  printf '[hod-arch] creating disk image (bare ext4)\n' >&2
+
+  mount_point=$state_dir/mnt
+
+  printf '[hod-arch] formatting ext4 (%s)\n' "$disk_size" >&2
+  mkfs.ext4 -F -L hod "$raw_image" >/dev/null
+
+  mkdir -p "$mount_point"
+  sudo mount -o loop "$raw_image" "$mount_point"
+
+  copy_rootfs_into_mount "$mount_point"
+
+  sudo umount "$mount_point"
+  rmdir "$mount_point" 2>/dev/null || true
+
+  printf '[hod-arch] converting to qcow2\n' >&2
+  qemu-img convert -f raw -O qcow2 "$raw_image" "$disk_image"
+  rm -f "$raw_image"
+
+  printf '[hod-arch] done!\n' >&2
+  printf '  disk:   %s (%s)\n' "$disk_image" "$(du -sh "$disk_image" | cut -f1)" >&2
+  printf '  kernel: %s\n' "$state_dir/vmlinuz" >&2
+  printf '  initrd: %s\n' "$state_dir/initramfs.img" >&2
+  printf '  run:    scripts/hod-arch-run\n' >&2
+fi

@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+root_password="${ROOT_PASSWORD:-hod}"
+
+cat > /etc/os-release << 'EOF'
+NAME="Hod OS"
+VERSION="0.1"
+ID=hod
+VERSION_ID="0.1"
+PRETTY_NAME="Hod OS 0.1"
+EOF
+
+cat > /etc/hostname << 'EOF'
+hod
+EOF
+
+cat > /etc/locale.conf << 'EOF'
+LANG=en_US.UTF-8
+EOF
+
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/50-dhcp.network << 'EOF'
+[Match]
+Name=en*
+
+[Network]
+DHCP=yes
+EOF
+
+mkdir -p /etc/systemd/system/multi-user.target.wants
+
+ln -sf /usr/lib/systemd/system/systemd-networkd.service \
+  /etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+ln -sf /usr/lib/systemd/system/systemd-resolved.service \
+  /etc/systemd/system/multi-user.target.wants/systemd-resolved.service
+ln -sf /usr/lib/systemd/system/sshd.service \
+  /etc/systemd/system/multi-user.target.wants/sshd.service
+
+rm -f /etc/resolv.conf
+ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+chmod -x /usr/bin/pacman 2>/dev/null || true
+chmod -x /usr/bin/pacman-conf 2>/dev/null || true
+chmod -x /usr/bin/makepkg 2>/dev/null || true
+
+if ! grep -q '^sshd:' /etc/group 2>/dev/null; then
+  echo 'sshd:x:74:' >> /etc/group
+fi
+if ! grep -q '^sshd:' /etc/passwd 2>/dev/null; then
+  echo 'sshd:x:74:74:Privilege-separated SSH:/var/empty:/usr/bin/nologin' >> /etc/passwd
+fi
+if ! grep -q '^sshd:' /etc/shadow 2>/dev/null; then
+  echo 'sshd:!!:1:0:99999:7:::' >> /etc/shadow
+fi
+mkdir -p /var/empty /etc/ssh
+
+sed -i '/^video:/ s/:$/:hod/' /etc/group
+sed -i '/^render:/ s/:$/:hod/' /etc/group 2>/dev/null || true
+if ! grep -q '^hod:' /etc/group 2>/dev/null; then
+  echo 'hod:x:1000:' >> /etc/group
+fi
+if ! grep -q '^hod:' /etc/passwd 2>/dev/null; then
+  echo 'hod:x:1000:1000:Hod Desktop:/home/hod:/bin/bash' >> /etc/passwd
+fi
+if ! grep -q '^hod:' /etc/shadow 2>/dev/null; then
+  hod_hash=$(printf "%s" "$root_password" | openssl passwd -6 -stdin)
+  echo "hod:${hod_hash}:1:0:99999:7:::" >> /etc/shadow
+fi
+mkdir -p /home/hod
+printf '\n[ -f /etc/profile.d/hod.sh ] && . /etc/profile.d/hod.sh\n' >> /home/hod/.bashrc
+printf '\n[ -f /etc/profile.d/hod.sh ] && . /etc/profile.d/hod.sh\n' >> /root/.bashrc
+
+systemctl enable systemd-networkd systemd-resolved sshd

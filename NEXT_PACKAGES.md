@@ -23,7 +23,6 @@ These are bound to keybindings in the ThinkPad config.
 - [x] **playerctl** — Media key / MPRIS control (C/Meson)
 - [x] **grim** — Screenshot capture (C/Meson)
 - [x] **slurp** — Screen region selector (C/Meson)
-- [ ] **fuzzel** — App launcher (C/Meson)
 - [ ] **swaylock** — Screen locker (C/Meson, may need PAM)
 
 ## Tier 3: Infra / heavier CLI tools

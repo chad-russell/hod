@@ -13,8 +13,9 @@ This directory is the **current documentation authority** for Hod.
 | Understand runtime relocation / portability | `relocatable-binaries-guide.md`, `closure-transfer.md` |
 | Work on profiles / end-user activation | `profiles.md`, `system-profiles.md` |
 | Work on containers / podman | `podman-setup.md` |
-| Work on the Hod OS VM | `../plans/minimal-hod-vm-roadmap.md` |
+| Work on the Hod OS VM | `vm-testing-workflow.md` |
 | Work on desktop environments | `../plans/niri-desktop-roadmap.md` |
+| **Work on the system architecture** | **`../plans/hod-system-architecture.md`** |
 | Build a bootc-derived Hod OS image | `bootc-image-workflow.md` |
 | Work on build env policy / metadata | `build-environment-and-metadata.md` |
 
@@ -29,6 +30,7 @@ This directory is the **current documentation authority** for Hod.
 - `profiles.md` — TypeScript profiles and symlink-farm activation.
 - `recipe-compiler-guide.md` — TypeScript SDK / recipe import workflow.
 - `relocatable-binaries-guide.md` — ELF relocation, bootstrap injection, wrappers, portability.
+- `vm-testing-workflow.md` — build → deploy → test loop for the Arch-based Hod OS VM.
 - `podman-setup.md` — rootless podman + distrobox setup and troubleshooting.
 - `system-profiles.md` — generation-numbered system profile model (`hod system ...`).
 
@@ -37,11 +39,10 @@ This directory is the **current documentation authority** for Hod.
 The **Niri desktop** on the Arch VM is the active work surface:
 
 - `profiles/niri-desktop.ts` builds and activates
-- VM boots via `just run-local-gl`, niri session auto-launches on tty1
-- `Mod+Return` opens alacritty (Milestone 1 done)
-- Next: background, notifications, launcher (Milestone 2)
-
-See `../plans/niri-desktop-roadmap.md` for milestones.
+- VM boots via `just test`, niri session auto-launches on tty1
+- `Mod+Return` opens alacritty, `Mod+D` opens fuzzel
+- PipeWire + WirePlumber audio, mako notifications, Adwaita cursors
+- See `vm-testing-workflow.md` for the full testing loop
 
 The **Arch seed VM** (`scripts/hod-arch-build` + `scripts/hod-arch-run`) is the
 primary VM target. It uses direct kernel boot, bare ext4, no partition table,
@@ -54,7 +55,7 @@ See `../plans/cosmic-desktop-roadmap.md`.
 
 ## Next fronts
 
-1. **Niri desktop Milestone 2** — background, notifications, launcher.
+1. **Hod System Architecture** — composefs + btrfs + declarative TypeScript system config. See `../plans/hod-system-architecture.md`.
 2. **Tech debt cleanup** — strip standardization, recipe ergonomics.
 3. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic`.
-4. **Closure distribution UX** — `copy-closure --from`, binary-cache patterns.
+4. **Improve multi-machine workflows** — `copy-closure --from`, binary-cache patterns.

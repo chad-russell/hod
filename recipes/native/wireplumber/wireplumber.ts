@@ -1,8 +1,9 @@
-//! WirePlumber CLI tools — wpctl and wpexec.
+//! WirePlumber — session manager for PipeWire.
 //!
-//! Builds WirePlumber 0.5.14 with tools/modules enabled, but daemon and service
-//! installation disabled. PipeWire/WirePlumber services remain Nix-owned on the
-//! ThinkPad; this package is for user-facing CLI tools.
+//! Builds WirePlumber 0.5.14 with daemon, tools, and modules enabled.
+//! The daemon manages PipeWire's audio routing policy via Lua scripts.
+//! Wrappers set runtime paths for SPA plugins, PipeWire modules, and
+//! WirePlumber modules to prefix-relative paths.
 
 import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
@@ -51,7 +52,7 @@ meson setup build \
   -Ddoc=disabled \
   -Dtests=false \
   -Ddbus-tests=false \
-  -Ddaemon=false \
+  -Ddaemon=true \
   -Dtools=true \
   -Dmodules=true \
   -Dsystem-lua=true \
@@ -73,7 +74,7 @@ cp -a /deps/pipewire/lib/pipewire-0.3 $OUT/lib/
 mkdir -p $OUT/share
 cp -a /deps/pipewire/share/pipewire $OUT/share/
 
-for bin in $OUT/bin/wpctl $OUT/bin/wpexec; do
+for bin in $OUT/bin/wpctl $OUT/bin/wpexec $OUT/bin/wireplumber; do
   [ -f "$bin" ] || continue
   real="$(basename "$bin")-real"
   mv "$bin" "$OUT/bin/$real"

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SPICE_SOCK=${XDG_RUNTIME_DIR:-$HOME/.cache}/hod-vm-spice.sock
+SERIAL_LOG=$HOME/.cache/hod-vm-serial.log
+IMAGE=$HOME/Code/hod/hod-arch.qcow2
+OVMF=/nix/store/6jq9jmkhsg1swfyrnf2shnqzrkmfzlgv-OVMF-202602-fd/FV/OVMF_CODE.fd
+
+if [[ ! -f "$IMAGE" ]]; then
+  echo "error: $IMAGE not found" >&2
+  exit 1
+fi
+
+pkill -f 'qemu-system.*hod-arch.qcow2' 2>/dev/null || true
+sleep 1
+
+rm -f "$SPICE_SOCK" "$SERIAL_LOG"
+
+exec qemu-system-x86_64 \
+  -m 4096 -smp 2 \
+  -drive file="$IMAGE",format=qcow2,if=virtio \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+  -device virtio-net-pci,netdev=net0 \
+  -spice unix=on,addr="$SPICE_SOCK",disable-ticketing=on,gl=on,rendernode=/dev/dri/renderD128 \
+  -device virtio-vga-gl \
+  -device virtio-keyboard-pci \
+  -device virtio-mouse-pci \
+  -serial file:"$SERIAL_LOG" \
+  -drive if=pflash,format=raw,readonly=on,file="$OVMF"

@@ -36,3 +36,7 @@ export { HOD_DUMMY_RUNPATH, HOD_DUMMY_RPATH_FLAG } from "./elf.js";
 
 // Import helpers
 export { fromHod, importToStore } from "./import.js";
+
+// System configuration
+export { defineSystem, buildSystemOutput } from "./system.js";
+export type { SystemConfig, SystemUser, SystemGroup, SystemDefinition } from "./system.js";

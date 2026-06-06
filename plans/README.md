@@ -7,6 +7,9 @@ Active planning notes. Implemented plans are deleted once absorbed into
 
 | File | What | Status |
 |------|------|--------|
+| `desktop-next.md` | Audio, networking, portals, shell tools (daily-driver gaps) | Active |
+| `hod-system-architecture.md` | **Top-level system architecture:** composefs + btrfs + declarative TypeScript config, atomic generational updates, FHS-compliant | Active — Phase 1 next |
+| `fhs-via-store.md` | Replace Arch rootfs with Hod store symlinks (superseded by hod-system-architecture.md) | Superseded |
 | `minimal-hod-vm-roadmap.md` | Top-level product roadmap: bootable QEMU VM with Hod-owned desktop | Active |
 | `niri-desktop-roadmap.md` | Niri compositor + minimal desktop on the Arch VM | Active — Milestone 1 done |
 | `bindgen-infrastructure.md` | Hermetic bindgen for the sandbox | Active |

@@ -83,6 +83,19 @@ When a user reports a runtime failure, always:
 
 Never stop at "it works on my machine" or "try a different binary." The goal is to close the gap permanently.
 
+## VM testing workflow
+
+See `docs/vm-testing-workflow.md` for the full guide. TL;DR:
+
+- **Build on build machine (10.10.0.6), run on ThinkPad (10.10.0.10).**
+- `just test` — build → rsync → restart QEMU → health-check. Primary loop.
+- `just test-quick` — deploy without rebuilding.
+- `just test-check` — health-check the running VM.
+- Display: `virt-viewer --spice-unix=~/.cache/hod-vm-spice.sock` on ThinkPad.
+- SSH: `ssh -p 2222 root@localhost` from ThinkPad, double-hop from build machine.
+- ThinkPad run script is auto-synced from `scripts/run-vm-thinkpad` on each deploy.
+- Build machine IP: 10.10.0.6, ThinkPad IP: 10.10.0.10, user `crussell` on both.
+
 ## When editing docs
 
 - Keep `README.md` human-oriented.
@@ -138,7 +151,6 @@ packages to re-run relocation without rebuilding.
 
 ## Likely next fronts
 
-1. **Niri Milestone 2** — background, notifications, launcher (`swaybg`, `mako-notifier`, `fuzzel`)
-2. **Tech debt cleanup** — strip standardization, recipe ergonomics
-3. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic` and COSMIC resume
-4. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
+1. **Tech debt cleanup** — strip standardization, recipe ergonomics
+2. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic` and COSMIC resume
+3. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)

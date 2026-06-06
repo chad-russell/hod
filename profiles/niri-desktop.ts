@@ -28,6 +28,10 @@ import { zoxideRecipe } from "../recipes/native/rust/zoxide/zoxide.js";
 
 import { alacrittyRecipe } from "../recipes/native/alacritty/alacritty.js";
 import { niriRecipe } from "../recipes/native/niri/niri.js";
+import { pipewireRecipe } from "../recipes/native/pipewire/pipewire.js";
+import { wireplumberRecipe } from "../recipes/native/wireplumber/wireplumber.js";
+import { fuzzelRecipe } from "../recipes/native/fuzzel/fuzzel.js";
+import { makoNotifyRecipe } from "../recipes/native/mako-notify/mako-notify.js";
 
 export const profile = {
   name: "niri-desktop",
@@ -55,5 +59,9 @@ export const profile = {
     { name: "zoxide", recipe: zoxideRecipe },
     { name: "alacritty", recipe: alacrittyRecipe },
     { name: "niri", recipe: niriRecipe },
+    { name: "pipewire", recipe: pipewireRecipe },
+    { name: "wireplumber", recipe: wireplumberRecipe },
+    { name: "fuzzel", recipe: fuzzelRecipe },
+    { name: "mako-notify", recipe: makoNotifyRecipe },
   ],
 };

@@ -56,7 +56,7 @@ fn build_activate_list_and_rollback_generations() {
 
     let pkg_a = fake_built_package(&store, "alpha");
     let (gen1, gen1_dir) =
-        hod::system::build_generation(&store, "test-system-a", std::slice::from_ref(&pkg_a))
+        hod::system::build_generation(&store, "test-system-a", std::slice::from_ref(&pkg_a), None)
             .expect("build generation 1");
     assert_eq!(gen1, 1);
     assert!(gen1_dir.join("pkgs/alpha").is_symlink());
@@ -70,7 +70,7 @@ fn build_activate_list_and_rollback_generations() {
 
     let pkg_b = fake_built_package(&store, "beta");
     let (gen2, gen2_dir) =
-        hod::system::build_generation(&store, "test-system-b", std::slice::from_ref(&pkg_b))
+        hod::system::build_generation(&store, "test-system-b", std::slice::from_ref(&pkg_b), None)
             .expect("build generation 2");
     assert_eq!(gen2, 2);
     assert!(gen2_dir.join("pkgs/beta").is_symlink());

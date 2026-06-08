@@ -23,7 +23,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::build::{self, BuildOptions};
 use crate::hash::{hash_to_hex, hex_to_hash, Hash};
@@ -46,7 +46,7 @@ struct ProfilePackageOutput {
     hash: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilePackage {
     pub name: Option<String>,
     pub hash: Hash,

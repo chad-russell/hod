@@ -435,17 +435,17 @@ generation, plus the generation metadata.
 - All 27 profile packages execute correctly from the FHS tree with transitive closure
 - composefs requires standard overlayfs + EROFS kernel modules (no custom kernel)
 
-### Phase 2: System generation infrastructure — IN PROGRESS
+### Phase 2: System generation infrastructure — DONE
 
 **Goal**: `hod system build system.ts` produces a generation directory.
 
 - [x] Define `system.ts` config format and `defineSystem()` SDK function
-- [ ] Implement config parsing: packages, users, services, hostname, etc.
-- [ ] Implement /etc generation from config
+- [x] Implement config parsing: packages, users, services, hostname, etc.
+- [x] Implement /etc generation from config
 - [x] Implement composefs image generation with full closure + RPATH patching + bootstrap patching
-- [ ] Implement generation directory output (composefs.img + kernel + initramfs + etc + activate)
-- [ ] Write `hod system build` subcommand
-- [ ] Write `hod system list-generations` subcommand
+- [x] Implement generation directory output (composefs.img + /etc + activate)
+- [x] Write `hod system build` subcommand (evaluate_system + build_generation + generate_composefs)
+- [x] Write `hod system list-generations` subcommand (already existed)
 
 **Key findings from Phase 2a**:
 - Full transitive closure: 27 packages → 85 total (27 root + 58 deps), 8557 files
@@ -456,87 +456,71 @@ generation, plus the generation metadata.
 - 55 binaries had bootstrap metadata, 205 ELF files had RPATH entries
 - All binaries verified: curl, git, niri, alacritty, bat, fd, jq, fuzzel, ripgrep, htop, yazi
 
-**Files created**:
+**Phase 2c implementation**:
+- `evaluate_system()` in `src/system.rs` — evaluates system.ts via Bun, parses hostname, users, groups, services, packages
+- `generate_etc()` in `src/system.rs` — generates /etc from system config:
+  - passwd, group, hostname, hosts, timezone, locale.conf, ld.so.conf, os-release, fstab
+  - systemd service enablement symlinks in multi-user.target.wants
+- `generate_composefs()` in `src/system.rs` — calls `scripts/generate-composefs` to build FHS tree + composefs image
+- `build_generation()` updated to accept optional `SystemConfig` and generate /etc + composefs
+- `cmd_system_build_or_activate` updated to use `evaluate_system` and show system info
+- `cmd_system_pin` updated to use `evaluate_system`
+- `ProfilePackage` now derives `Serialize`/`Deserialize` for JSON embedding
+- System config stored as `system.json` in generation directory
+
+**Files created/modified**:
 - `js/src/system.ts` — defineSystem() SDK function + SystemConfig types
 - `systems/vm-desktop.ts` — sample system config for the niri-desktop VM
 - `scripts/generate-composefs` — composefs image generator with closure + patching
+- `src/system.rs` — evaluate_system(), generate_etc(), generate_composefs(), SystemConfig types
+- `src/profile.rs` — ProfilePackage now serializable
+- `src/main.rs` — cmd_system_build_or_activate uses evaluate_system, shows system info
 
-### Phase 3: Boot integration
+### Phase 3: Boot integration — SUPERSEDED by bootc approach
 
-**Goal**: Boot a generation as the system root.
+**This phase is superseded by `plans/hod-os-bootc.md`.** Instead of building our own
+initramfs, bootloader, btrfs layout, and partition management, we use the bootc ecosystem
+for atomic updates, rollback, and distribution via OCI images.
 
-- [ ] Design btrfs subvolume layout
-- [ ] Build custom initramfs (dracut module or hand-rolled)
-  - Mount btrfs partition
-  - Mount composefs as root
-  - Set up /etc overlay
-  - Set up /var, /home bind mounts
-  - switch_root to systemd
-- [ ] Build UKI (Unified Kernel Image) per generation
-- [ ] Write `hod system boot` to create systemd-boot entries
-- [ ] Implement boot counting for auto-rollback
-- [ ] Write `hod system rollback` subcommand
-- [ ] Test: boot VM from generation, verify desktop works
+The store-native boot approach (custom initramfs, btrfs subvolumes, systemd-boot entries)
+remains a valid alternative for environments where OCI delivery is not desired.
 
-### Phase 4: Live activation
+See `plans/hod-os-bootc.md` for the active implementation plan.
 
-**Goal**: `hod system switch` activates without reboot when possible.
+### Phase 4: Live activation — SUPERSEDED
 
-- [ ] Implement activation script generation
-- [ ] Implement systemd unit diffing (what changed between generations)
-- [ ] Implement `systemctl daemon-reload` + service restart logic
-- [ ] Implement /etc overlay lower layer swap (without breaking overlay upper)
-- [ ] Implement `/run/current-system` update
-- [ ] Write `hod system switch` subcommand
-- [ ] Write `hod system test` subcommand (activate without boot entry)
+**Superseded by bootc.** `bootc upgrade` handles atomic activation. Live activation
+(`hod system switch`) could be added later as an enhancement for non-reboot updates.
 
-### Phase 5: System config expansion
+### Phase 5: System config expansion — RETAINED
 
-**Goal**: Expand the declarative config to cover more of the system.
+The declarative config expansion is still valuable regardless of delivery mechanism.
+System config fields (networking, filesystem mounts, firewall, etc.) generate /etc content
+that goes into the OCI image during build.
 
-- [ ] Networking (static IPs, DNS, WiFi)
-- [ ] Filesystem mounts (fstab generation)
-- [ ] Firewall rules (nftables)
-- [ ] Kernel module loading
-- [ ] systemd unit overrides
-- [ ] tmpfiles.d rules
-- [ ] sysctl settings
-- [ ] SSH authorized keys
-- [ ] Desktop environment config (niri config, etc.)
+### Phase 6: Kernel from source — DEFERRED
 
-### Phase 6: Kernel from source
+Building the kernel in Hod is a long-term goal. For now, the base bootc image provides it.
 
-**Goal**: Build Linux kernel in Hod, use in system generations.
+### Phase 7: Distribution — SUPERSEDED by OCI
 
-- [ ] Linux kernel recipe (configurable .config)
-- [ ] Kernel module building against Hod's kernel headers
-- [ ] UKI generation with Hod-built kernel
-- [ ] Test: boot with Hod-built kernel
-
-### Phase 7: Distribution
-
-**Goal**: Efficient multi-machine system delivery.
-
-- [ ] btrfs send/receive integration for @store
-- [ ] Incremental generation transfer
-- [ ] `hod system deploy <target>` command
-- [ ] Garbage collection for old generations and unreachable store paths
-- [ ] `hod system gc` subcommand
+OCI registry push replaces btrfs send/receive and copy-closure for deployment.
+`podman push` + `bootc upgrade` is the distribution mechanism.
 
 ## Comparison with existing systems
 
-| Aspect | NixOS | bootc/UBlue | VanillaOS | Shani OS | Arkane | **Hod** |
-|--------|-------|-------------|-----------|----------|--------|---------|
-| Build unit | Nix derivation | OCI image | OCI image | Btrfs image | Btrfs image | **Hod recipe** |
-| Storage | /nix/store | ostree repo | A/B partitions | Btrfs subvolumes | Btrfs subvolumes | **Hod store + composefs** |
-| FHS compliance | No (patchelf) | Yes (ostree checkout) | Yes (full rootfs) | Yes (full rootfs) | Yes (full rootfs) | **Yes (composefs)** |
-| Atomic switch | Boot entry | Boot entry | GRUB swap | systemd-boot | systemd-boot | **systemd-boot + UKI** |
-| Auto-rollback | No (manual) | No (greenboot) | No | Yes (boot count) | No | **Yes (boot count)** |
-| /etc | Generated (symlinks) | 3-way merge | OverlayFS | OverlayFS | Per-deploy writable | **Generated + overlay** |
-| Config language | Nix | Dockerfile | Vib YAML | Imperative | Imperative | **TypeScript** |
-| Live activation | Yes (`switch`) | No | No | No | No | **Yes** |
-| Kernel | Built | Distro | Distro | Distro | Distro | **Distro → Hod-built** |
-| Dedup | Content-hash | ostree hardlinks | None | beesd block dedup | btrfs COW | **composefs + btrfs** |
+| Aspect | NixOS | bootc/UBlue | HeliumOS | **Hod OS** |
+|--------|-------|-------------|----------|------------|
+| Build unit | Nix derivation | RPM/OCI layer | Ansible playbook | **Hod recipe (TypeScript)** |
+| Storage | /nix/store | ostree repo | OCI layers | **Hod store → OCI image** |
+| FHS compliance | No (patchelf) | Yes (ostree checkout) | Yes (full rootfs) | **Yes (FHS tree in OCI)** |
+| Atomic switch | Boot entry | `bootc upgrade` | `bootc upgrade` | **`bootc switch/upgrade`** |
+| Auto-rollback | No (manual) | greenboot | No | **bootc boot counting** |
+| /etc | Generated (symlinks) | 3-way merge | Generated | **Generated from config** |
+| Config language | Nix | Dockerfile + scripts | Ansible YAML | **TypeScript** |
+| Live activation | Yes (`switch`) | No | No | **Future** |
+| Kernel | Built | Distro | Distro | **Distro → Hod-built** |
+| Switch between | N/A | `bootc switch` | `bootc switch` | **`bootc switch`** |
 
 ## Key technical risks
 

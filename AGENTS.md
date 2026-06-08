@@ -151,6 +151,7 @@ packages to re-run relocation without rebuilding.
 
 ## Likely next fronts
 
-1. **Tech debt cleanup** — strip standardization, recipe ergonomics
-2. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic` and COSMIC resume
-3. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)
+1. **Hod OS bootc integration** — build OCI images from TypeScript system config, `bootc switch` deployment. See `plans/hod-os-bootc.md`.
+2. **Tech debt cleanup** — strip standardization, recipe ergonomics
+3. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic` and COSMIC resume
+4. improve multi-machine / binary-cache workflows (`copy-closure --from`, pull flows)

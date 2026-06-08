@@ -99,3 +99,92 @@ test-check:
 # Full rebuild + deploy (rebuilds Arch rootfs too).
 test-full *args:
     scripts/deploy-vm --profile {{profile}} {{args}}
+
+# ---------------------------------------------------------------------------
+# UBlue / bootc image workflow (Phase Beta) — legacy scripts
+# ---------------------------------------------------------------------------
+
+ublue-state-dir := env_var_or_default("HOD_UBLUE_STATE_DIR", ".hod-vm/ublue")
+ublue-profile := env_var_or_default("HOD_UBLUE_PROFILE", "systems/vm-desktop.ts")
+ublue-image := env_var_or_default("HOD_UBLUE_IMAGE", "hod-ublue:latest")
+ublue-ssh-port := env_var_or_default("HOD_UBLUE_SSH_PORT", "2224")
+
+# Build the UBlue bootc image (pull base + build profile + podman build).
+ublue-build *args:
+    {{nix}} scripts/hod-ublue-build --profile {{ublue-profile}} --state-dir {{ublue-state-dir}} {{args}}
+
+# Rebuild image without re-pulling base or rebuilding profile.
+ublue-rebuild:
+    {{nix}} scripts/hod-ublue-build --skip-base-pull --skip-profile-build --state-dir {{ublue-state-dir}}
+
+# Generate bootable disk and run in QEMU with serial console.
+ublue-run *args:
+    {{nix}} scripts/hod-ublue-run --state-dir {{ublue-state-dir}} --ssh-port {{ublue-ssh-port}} {{args}}
+
+# Run with QEMU graphics window.
+ublue-run-gfx:
+    HOD_VM_BIND_ADDR={{bind_addr}} {{nix}} scripts/hod-ublue-run --state-dir {{ublue-state-dir}} --ssh-port {{ublue-ssh-port}} --graphics --memory {{memory}} --cpus {{cpus}}
+
+# Run with VirGL OpenGL acceleration.
+ublue-run-gl:
+    HOD_VM_BIND_ADDR={{bind_addr}} HOD_VM_GL=1 {{nix}} scripts/hod-ublue-run --state-dir {{ublue-state-dir}} --ssh-port {{ublue-ssh-port}} --graphics --memory {{memory}} --cpus {{cpus}}
+
+# Run with VNC on localhost:5900.
+ublue-run-vnc:
+    {{nix}} scripts/hod-ublue-run --state-dir {{ublue-state-dir}} --ssh-port {{ublue-ssh-port}} --vnc --memory {{memory}} --cpus {{cpus}}
+
+# Run with VNC bound to 0.0.0.0 for direct remote access (no SSH tunnel).
+ublue-run-vnc-remote:
+    HOD_VM_BIND_ADDR=0.0.0.0 {{nix}} scripts/hod-ublue-run --state-dir {{ublue-state-dir}} --ssh-port {{ublue-ssh-port}} --vnc --memory {{memory}} --cpus {{cpus}}
+
+# Build + generate disk + run with graphics.
+ublue-test:
+    @just ublue-build && just ublue-run-gfx
+
+# Build + generate disk + run with VNC.
+ublue-test-vnc:
+    @just ublue-build && just ublue-run-vnc
+
+# Build + generate disk + run headless (serial console).
+ublue-test-headless:
+    @just ublue-build && just ublue-run
+
+# Quick: regenerate disk from existing image and run with graphics.
+ublue-test-quick:
+    just ublue-run --force --graphics --memory {{memory}} --cpus {{cpus}}
+
+# Quick: regenerate disk from existing image and run with VNC.
+ublue-test-quick-vnc:
+    just ublue-run-vnc
+
+# Remove UBlue build artifacts.
+ublue-clean:
+    rm -rf "{{ublue-state-dir}}"
+
+# ---------------------------------------------------------------------------
+# Hod OS — ublue image-template workflow (preferred)
+# ---------------------------------------------------------------------------
+
+# Stage Hod closure into hod-os/build_files/hod/ (build profile + copy).
+hod-os-stage:
+    @just -f hod-os/Justfile stage
+
+# Build the Hod OS OCI image (must run stage first).
+hod-os-build:
+    just -f hod-os/Justfile build
+
+# Build bootable QCOW2 disk image via bootc-image-builder.
+hod-os-disk:
+    just -f hod-os/Justfile build-qcow2
+
+# Run the Hod OS VM with web UI (qemux/qemu container at http://localhost:8006).
+hod-os-run:
+    just -f hod-os/Justfile run-vm-qcow2
+
+# Run the Hod OS VM with a local GUI console via systemd-vmspawn.
+hod-os-run-local:
+    nix develop --accept-flake-config --command just -f hod-os/Justfile spawn-vm 0 qcow2 8G
+
+# Full pipeline: stage → build OCI → build disk → run VM.
+hod-os-test:
+    @just hod-os-stage && just -f hod-os/Justfile rebuild-qcow2 && just hod-os-run

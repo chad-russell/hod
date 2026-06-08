@@ -16,14 +16,14 @@ This directory is the **current documentation authority** for Hod.
 | Work on the Hod OS VM | `vm-testing-workflow.md` |
 | Work on desktop environments | `../plans/niri-desktop-roadmap.md` |
 | **Work on the system architecture** | **`../plans/hod-system-architecture.md`** |
-| Build a bootc-derived Hod OS image | `bootc-image-workflow.md` |
+| Build a bootc-derived Hod OS image | **`../plans/hod-os-bootc.md`** |
 | Work on build env policy / metadata | `build-environment-and-metadata.md` |
 
 ## Current docs
 
 - `agent-package-guide.md` — practical package-authoring guide and patterns.
 - `bootstrap-pipeline.md` — seed → toolchain → downstream pipeline.
-- `bootc-image-workflow.md` — bootc-derived Hod OS image (deprioritized; Arch VM is primary).
+- `bootc-image-workflow.md` — bootc-derived Hod OS image (historical; superseded by `../plans/hod-os-bootc.md`).
 - `build-environment-and-metadata.md` — build-env model and future metadata direction.
 - `closure-transfer.md` — `hod closure` and `hod copy-closure` behavior.
 - `debugging-builds.md` — debugging workflows.
@@ -55,7 +55,8 @@ See `../plans/cosmic-desktop-roadmap.md`.
 
 ## Next fronts
 
-1. **Hod System Architecture** — composefs + btrfs + declarative TypeScript system config. See `../plans/hod-system-architecture.md`.
-2. **Tech debt cleanup** — strip standardization, recipe ergonomics.
-3. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic`.
-4. **Improve multi-machine workflows** — `copy-closure --from`, binary-cache patterns.
+1. **Hod OS bootc integration** — build OCI images from TypeScript system config, deploy via `bootc switch`. See `../plans/hod-os-bootc.md`.
+2. **Hod System Architecture** — store, recipes, composefs generation (Phases 1-2 done). See `../plans/hod-system-architecture.md`.
+3. **Tech debt cleanup** — strip standardization, recipe ergonomics.
+4. **Bindgen infrastructure** — unblocks `xdg-desktop-portal-cosmic`.
+5. **Improve multi-machine workflows** — `copy-closure --from`, binary-cache patterns.

@@ -2332,19 +2332,41 @@ fn cmd_system_build_or_activate(
     activate: bool,
 ) -> ! {
     eprintln!("[hod] evaluating system profile {}", profile_file.display());
-    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
-        Ok(r) => r,
+
+    let system_config = match hod::system::evaluate_system(&profile_file, &store_config) {
+        Ok(config) => config,
         Err(e) => {
             eprintln!("hod: {e}");
             process::exit(4);
         }
     };
+
+    let name = system_config.hostname.clone();
+    let packages = system_config.packages.clone();
     let hashes = hod::profile::package_hashes(&packages);
+
     eprintln!(
         "[hod] system profile '{}': {} package(s)",
         name,
         hashes.len()
     );
+    if !system_config.users.is_empty() {
+        eprintln!(
+            "[hod]   users: {}",
+            system_config
+                .users
+                .iter()
+                .map(|u| u.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !system_config.services.enable.is_empty() {
+        eprintln!(
+            "[hod]   services: {}",
+            system_config.services.enable.join(", ")
+        );
+    }
 
     let store = match Store::open(&store_config) {
         Ok(s) => s,
@@ -2370,7 +2392,12 @@ fn cmd_system_build_or_activate(
         process::exit(0);
     }
 
-    let (generation, gen_dir) = match hod::system::build_generation(&store, &name, &packages) {
+    let (generation, gen_dir) = match hod::system::build_generation(
+        &store,
+        &name,
+        &packages,
+        Some(&system_config),
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hod: {e}");
@@ -2382,6 +2409,25 @@ fn cmd_system_build_or_activate(
         generation,
         gen_dir.display()
     );
+
+    match hod::system::generate_composefs(&store, &gen_dir) {
+        Ok(()) => {
+            let cfs = gen_dir.join("composefs/rootfs.cfs");
+            if cfs.exists() {
+                let meta = std::fs::metadata(&cfs).unwrap_or_else(|_| {
+                    std::fs::symlink_metadata(&cfs).unwrap()
+                });
+                eprintln!(
+                    "[hod] composefs image: {} ({} bytes)",
+                    cfs.display(),
+                    meta.len()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("[hod] warning: composefs generation skipped: {e}");
+        }
+    }
 
     if let Err(e) = hod::system::activate_generation(generation, &name, &hashes) {
         eprintln!("hod: activation failed: {e}");
@@ -2452,14 +2498,15 @@ fn cmd_system_rollback() -> ! {
 
 fn cmd_system_pin(profile_file: PathBuf, store_config: StoreConfig) -> ! {
     eprintln!("[hod] evaluating system profile {}", profile_file.display());
-    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
-        Ok(r) => r,
+    let system_config = match hod::system::evaluate_system(&profile_file, &store_config) {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("hod: {e}");
             process::exit(4);
         }
     };
-    let hashes = hod::profile::package_hashes(&packages);
+    let name = system_config.hostname.clone();
+    let hashes = hod::profile::package_hashes(&system_config.packages);
 
     if let Err(e) = hod::system::write_system_roots(&name, &hashes) {
         eprintln!("hod: {e}");

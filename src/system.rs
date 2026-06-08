@@ -43,9 +43,251 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::hash::{hash_to_hex, Hash};
+use crate::hash::{hash_to_hex, hex_to_hash, Hash};
 use crate::profile::{self, FarmEntry, ProfilePackage};
-use crate::store::Store;
+use crate::store::{Store, StoreConfig};
+
+// ---------------------------------------------------------------------------
+// System config types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemUser {
+    pub name: String,
+    pub uid: u32,
+    pub groups: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemGroup {
+    pub name: String,
+    pub gid: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemServices {
+    pub enable: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemBoot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernel_args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemConfig {
+    pub hostname: String,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default = "default_locale")]
+    pub locale: String,
+    #[serde(default = "default_kernel")]
+    pub kernel: String,
+    pub packages: Vec<ProfilePackage>,
+    pub users: Vec<SystemUser>,
+    pub groups: Vec<SystemGroup>,
+    pub services: SystemServices,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot: Option<SystemBoot>,
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+fn default_locale() -> String {
+    "en_US.UTF-8".to_string()
+}
+fn default_kernel() -> String {
+    "arch".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Bun evaluation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SystemOutputPackage {
+    name: Option<String>,
+    hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemOutputUser {
+    name: String,
+    uid: u32,
+    groups: Vec<String>,
+    home: Option<String>,
+    shell: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemOutputGroup {
+    name: String,
+    gid: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemOutputServices {
+    enable: Vec<String>,
+    disable: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemOutputBoot {
+    kernel_args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemOutput {
+    hostname: String,
+    timezone: Option<String>,
+    locale: Option<String>,
+    kernel: Option<String>,
+    packages: Vec<SystemOutputPackage>,
+    users: Vec<SystemOutputUser>,
+    groups: Vec<SystemOutputGroup>,
+    services: SystemOutputServices,
+    boot: Option<SystemOutputBoot>,
+}
+
+pub fn evaluate_system(
+    system_path: &Path,
+    _store_config: &StoreConfig,
+) -> Result<SystemConfig, String> {
+    let abs_path = system_path.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve system path {}: {e}",
+            system_path.display()
+        )
+    })?;
+
+    let system_str = abs_path.to_string_lossy();
+
+    let tmp = std::env::temp_dir().join("hod-system-eval.ts");
+    let script = format!(
+        r#"
+import {{ system }} from "{system_str}";
+const c = system.config;
+const pkgs = c.packages.map((p, index) => {{
+  if (typeof p === 'string') return {{ hash: p }};
+  if (p && typeof p === 'object' && 'hash' in p) return {{ name: p.name, hash: p.hash }};
+  const recipe = p?.recipe ?? p?.package;
+  if (recipe && typeof recipe === 'object' && 'hash' in recipe) return {{ name: p.name, hash: recipe.hash }};
+  throw new Error(`invalid system package at index ${{index}}`);
+}});
+console.log(JSON.stringify({{
+  hostname: c.hostname,
+  timezone: c.timezone,
+  locale: c.locale,
+  kernel: c.kernel,
+  packages: pkgs,
+  users: c.users,
+  groups: c.groups,
+  services: c.services,
+  boot: c.boot,
+}}));
+"#,
+        system_str = system_str,
+    );
+    std::fs::write(&tmp, &script).map_err(|e| format!("cannot write eval script: {e}"))?;
+
+    let bun = std::env::var("BUN").unwrap_or_else(|_| "bun".to_string());
+    let mut command = std::process::Command::new(&bun);
+    command.arg("run").arg(&tmp);
+    if std::env::var_os("HOD_BIN").is_none() {
+        if let Ok(current_exe) = std::env::current_exe() {
+            command.env("HOD_BIN", current_exe);
+        }
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("failed to run `{bun} run`: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "`{bun} run` failed (exit {:?})\n{stdout}{stderr}",
+            output.status.code()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_line = stdout
+        .lines()
+        .filter(|l| l.trim_start().starts_with('{'))
+        .last()
+        .ok_or_else(|| {
+            format!(
+                "system evaluation produced no JSON output.\n\
+                 stdout: {stdout}"
+            )
+        })?;
+
+    let sys_out: SystemOutput = serde_json::from_str(json_line.trim())
+        .map_err(|e| format!("failed to parse system JSON: {e}\nline: {json_line}"))?;
+
+    let mut packages = Vec::with_capacity(sys_out.packages.len());
+    for (i, pkg) in sys_out.packages.iter().enumerate() {
+        let hash = hex_to_hash(&pkg.hash).ok_or_else(|| {
+            format!(
+                "package [{}] has invalid hash '{}' (expected 64 hex chars)",
+                i, pkg.hash
+            )
+        })?;
+        packages.push(ProfilePackage {
+            name: pkg.name.clone(),
+            hash,
+        });
+    }
+
+    let users = sys_out
+        .users
+        .into_iter()
+        .map(|u| SystemUser {
+            name: u.name,
+            uid: u.uid,
+            groups: u.groups,
+            home: u.home,
+            shell: u.shell,
+        })
+        .collect();
+
+    let groups = sys_out
+        .groups
+        .into_iter()
+        .map(|g| SystemGroup {
+            name: g.name,
+            gid: g.gid,
+        })
+        .collect();
+
+    let boot = sys_out.boot.map(|b| SystemBoot {
+        kernel_args: b.kernel_args,
+    });
+
+    Ok(SystemConfig {
+        hostname: sys_out.hostname,
+        timezone: sys_out.timezone.unwrap_or_else(default_timezone),
+        locale: sys_out.locale.unwrap_or_else(default_locale),
+        kernel: sys_out.kernel.unwrap_or_else(default_kernel),
+        packages,
+        users,
+        groups,
+        services: SystemServices {
+            enable: sys_out.services.enable,
+            disable: sys_out.services.disable,
+        },
+        boot,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -200,13 +442,14 @@ fn current_generation_number() -> Option<u64> {
 // Build + activate
 // ---------------------------------------------------------------------------
 
-/// Materialize a new generation directory containing the populated farm and
-/// metadata. Does not touch the `current` symlink. Returns the generation
-/// number and its path on disk.
+/// Materialize a new generation directory containing the populated farm,
+/// metadata, and optionally /etc + composefs image. Does not touch the
+/// `current` symlink. Returns the generation number and its path on disk.
 pub fn build_generation(
     store: &Store,
     profile_name: &str,
     packages: &[ProfilePackage],
+    system_config: Option<&SystemConfig>,
 ) -> Result<(u64, PathBuf), String> {
     std::fs::create_dir_all(generations_dir())
         .map_err(|e| format!("cannot create generations dir: {e}"))?;
@@ -231,6 +474,16 @@ pub fn build_generation(
         recipe_hashes: packages.iter().map(|p| hash_to_hex(&p.hash)).collect(),
     };
     metadata.write(&tmp_dir)?;
+
+    // Write system config if provided.
+    if let Some(config) = system_config {
+        let config_json = serde_json::to_string_pretty(config)
+            .map_err(|e| format!("serialize system config: {e}"))?;
+        std::fs::write(tmp_dir.join("system.json"), config_json + "\n")
+            .map_err(|e| format!("write system.json: {e}"))?;
+
+        generate_etc(&tmp_dir, config)?;
+    }
 
     // Atomic-rename into place.
     std::fs::rename(&tmp_dir, &gen_dir).map_err(|e| {
@@ -349,8 +602,195 @@ pub fn remove_system_roots() -> Result<bool, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Misc helpers
+// /etc generation
 // ---------------------------------------------------------------------------
+
+pub fn generate_etc(
+    gen_dir: &Path,
+    config: &SystemConfig,
+) -> Result<(), String> {
+    let etc = gen_dir.join("etc");
+    std::fs::create_dir_all(&etc)
+        .map_err(|e| format!("create etc dir: {e}"))?;
+
+    generate_passwd(&etc, config)?;
+    generate_group(&etc, config)?;
+    generate_hostname(&etc, config)?;
+    generate_timezone(&etc, config)?;
+    generate_locale_conf(&etc, config)?;
+    generate_ld_so_conf(&etc)?;
+    generate_os_release(&etc, config)?;
+    generate_systemd_symlinks(&etc, config)?;
+    generate_fstab(&etc)?;
+
+    Ok(())
+}
+
+fn generate_passwd(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    let mut content = String::new();
+    content.push_str("root:x:0:0:root:/root:/usr/bin/bash\n");
+    content.push_str("nobody:x:65534:65534:Nobody:/:/usr/bin/false\n");
+    for user in &config.users {
+        let home = user.home.as_deref().unwrap_or("/tmp");
+        let shell = user.shell.as_deref().unwrap_or("/usr/bin/bash");
+        let primary_gid = config
+            .groups
+            .iter()
+            .find(|g| user.groups.first().map(|n| n == &g.name).unwrap_or(false))
+            .map(|g| g.gid)
+            .unwrap_or(1000);
+        content.push_str(&format!(
+            "{}:x:{}:{}::{}:{}\n",
+            user.name, user.uid, primary_gid, home, shell
+        ));
+    }
+    std::fs::write(etc.join("passwd"), content)
+        .map_err(|e| format!("write passwd: {e}"))?;
+    Ok(())
+}
+
+fn generate_group(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    let mut content = String::new();
+    content.push_str("root:x:0:\n");
+    content.push_str("nobody:x:65534:\n");
+    for group in &config.groups {
+        let members: Vec<&str> = config
+            .users
+            .iter()
+            .filter(|u| u.groups.contains(&group.name))
+            .map(|u| u.name.as_str())
+            .collect();
+        content.push_str(&format!("{}:x:{}:{}\n", group.name, group.gid, members.join(",")));
+    }
+    std::fs::write(etc.join("group"), content)
+        .map_err(|e| format!("write group: {e}"))?;
+    Ok(())
+}
+
+fn generate_hostname(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    std::fs::write(etc.join("hostname"), format!("{}\n", config.hostname))
+        .map_err(|e| format!("write hostname: {e}"))?;
+    std::fs::write(
+        etc.join("hosts"),
+        format!("127.0.0.1 localhost\n127.0.1.1 {}\n", config.hostname),
+    )
+    .map_err(|e| format!("write hosts: {e}"))?;
+    Ok(())
+}
+
+fn generate_timezone(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    let zoneinfo = format!("/usr/share/zoneinfo/{}", config.timezone);
+    std::fs::write(etc.join("timezone"), format!("{}\n", config.timezone))
+        .map_err(|e| format!("write timezone: {e}"))?;
+    if let Some(parent) = etc.join("localtime").parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::os::unix::fs::symlink(&zoneinfo, etc.join("localtime"));
+    Ok(())
+}
+
+fn generate_locale_conf(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    std::fs::write(
+        etc.join("locale.conf"),
+        format!("LANG={}\n", config.locale),
+    )
+    .map_err(|e| format!("write locale.conf: {e}"))?;
+    Ok(())
+}
+
+fn generate_ld_so_conf(etc: &Path) -> Result<(), String> {
+    let content = "/usr/lib\n/include /etc/ld.so.conf.d/*.conf\n";
+    std::fs::write(etc.join("ld.so.conf"), content)
+        .map_err(|e| format!("write ld.so.conf: {e}"))?;
+    let ld_dir = etc.join("ld.so.conf.d");
+    std::fs::create_dir_all(&ld_dir)
+        .map_err(|e| format!("create ld.so.conf.d: {e}"))?;
+    Ok(())
+}
+
+fn generate_os_release(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    let content = format!(
+        "NAME=\"Hod OS\"\n\
+         VERSION=\"0.1.0\"\n\
+         ID=hod\n\
+         ID_LIKE=arch\n\
+         PRETTY_NAME=\"Hod OS ({hostname})\"\n\
+         HOME_URL=\"https://github.com/anomalyco/hod\"\n\
+         BUILD_ID=0\n",
+        hostname = config.hostname,
+    );
+    std::fs::write(etc.join("os-release"), content)
+        .map_err(|e| format!("write os-release: {e}"))?;
+    Ok(())
+}
+
+fn generate_systemd_symlinks(etc: &Path, config: &SystemConfig) -> Result<(), String> {
+    let multi_user = etc.join("systemd/system/multi-user.target.wants");
+    std::fs::create_dir_all(&multi_user)
+        .map_err(|e| format!("create multi-user.target.wants: {e}"))?;
+
+    for svc in &config.services.enable {
+        let target = format!("/usr/lib/systemd/system/{svc}.service");
+        let link = multi_user.join(format!("{svc}.service"));
+        let _ = std::os::unix::fs::symlink(&target, &link);
+    }
+
+    Ok(())
+}
+
+fn generate_fstab(etc: &Path) -> Result<(), String> {
+    let content = "\
+# Hod OS fstab — composefs root + btrfs
+LABEL=hod    /            btrfs    subvol=root,compress=zstd:1    0 0
+LABEL=hod    /hod         btrfs    subvol=hod,compress=zstd:1    0 0
+tmpfs        /tmp         tmpfs    defaults,nosuid,nodev         0 0
+";
+    std::fs::write(etc.join("fstab"), content)
+        .map_err(|e| format!("write fstab: {e}"))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Composefs generation
+// ---------------------------------------------------------------------------
+
+pub fn generate_composefs(
+    store: &Store,
+    gen_dir: &Path,
+) -> Result<(), String> {
+    let script_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            let dir = exe.parent()?;
+            let repo_root = dir.parent()?.parent()?.parent()?;
+            let script = repo_root.join("scripts/generate-composefs");
+            if script.exists() {
+                Some(script)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| PathBuf::from("scripts/generate-composefs"));
+
+    let hod_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("hod"));
+
+    let status = std::process::Command::new(&script_path)
+        .arg(gen_dir)
+        .arg(gen_dir.join("composefs"))
+        .arg(&hod_bin)
+        .env("HOD_STORE", store.root())
+        .status()
+        .map_err(|e| format!("failed to run generate-composefs: {e}"))?;
+
+    if !status.success() {
+        return Err(format!(
+            "generate-composefs failed (exit {:?})",
+            status.code()
+        ));
+    }
+
+    Ok(())
+}
 
 /// Best-effort UTC ISO-8601 timestamp without external deps. Format:
 /// `YYYY-MM-DDTHH:MM:SSZ`. Falls back to the unix epoch as ISO if anything

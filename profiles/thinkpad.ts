@@ -32,6 +32,16 @@ import { unzipRecipe } from "../recipes/native/unzip/unzip.js";
 import { wgetRecipe } from "../recipes/native/wget/wget.js";
 import { yaziRecipe } from "../recipes/native/rust/yazi/yazi.js";
 import { zoxideRecipe } from "../recipes/native/rust/zoxide/zoxide.js";
+import { nodejsRecipe } from "../recipes/native/nodejs/nodejs.js";
+import { bunRecipe } from "../recipes/native/bun/bun.js";
+import { lazygitRecipe } from "../recipes/native/lazygit/lazygit.js";
+import { tigRecipe } from "../recipes/native/tig/tig.js";
+import { tmuxRecipe } from "../recipes/native/tmux/tmux.js";
+import { vimRecipe } from "../recipes/native/vim/vim.js";
+import { nanoRecipe } from "../recipes/native/nano/nano.js";
+import { wlClipboardRecipe } from "../recipes/native/wl-clipboard/wl-clipboard.js";
+import { distroboxRecipe } from "../recipes/native/distrobox/distrobox.js";
+import { lsofRecipe } from "../recipes/native/lsof/lsof.js";
 
 export const profile = {
   name: "thinkpad",
@@ -63,5 +73,17 @@ export const profile = {
     { name: "strace", recipe: straceRecipe },
     { name: "tree", recipe: treeRecipe },
     { name: "unzip", recipe: unzipRecipe },
+
+    // Dev runtimes and editors.
+    { name: "nodejs", recipe: nodejsRecipe },
+    { name: "bun", recipe: bunRecipe },
+    { name: "lazygit", recipe: lazygitRecipe },
+    { name: "tig", recipe: tigRecipe },
+    { name: "tmux", recipe: tmuxRecipe },
+    { name: "vim", recipe: vimRecipe },
+    { name: "nano", recipe: nanoRecipe },
+    { name: "wl-clipboard", recipe: wlClipboardRecipe },
+    { name: "distrobox", recipe: distroboxRecipe },
+    { name: "lsof", recipe: lsofRecipe },
   ],
 };

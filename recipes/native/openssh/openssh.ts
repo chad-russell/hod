@@ -15,7 +15,7 @@ import { opensslRecipe } from "../openssl/openssl.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { opensshSourceRecipe } from "./openssh-source.js";
 import { cProfile } from "../../helpers/c.js";
-import { STRIP_BINARIES } from "../../helpers/strip.js";
+import { STRIP_ALL } from "../../helpers/strip.js";
 
 const recipe = await shellBuild({
   ...cProfile({

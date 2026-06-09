@@ -267,13 +267,16 @@ fn do_build(
     // 3. Check cache (unless --force)
     if !options.force {
         if let Some(cached) = store.get_output(&recipe_hash)? {
-            eprintln!(
-                "[hod] cache hit for {} ({})",
-                format_recipe_type(recipe.recipe_type()),
-                hash_to_hex(&recipe_hash),
-            );
-            building.remove(&recipe_hash);
-            return Ok(cached);
+            let staging_path = artifact_staging_path(store, &cached);
+            if staging_path.exists() {
+                eprintln!(
+                    "[hod] cache hit for {} ({})",
+                    format_recipe_type(recipe.recipe_type()),
+                    hash_to_hex(&recipe_hash),
+                );
+                building.remove(&recipe_hash);
+                return Ok(cached);
+            }
         }
     }
 
@@ -508,7 +511,10 @@ fn build_dependency(
     building: &mut std::collections::HashSet<Hash>,
 ) -> Result<Hash> {
     if let Some(cached) = store.get_output(&dep_recipe_hash)? {
-        return Ok(cached);
+        let staging_path = artifact_staging_path(store, &cached);
+        if staging_path.exists() {
+            return Ok(cached);
+        }
     }
 
     // The recipe bytes must be in the store

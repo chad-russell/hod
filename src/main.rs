@@ -478,6 +478,19 @@ enum ProfileAction {
     Activate {
         /// Path to the profile .ts file.
         profile_file: PathBuf,
+
+        /// Build on a remote machine via SSH, then pull closures locally.
+        ///
+        /// The builder must have the hod repo checked out and hod in PATH.
+        /// Recipes are evaluated locally (hashes are deterministic), then
+        /// each package is built on the remote and its closure is pulled
+        /// back via `hod copy-closure --from`.
+        #[arg(long)]
+        remote_builder: Option<String>,
+
+        /// Remote hod command to use on the builder (default: hod).
+        #[arg(long, default_value = "hod")]
+        remote_hod: String,
     },
 
     /// Activate a profile from an explicit recipe-hash list.
@@ -495,6 +508,14 @@ enum ProfileAction {
     Build {
         /// Path to the profile .ts file.
         profile_file: PathBuf,
+
+        /// Build on a remote machine via SSH, then pull closures locally.
+        #[arg(long)]
+        remote_builder: Option<String>,
+
+        /// Remote hod command to use on the builder (default: hod).
+        #[arg(long, default_value = "hod")]
+        remote_hod: String,
     },
 
     /// Build, copy, verify, and activate a profile on a remote machine.
@@ -1962,8 +1983,10 @@ fn cmd_gc(roots_files: Vec<PathBuf>, store_path: Option<PathBuf>, dry_run: bool)
 fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) -> ! {
     let store_config = StoreConfig { path: store_path };
 
-    let (profile_file, activate) = match action {
-        ProfileAction::Activate { profile_file } => (profile_file, true),
+    let (profile_file, activate, remote_builder, remote_hod) = match action {
+        ProfileAction::Activate { profile_file, remote_builder, remote_hod } => {
+            (profile_file, true, remote_builder, remote_hod)
+        }
         ProfileAction::ActivateHashes { name, hashes_file } => {
             let packages = match read_profile_packages_file(&hashes_file) {
                 Ok(packages) => packages,
@@ -1994,7 +2017,9 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
             eprintln!("    source {}/env.sh", farm_dir.display());
             process::exit(0);
         }
-        ProfileAction::Build { profile_file } => (profile_file, false),
+        ProfileAction::Build { profile_file, remote_builder, remote_hod } => {
+            (profile_file, false, remote_builder, remote_hod)
+        }
         ProfileAction::Copy {
             profile_file,
             to,
@@ -2032,8 +2057,33 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
 
     eprintln!("[hod] profile '{}': {} package(s)", name, hashes.len());
 
-    // Open store and build unbuilt packages
-    let store = match Store::open(&store_config) {
+    if let Some(ref builder) = remote_builder {
+        cmd_remote_builder_profile(
+            &builder,
+            &remote_hod,
+            &store_config,
+            &name,
+            &packages,
+            &hashes,
+            activate,
+            quiet,
+        );
+    } else {
+        cmd_local_profile(&store_config, &hashes, &name, &packages, activate, quiet);
+    }
+
+    process::exit(0);
+}
+
+fn cmd_local_profile(
+    store_config: &StoreConfig,
+    hashes: &[[u8; 32]],
+    name: &str,
+    packages: &[hod::profile::ProfilePackage],
+    activate: bool,
+    quiet: bool,
+) -> ! {
+    let store = match Store::open(store_config) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("hod: store error: {e}");
@@ -2041,7 +2091,7 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
         }
     };
 
-    match hod::profile::build_profile(&store, &hashes, quiet, false) {
+    match hod::profile::build_profile(&store, hashes, quiet, false) {
         Ok(built) => {
             if built > 0 {
                 eprintln!("[hod] built {} package(s)", built);
@@ -2054,8 +2104,7 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
     }
 
     if activate {
-        // Create symlink farm
-        let farm_dir = match hod::profile::create_farm_from_packages(&store, &name, &packages) {
+        let farm_dir = match hod::profile::create_farm_from_packages(&store, name, packages) {
             Ok(dir) => dir,
             Err(e) => {
                 eprintln!("hod: {e}");
@@ -2070,6 +2119,238 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
         eprintln!("[hod] activated. Add to your shell config:");
         eprintln!("    source {env_path}");
     }
+
+    process::exit(0);
+}
+
+fn cmd_remote_builder_profile(
+    builder: &str,
+    remote_hod: &str,
+    store_config: &StoreConfig,
+    name: &str,
+    packages: &[hod::profile::ProfilePackage],
+    _hashes: &[[u8; 32]],
+    activate: bool,
+    quiet: bool,
+) -> ! {
+    if !quiet {
+        eprintln!(
+            "[hod] remote builder: building {} package(s) on {}",
+            packages.len(),
+            builder
+        );
+    }
+
+    let store = match Store::open(store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let remote_store_path = match detect_remote_store(builder, remote_hod) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hod: failed to detect remote store path: {e}");
+            process::exit(10);
+        }
+    };
+
+    if !quiet {
+        eprintln!("[hod] remote builder: syncing recipe files to {}...", builder);
+    }
+
+    let mut synced_recipes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    for package in packages {
+        let hex = hash_to_hex(&package.hash);
+
+        let closure = match hod::closure::resolve_closure(&store, &package.hash) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("hod: failed to resolve closure for {}: {e}", hex);
+                process::exit(10);
+            }
+        };
+
+        for entry in &closure.entries {
+            if !synced_recipes.insert(entry.recipe_hash) {
+                continue;
+            }
+
+            let entry_hex = hash_to_hex(&entry.recipe_hash);
+            let shard = &entry_hex[..2];
+            let local_recipe = store.root().join(format!("recipes/{shard}/{entry_hex}"));
+
+            if local_recipe.exists() {
+                let remote_dir = format!("{}:{}/recipes/{shard}/", builder, remote_store_path.display());
+                let _ = process::Command::new(system_rsync())
+                    .args(["-q", "-e", system_ssh(), "--ignore-existing"])
+                    .arg(&local_recipe)
+                    .arg(&remote_dir)
+                    .status();
+            }
+        }
+    }
+
+    for (i, package) in packages.iter().enumerate() {
+        let hex = hash_to_hex(&package.hash);
+        let pkg_label = package.name.as_deref().unwrap_or(&hex[..16]);
+
+        if !quiet {
+            eprintln!(
+                "[hod] [{}/{}] building {} on {}...",
+                i + 1,
+                packages.len(),
+                pkg_label,
+                builder,
+            );
+        }
+
+        let build_output = process::Command::new(system_ssh())
+            .args([builder, remote_hod, "build", "--hash", &hex])
+            .output()
+            .map_err(|e| format!("failed to ssh to {builder}: {e}"))
+            .unwrap();
+
+        if !build_output.status.success() {
+            let stderr = String::from_utf8_lossy(&build_output.stderr);
+            eprintln!("hod: remote build failed for {} on {}: {}", pkg_label, builder, stderr.trim());
+            process::exit(1);
+        }
+    }
+
+    if !quiet {
+        eprintln!("[hod] remote builder: pulling closures from {}...", builder);
+    }
+
+    let local_store = match Store::open(store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    for (i, package) in packages.iter().enumerate() {
+        let hex = hash_to_hex(&package.hash);
+        let pkg_label = package.name.as_deref().unwrap_or(&hex[..16]);
+
+        if !quiet {
+            eprintln!(
+                "[hod] [{}/{}] pulling {} ({})",
+                i + 1,
+                packages.len(),
+                pkg_label,
+                &hex[..16],
+            );
+        }
+
+        let closure_output = process::Command::new(system_ssh())
+            .args([
+                builder,
+                remote_hod,
+                "closure",
+                &hex,
+                "--list",
+            ])
+            .output()
+            .map_err(|e| format!("failed to query closure on {builder}: {e}"))
+            .unwrap();
+
+        if !closure_output.status.success() {
+            let stderr = String::from_utf8_lossy(&closure_output.stderr);
+            eprintln!("hod: remote closure list failed for {}: {}", pkg_label, stderr.trim());
+            process::exit(10);
+        }
+
+        let entries = match parse_closure_list(&String::from_utf8_lossy(&closure_output.stdout)) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("hod: failed to parse closure list for {}: {e}", pkg_label);
+                process::exit(10);
+            }
+        };
+
+        let remote_prefix = format!("{}:{}/", builder, remote_store_path.display());
+        let local_prefix = local_store.root().to_string_lossy().to_string();
+
+        for entry in &entries {
+            let shard = &hash_to_hex(&entry.recipe_hash)[..2];
+            let recipe_rel = format!("recipes/{shard}/{}", hash_to_hex(&entry.recipe_hash));
+
+            let rsync_status = process::Command::new(system_rsync())
+                .args(["-a", "--compress", "-e", system_ssh()])
+                .arg(format!("{}{}", remote_prefix, recipe_rel))
+                .arg(&local_prefix)
+                .status()
+                .unwrap();
+
+            if !rsync_status.success() {
+                eprintln!("hod: failed to pull recipe {} from {}", &hash_to_hex(&entry.recipe_hash)[..16], builder);
+                process::exit(10);
+            }
+
+            if let Some(ref output_hash) = entry.output_hash {
+                let staging_rel = format!(
+                    "staging/{}/{}",
+                    &hash_to_hex(output_hash)[..2],
+                    hash_to_hex(output_hash)
+                );
+                let local_staging_dir = format!("{}/{}", local_prefix, staging_rel);
+
+                let shard_dir = format!("{}/staging/{}", local_prefix, &hash_to_hex(output_hash)[..2]);
+                let _ = std::fs::create_dir_all(&shard_dir);
+
+                let rsync_status = process::Command::new(system_rsync())
+                    .args(["-a", "--compress", "-e", system_ssh()])
+                    .arg(format!("{}{}/", remote_prefix, staging_rel))
+                    .arg(&local_staging_dir)
+                    .status()
+                    .unwrap();
+
+                if !rsync_status.success() {
+                    eprintln!("hod: failed to pull staging {} from {}", &hash_to_hex(output_hash)[..16], builder);
+                    process::exit(10);
+                }
+
+                if let Err(e) = local_store.store_output(&entry.recipe_hash, output_hash, 0, None) {
+                    eprintln!("hod: warning: failed to register output for {}: {e}", &hash_to_hex(&entry.recipe_hash)[..16]);
+                }
+            }
+        }
+    }
+
+    if !quiet {
+        eprintln!("[hod] remote builder: all closures pulled");
+    }
+
+    if !activate {
+        process::exit(0);
+    }
+
+    let store = match Store::open(store_config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    let farm_dir = match hod::profile::create_farm_from_packages(&store, name, packages) {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("hod: {e}");
+            process::exit(10);
+        }
+    };
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
+    let env_path = format!("{home}/.hod/profiles/{name}/env.sh");
+
+    eprintln!("[hod] symlink farm: {}/", farm_dir.display());
+    eprintln!("[hod] activated. Add to your shell config:");
+    eprintln!("    source {env_path}");
 
     process::exit(0);
 }
@@ -3912,6 +4193,48 @@ fn pull_and_merge_db(
 // ---------------------------------------------------------------------------
 // `hod profile`
 // ---------------------------------------------------------------------------
+
+fn detect_remote_store(builder: &str, remote_hod: &str) -> Result<PathBuf, String> {
+    let output = process::Command::new(system_ssh())
+        .args([builder, remote_hod, "store-root"])
+        .output()
+        .map_err(|e| format!("failed to ssh to {builder}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "remote hod store-root failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(PathBuf::from(path))
+}
+
+fn system_ssh() -> &'static str {
+    for candidate in &[
+        "/run/current-system/sw/bin/ssh",
+        "/usr/bin/ssh",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return candidate;
+        }
+    }
+    "ssh"
+}
+
+fn system_rsync() -> &'static str {
+    for candidate in &[
+        "/run/current-system/sw/bin/rsync",
+        "/usr/bin/rsync",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return candidate;
+        }
+    }
+    "rsync"
+}
 
 fn format_permissions(meta: &std::fs::Metadata) -> String {
     use std::os::unix::fs::PermissionsExt;

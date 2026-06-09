@@ -22,7 +22,7 @@ pub fn store(store: &Store, bytes: &[u8]) -> Result<Hash, StoreError> {
     let hex = hash_to_hex(&hash);
 
     // Check if already stored
-    if exists(store, &hash)? {
+    if exists(store, &hash)? && recipe_path(store, &hash).exists() {
         return Ok(hash);
     }
 

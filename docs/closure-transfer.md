@@ -124,7 +124,9 @@ The database is small and content-addressed; copying the full file is fine for n
 | `/absolute/path` | `/mnt/cache/hod` | local `cp -r` |
 | `./relative/path` | `./backup` | local `cp -r` |
 
-For SSH destinations, `rsync` must be installed on both the local and remote machine. The `--remote-store` flag or inline `:path` suffix tells rsync where to place files on the remote.
+For SSH destinations, `rsync` must be installed on both the local and remote
+machine. The remote does not need `hod` installed. The `--remote-store` flag or
+inline `:path` suffix tells rsync where to place files on the remote.
 
 ### Incremental transfer
 
@@ -286,6 +288,7 @@ For remote destinations, the remote store path defaults to `~/.local/share/hod` 
 
 - **All outputs must be built** before transfer. If any recipe in the closure lacks a cached output, `copy-closure` will error and list the unbuilt recipes.
 - **Database is a single file.** Copying `hod.db` is a last-writer-wins operation. Hod always refreshes it during `copy-closure` so the destination metadata matches the transferred closure. For now this is acceptable because the DB is append-mostly (new recipes/outputs) and staging directories are never modified after creation.
-- **rsync required for SSH.** The SSH transport shells out to `rsync`. If rsync is not installed, the transfer will fail with a clear error message.
+- **rsync required for SSH push.** The SSH push transport shells out to `rsync`.
+  The destination does not need `hod`, but it does need `rsync`.
 - **Store path portability.** Outputs use `$ORIGIN`-relative RUNPATHs, so the ELF binaries work at any store path as long as the relative staging tree structure (`staging/XX/<hash>/`) is preserved.
 - **`--from` builds .ts files locally.** When using `--from` with a `.ts` specifier, the recipe is evaluated and built locally before the pull. Pass a raw hash to avoid this.

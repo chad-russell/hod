@@ -3830,6 +3830,7 @@ fn cmd_copy_closure_from(
         &remote_store,
         &local_store,
         &entries,
+        force,
         quiet,
     ) {
         eprintln!("hod: {e}");
@@ -4075,6 +4076,7 @@ fn pull_and_merge_db(
     remote_store: &Path,
     local_store: &Store,
     entries: &[ClosureListEntry],
+    force: bool,
     quiet: bool,
 ) -> Result<(), String> {
     let tmp_db_path = std::env::temp_dir().join(format!(
@@ -4123,12 +4125,13 @@ fn pull_and_merge_db(
         if let Some(ref output_hash) = entry.output_hash {
             let _output_hex = hash_to_hex(output_hash);
 
-            // Check if we already have this mapping.
+            // Check if we already have this mapping. With --force, refresh it
+            // so pull workflows can move a recipe to a newer rebuilt output.
             match local_store.get_output(&entry.recipe_hash) {
-                Ok(Some(_)) => {
-                    // Already registered.
+                Ok(Some(_)) if !force => {
+                    // Already registered and caller did not request refresh.
                 }
-                Ok(None) => {
+                Ok(Some(_)) | Ok(None) => {
                     // Read build_ms from remote DB if available.
                     let build_ms: u64 = remote_conn
                         .query_row(

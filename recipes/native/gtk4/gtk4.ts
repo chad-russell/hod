@@ -52,6 +52,7 @@ import { libjpegRecipe } from "../libjpeg/libjpeg.js";
 import { libtiffRecipe } from "../libtiff/libtiff.js";
 import { zstdRecipe } from "../zstd/zstd.js";
 import { libdrmRecipe } from "../libdrm/libdrm.js";
+import { libglvndRecipe } from "../libglvnd/libglvnd.js";
 import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
@@ -65,8 +66,8 @@ export const gtk4RuntimeDeps = [
   "libX11", "libXau", "libXcb", "libXcomposite", "libXcursor",
   "libXdamage", "libXdmcp", "libXext", "libXfixes", "libXi",
   "libXinerama", "libXrandr", "libXrender", "libXtst", "libdrm",
-  "libepoxy", "libffi", "libiconv", "libjpeg", "libpng", "libtiff",
-  "libxkbcommon", "libxml2", "pango", "pcre2", "pixman", "shared-mime-info",
+  "libepoxy", "libffi", "libglvnd", "libiconv", "libjpeg", "libpng",
+  "libtiff", "libxkbcommon", "libxml2", "pango", "pcre2", "pixman", "shared-mime-info",
   "toolchain", "wayland", "xz", "zlib", "zstd",
 ];
 
@@ -101,7 +102,7 @@ const recipe = await shellBuild({
       "libXcursor", "libXinerama", "libXdamage", "libXcomposite",
       "libXfixes", "libXau", "libXcb", "libXdmcp", "xorgproto",
       "libxml2", "libiconv", "xz", "libXtst", "wayland",
-      "libxkbcommon", "libdrm", "libjpeg", "libtiff", "zstd",
+      "libxkbcommon", "libdrm", "libglvnd", "libjpeg", "libtiff", "zstd",
     ],
     includePaths: ["/deps/freetype/include/freetype2"],
     libDeps: [
@@ -113,7 +114,7 @@ const recipe = await shellBuild({
       "libXcursor", "libXinerama", "libXdamage", "libXcomposite",
       "libXfixes", "libXau", "libXcb", "libXdmcp",
       "libxml2", "libiconv", "xz", "libXtst", "wayland",
-      "libxkbcommon", "libdrm", "libjpeg", "libtiff", "zstd",
+      "libxkbcommon", "libdrm", "libglvnd", "libjpeg", "libtiff", "zstd",
     ],
     pkgConfigDeps: [
       "glib", "pango", "cairo", "gdk-pixbuf", "libepoxy", "graphene",
@@ -124,7 +125,7 @@ const recipe = await shellBuild({
       "libXcursor", "libXinerama", "libXdamage", "libXcomposite",
       "libXfixes", "libXau", "libXcb", "libXdmcp",
       "libxml2", "libXtst", "xz", "wayland", "wayland-protocols",
-      "libxkbcommon", "libdrm", "libjpeg", "libtiff", "zstd",
+      "libxkbcommon", "libdrm", "libglvnd", "libjpeg", "libtiff", "zstd",
     ],
     // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
     // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
@@ -159,105 +160,6 @@ new = '''profile_conf_h = declare_dependency(
 content = content.replace(old, new)
 open('meson.build', 'w').write(content)
 "
-
-# Patch gdk/x11/meson.build to remove EGL context source
-sed -i "/gdkglcontext-egl.c/d" gdk/x11/meson.build
-
-# Patch inspector to not call EGL functions at runtime
-sed -i 's/eglQueryString(dpy, EGL_VERSION)/"(no egl)"/' gtk/inspector/general.c
-sed -i 's/eglQueryString(dpy, EGL_VENDOR)/"(no egl)"/' gtk/inspector/general.c
-
-# Create stub implementations for EGL functions and types that GTK4's
-# X11 backend references unconditionally. These return safe defaults.
-cat > /tmp/egl-stub.c << 'STUBEOF'
-#include <stddef.h>
-typedef void* EGLDisplay;
-typedef void* EGLConfig;
-typedef void* EGLSurface;
-typedef void* EGLContext;
-typedef int EGLint;
-typedef unsigned int EGLBoolean;
-typedef void* gpointer;
-typedef unsigned long gsize;
-#define EGL_FALSE 0
-#define EGL_NO_DISPLAY ((EGLDisplay)0)
-EGLBoolean eglGetConfigAttrib(EGLDisplay d, EGLConfig c, EGLint a, EGLint* v) { *v = 0; return EGL_FALSE; }
-const char* eglQueryString(EGLDisplay d, EGLint n) { return NULL; }
-EGLDisplay eglGetDisplay(void* d) { return EGL_NO_DISPLAY; }
-EGLDisplay eglGetPlatformDisplay(unsigned int p, void* d, const EGLint* a) { return EGL_NO_DISPLAY; }
-EGLBoolean eglInitialize(EGLDisplay d, EGLint* a, EGLint* b) { return EGL_FALSE; }
-int epoxy_egl_version(void) { return 0; }
-/* GTK4 EGL context stubs */
-gpointer gdk_x11_display_get_egl_display(gpointer display) { return NULL; }
-int gdk_display_init_egl(gpointer display) { return 0; }
-gpointer gdk_display_get_egl_config(gpointer display) { return NULL; }
-gsize gdk_x11_gl_context_egl_get_type(void) { return 0; }
-EGLBoolean eglSwapInterval(EGLDisplay d, EGLint i) { return EGL_FALSE; }
-EGLBoolean eglMakeCurrent(EGLDisplay d, EGLSurface s, EGLSurface r, EGLContext c) { return EGL_FALSE; }
-EGLBoolean eglTerminate(EGLDisplay d) { return EGL_FALSE; }
-STUBEOF
-/deps/toolchain/bin/gcc -c -O2 /tmp/egl-stub.c -o /tmp/egl-stub.o
-/deps/toolchain/bin/ar rcs /tmp/libegl-stub.a /tmp/egl-stub.o
-
-# Add the EGL stub source to the gdk-x11 static library so meson compiles and links it.
-cp /tmp/egl-stub.c gdk/x11/egl-stub.c
-# Use a broader sed pattern to add egl-stub.c to the sources list
-sed -i "/gdk_x11_sources/s/\]/, files('egl-stub.c') ]/" gdk/x11/meson.build
-# Verify
-grep egl-stub gdk/x11/meson.build || echo 'WARNING: egl-stub not found in gdk/x11/meson.build'
-
-# Also add egl-stub.c to the Wayland backend sources
-cp /tmp/egl-stub.c gdk/wayland/egl-stub.c
-sed -i "/gdk_wayland_sources = files/s/\])/, files('egl-stub.c')])/" gdk/wayland/meson.build
-grep egl-stub gdk/wayland/meson.build || echo 'WARNING: egl-stub not found in gdk/wayland/meson.build'
-
-# Provide EGL headers for compilation. GTK4's X11 backend uses EGL types
-# unconditionally even when HAVE_EGL is not set. We provide minimal stubs.
-mkdir -p /tmp/egl-stub/EGL /tmp/egl-stub/epoxy
-cat > /tmp/egl-stub/EGL/egl.h << 'EGLEOF'
-#ifndef EGL_EGL_H
-#define EGL_EGL_H
-#include <stdint.h>
-typedef void* EGLDisplay;
-typedef void* EGLConfig;
-typedef void* EGLSurface;
-typedef void* EGLContext;
-typedef int32_t EGLint;
-typedef uint32_t EGLenum;
-typedef void* EGLClientBuffer;
-typedef unsigned int EGLBoolean;
-#define EGL_NO_DISPLAY ((EGLDisplay)0)
-#define EGL_NO_SURFACE ((EGLSurface)0)
-#define EGL_NO_CONTEXT ((EGLContext)0)
-#define EGL_FALSE 0
-#define EGL_TRUE 1
-#define EGL_SUCCESS 0x3000
-#define EGL_NATIVE_VISUAL_ID 0x302E
-#define EGL_EXTENSIONS 0x3055
-#define EGL_VERSION 0x3054
-#define EGL_VENDOR 0x3053
-#define EGL_PLATFORM_X11_KHR 0x31D5
-#define EGL_PLATFORM_X11_SCREEN_KHR 0x31D6
-#define EGL_PLATFORM_WAYLAND_EXT 0x31D8
-extern EGLDisplay eglGetDisplay(void*);
-extern EGLDisplay eglGetPlatformDisplay(EGLenum, void*, const EGLint*);
-extern EGLBoolean eglInitialize(EGLDisplay, EGLint*, EGLint*);
-extern const char* eglQueryString(EGLDisplay, EGLint);
-extern EGLBoolean eglGetConfigAttrib(EGLDisplay, EGLConfig, EGLint, EGLint*);
-extern EGLBoolean eglSwapInterval(EGLDisplay, EGLint);
-extern EGLBoolean eglMakeCurrent(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
-extern EGLBoolean eglTerminate(EGLDisplay);
-#endif
-EGLEOF
-cat > /tmp/egl-stub/epoxy/egl.h << 'EPOXYEOF'
-#ifndef EPOXY_EGL_H
-#define EPOXY_EGL_H
-#include <EGL/egl.h>
-#endif
-EPOXYEOF
-
-export CFLAGS="$CFLAGS -I/tmp/egl-stub"
-export CXXFLAGS="$CXXFLAGS -I/tmp/egl-stub"
 
 # C++ compiler — GTK4 has C++ code
 export CXXFLAGS="-O2 -I/deps/freetype/include/freetype2"
@@ -355,6 +257,7 @@ ${STRIP_ALL}
     dep("libtiff", libtiffRecipe),
     dep("zstd", zstdRecipe),
     dep("libdrm", libdrmRecipe),
+    dep("libglvnd", libglvndRecipe),
     dep("meson", mesonRecipe),
     dep("ninja", ninjaRecipe),
     dep("python", pythonRecipe),

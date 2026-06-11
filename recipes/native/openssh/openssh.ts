@@ -33,27 +33,27 @@ export PKG_CONFIG_PATH="/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig"
 # Allow configure's test programs to find shared libs
 export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 
-./configure \\
-  --prefix=/ \\
-  --sysconfdir=/etc/ssh \\
-  --with-ssl-dir=/deps/openssl \\
-  --with-zlib=/deps/zlib \\
-  --without-pam \\
-  --without-kerberos5 \\
-  --without-libedit \\
-  --without-ldns \\
-  --without-selinux \\
-  --without-shadow \\
-  --without-xauth \\
-  --without-security-key-builtin \\
-  --without-security-key-standalone \\
-  --disable-strip \\
-  --with-privsep-path=/var/empty \\
-  --with-privsep-user=sshd \\
+./configure \
+  --prefix=/ \
+  --sysconfdir=/etc/ssh \
+  --with-ssl-dir=/deps/openssl \
+  --with-zlib=/deps/zlib \
+  --without-pam \
+  --without-kerberos5 \
+  --without-libedit \
+  --without-ldns \
+  --without-selinux \
+  --without-shadow \
+  --without-xauth \
+  --without-security-key-builtin \
+  --without-security-key-standalone \
+  --disable-strip \
+  --with-privsep-path=/var/empty \
+  --with-privsep-user=sshd \
   --with-pid-dir=/run
 
-make -j$(nproc)
-make install DESTDIR=$OUT
+make -j$(nproc) SSH_PROGRAM=ssh
+make install DESTDIR=$OUT SSH_PROGRAM=ssh
 
 ${STRIP_ALL}
 rmdir $OUT/share 2>/dev/null || true

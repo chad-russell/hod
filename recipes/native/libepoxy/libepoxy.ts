@@ -10,6 +10,7 @@ import { libX11Recipe } from "../libX11/libX11.js";
 import { libXauRecipe } from "../libXau/libXau.js";
 import { libXcbRecipe } from "../libxcb/libxcb.js";
 import { libXdmcpRecipe } from "../libXdmcp/libXdmcp.js";
+import { libglvndRecipe } from "../libglvnd/libglvnd.js";
 import { mesonRecipe } from "../meson/meson.js";
 import { ninjaRecipe } from "../ninja/ninja.js";
 import { pythonRecipe } from "../python/python.js";
@@ -18,14 +19,14 @@ import { expatRecipe } from "../expat/expat.js";
 import { mesonProfile } from "../../helpers/meson.js";
 import { RELOCATE_PKG_CONFIG, STRIP_ALL } from "../../helpers/strip.js";
 
-export const libepoxyRuntimeDeps = ["toolchain"];
+export const libepoxyRuntimeDeps = ["libglvnd", "toolchain"];
 
 const recipe = await shellBuild({
   ...mesonProfile({
     python: "python",
-    includeDeps: ["xorgproto", "libX11", "libXau", "libXcb", "libXdmcp"],
-    libDeps: ["libX11", "libXau", "libXcb", "libXdmcp"],
-    pkgConfigDeps: ["libX11", "libXau", "libXcb", "libXdmcp"],
+    includeDeps: ["xorgproto", "libX11", "libXau", "libXcb", "libXdmcp", "libglvnd"],
+    libDeps: ["libX11", "libXau", "libXcb", "libXdmcp", "libglvnd"],
+    pkgConfigDeps: ["libX11", "libXau", "libXcb", "libXdmcp", "libglvnd"],
     // TODO: pkgConfigPaths no longer needed — cProfile() now auto-includes
     // both lib/pkgconfig and share/pkgconfig for each pkgConfigDeps entry.
     // Add "xorgproto" to pkgConfigDeps and remove this pkgConfigPaths block.
@@ -33,10 +34,11 @@ const recipe = await shellBuild({
   }),
   sourceDir: true,
   script: `
-export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/deps/zlib/lib:/deps/expat/lib:/deps/libglvnd/lib\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LDFLAGS="$HOD_DUMMY_RPATH \
   -Wl,-rpath-link,/deps/libX11/lib -Wl,-rpath-link,/deps/libXau/lib \
-  -Wl,-rpath-link,/deps/libXcb/lib -Wl,-rpath-link,/deps/libXdmcp/lib"
+  -Wl,-rpath-link,/deps/libXcb/lib -Wl,-rpath-link,/deps/libXdmcp/lib \
+  -Wl,-rpath-link,/deps/libglvnd/lib"
 
 meson setup build \
   --prefix=/ \
@@ -44,7 +46,7 @@ meson setup build \
   --buildtype=release \
   -Ddefault_library=shared \
   -Dglx=yes \
-  -Degl=no \
+  -Degl=yes \
   -Dx11=true \
   -Dtests=false \
   -Ddocs=false
@@ -64,6 +66,7 @@ ${STRIP_ALL}
     dep("libXau", libXauRecipe),
     dep("libXcb", libXcbRecipe),
     dep("libXdmcp", libXdmcpRecipe),
+    dep("libglvnd", libglvndRecipe),
     dep("meson", mesonRecipe),
     dep("ninja", ninjaRecipe),
     dep("python", pythonRecipe),

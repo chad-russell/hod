@@ -6,7 +6,7 @@ import { fetchTarball } from "../../../js/src/index.js";
 
 const recipe = await fetchTarball({
   url: "https://github.com/lsof-org/lsof/releases/download/4.99.6/lsof-4.99.6.tar.gz",
-  hash: "6081dedf841cd61f8a022ff7cbe04ed78918a47dea3c39528c8571474167aa0f",
+  hash: "295b34b36ae0c6e21356dbe30d21b34a57a92e13dbfc9f495dd433d69814a2e6",
 });
 
 export const lsofSourceRecipe = recipe;

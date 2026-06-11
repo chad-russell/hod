@@ -108,6 +108,44 @@ bad or partial transfers from becoming the active profile.
 `scripts/hod-deploy-profile` remains as a transitional wrapper for the same
 workflow, but new docs and guides should prefer `hod profile copy`.
 
+### Remote builder: `--remote-builder <host>`
+
+Both `hod profile activate` and `hod profile build` accept `--remote-builder`
+to delegate building to a remote machine via SSH. This is useful when the
+local machine doesn't have the build toolchain or when a faster machine with
+a pre-populated store should do the heavy lifting.
+
+**How it works:**
+
+1. The profile `.ts` file is evaluated locally via Bun (recipe hashes are
+   deterministic, so this is safe).
+2. For each package hash, `ssh <host> hod build --hash <hash>` ensures the
+   package is built on the remote. Already-built packages are no-ops.
+3. Each package's runtime closure is pulled back to the local store via
+   `hod copy-closure <hash> --from <host>`.
+4. The symlink farm is created locally as normal.
+
+**Usage:**
+
+```bash
+# Build on bees, pull closures, activate locally
+hod profile activate profiles/thinkpad.ts --remote-builder bees
+
+# Build only (no activation)
+hod profile build profiles/thinkpad.ts --remote-builder bees
+
+# Specify a custom hod command on the remote
+hod profile activate profiles/thinkpad.ts --remote-builder bees --remote-hod ~/.cargo/bin/hod
+```
+
+**Requirements:**
+
+- The builder host must have `hod` available (in PATH or via `--remote-hod`).
+- The builder must have the recipe already imported into its store (e.g. from
+  a shared checkout or a previous build). Since recipe hashes are content-
+  addressed, the builder's recipes must match the local ones.
+- `rsync` must be installed on both machines for closure transfer.
+
 ### `hod profile pin <path.ts> [--name <name>]`
 
 Evaluate a profile and write its current package recipe hashes to

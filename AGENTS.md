@@ -63,9 +63,9 @@ docs/
 ## Key current behavior
 
 - `hod run` and `hod shell` accept either a **64-char recipe hash** or a **path to a `.ts` recipe file**.
-- `hod profile activate/build` are implemented.
+- `hod profile activate/build` are implemented, with optional `--remote-builder <host>` to delegate builds to a remote SSH machine.
 - Profile env scripts set **`PATH`**, **`MANPATH`**, and **`XDG_DATA_DIRS`**; they intentionally do **not** set `LD_LIBRARY_PATH`.
-- `hod closure` and `hod copy-closure` are implemented; `copy-closure --from` is not.
+- `hod closure` and `hod copy-closure` are implemented, including `copy-closure --from` for pull-based workflows.
 - Process `runtime_deps` drive:
   - store-relative ELF relocation
   - AT_EXECFN bootstrap injection for executables
@@ -82,19 +82,6 @@ When a user reports a runtime failure, always:
 3. **Suggest the proper fix** — propose the recipe or infrastructure change that eliminates the root cause for good.
 
 Never stop at "it works on my machine" or "try a different binary." The goal is to close the gap permanently.
-
-## VM testing workflow
-
-See `docs/vm-testing-workflow.md` for the full guide. TL;DR:
-
-- **Build on build machine (10.10.0.6), run on ThinkPad (10.10.0.10).**
-- `just test` — build → rsync → restart QEMU → health-check. Primary loop.
-- `just test-quick` — deploy without rebuilding.
-- `just test-check` — health-check the running VM.
-- Display: `virt-viewer --spice-unix=~/.cache/hod-vm-spice.sock` on ThinkPad.
-- SSH: `ssh -p 2222 root@localhost` from ThinkPad, double-hop from build machine.
-- ThinkPad run script is auto-synced from `scripts/run-vm-thinkpad` on each deploy.
-- Build machine IP: 10.10.0.6, ThinkPad IP: 10.10.0.10, user `crussell` on both.
 
 ## When editing docs
 
@@ -123,21 +110,11 @@ nix develop --accept-flake-config --command cargo test -- --test-threads=1
 
 Avoid ignored bootstrap/sandbox tests unless explicitly asked.
 
-For end-to-end VM validation, use `just build-vm` + `just run-local-gl`
-and verify interactively or via SSH.
-
 After changes to `src/build.rs`, `src/sandbox.rs`, `src/wrap.rs`,
 `src/relocate.rs`, or `src/packed.rs`, use `hod restage` on affected
 packages to re-run relocation without rebuilding.
 
 ## Recent milestones
-
-**Niri desktop on Arch VM (Milestone 1 done):**
-
-- `profiles/niri-desktop.ts` builds and activates
-- VM boots via `just run-local-gl`, niri session auto-launches on tty1
-- `Mod+Return` opens alacritty, `Mod+Shift+E` brings up quit dialog
-- Fixed `relocate.rs` bug: dlopen'd libraries (e.g., `libwayland-client.so`) were missing from RUNPATH because the relocation pass only included `DT_NEEDED` matches. Now all runtime_deps with `lib/` dirs are included.
 
 **Nautilus 48.7 portability:**
 

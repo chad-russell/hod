@@ -13,10 +13,10 @@ This directory is the **current documentation authority** for Hod.
 | Understand runtime relocation / portability | `relocatable-binaries-guide.md`, `closure-transfer.md` |
 | Work on profiles / end-user activation | `profiles.md`, `system-profiles.md` |
 | Work on containers / podman | `podman-setup.md` |
-| Work on the Hod OS VM | `vm-testing-workflow.md` |
 | Work on desktop environments | `../plans/niri-desktop-roadmap.md` |
 | **Work on the system architecture** | **`../plans/hod-system-architecture.md`** |
 | Build a bootc-derived Hod OS image | **`../plans/hod-os-bootc.md`** |
+| Work on Ghostty packaging/runtime issues | `ghostty.md` |
 | Work on build env policy / metadata | `build-environment-and-metadata.md` |
 
 ## Current docs
@@ -27,27 +27,18 @@ This directory is the **current documentation authority** for Hod.
 - `build-environment-and-metadata.md` — build-env model and future metadata direction.
 - `closure-transfer.md` — `hod closure` and `hod copy-closure` behavior.
 - `debugging-builds.md` — debugging workflows.
+- `ghostty.md` — Ghostty packaging/runtime notes and relocation lessons.
 - `profiles.md` — TypeScript profiles and symlink-farm activation.
 - `recipe-compiler-guide.md` — TypeScript SDK / recipe import workflow.
 - `relocatable-binaries-guide.md` — ELF relocation, bootstrap injection, wrappers, portability.
-- `vm-testing-workflow.md` — build → deploy → test loop for the Arch-based Hod OS VM.
 - `podman-setup.md` — rootless podman + distrobox setup and troubleshooting.
 - `system-profiles.md` — generation-numbered system profile model (`hod system ...`).
 
 ## Current status
 
-The **Niri desktop** on the Arch VM is the active work surface:
-
-- `profiles/niri-desktop.ts` builds and activates
-- VM boots via `just test`, niri session auto-launches on tty1
-- `Mod+Return` opens alacritty, `Mod+D` opens fuzzel
-- PipeWire + WirePlumber audio, mako notifications, Adwaita cursors
-- See `vm-testing-workflow.md` for the full testing loop
-
-The **Arch seed VM** (`scripts/hod-arch-build` + `scripts/hod-arch-run`) is the
-primary VM target. It uses direct kernel boot, bare ext4, no partition table,
-no bootloader. Hod owns the application/service/desktop layer baked into
-`/usr/hod/...`.
+The **ThinkPad profile** is a current portability target for user packages and
+GUI applications. Ghostty 1.3.1 builds on `bees`, copies to the ThinkPad via
+`copy-closure --from`, and runs from the Hod store.
 
 COSMIC is **paused**. All 18/19 components build; resuming requires distro-style
 integration (upstream install targets, portal packaging, systemd user units).

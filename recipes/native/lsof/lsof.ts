@@ -17,11 +17,12 @@ const recipe = await shellBuild({
   sourceDir: true,
   script: `
 
-./configure \\
-  --prefix=/ \\
+./configure \
+  --prefix=/ \
   --disable-nls
 
-make -j$(nproc)
+printf '#!/bin/sh\ncat' > soelim && chmod +x soelim
+PATH="$(pwd):$PATH" make -j$(nproc)
 make install DESTDIR=$OUT
 
 ${STRIP_BINARIES}

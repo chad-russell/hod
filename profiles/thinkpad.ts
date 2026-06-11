@@ -42,9 +42,82 @@ import { nanoRecipe } from "../recipes/native/nano/nano.js";
 import { wlClipboardRecipe } from "../recipes/native/wl-clipboard/wl-clipboard.js";
 import { distroboxRecipe } from "../recipes/native/distrobox/distrobox.js";
 import { lsofRecipe } from "../recipes/native/lsof/lsof.js";
+import { resticRecipe } from "../recipes/native/restic/restic.js";
+import { ageRecipe } from "../recipes/native/age/age.js";
+import { gnupgRecipe } from "../recipes/native/gnupg/gnupg.js";
+import { goRecipe } from "../recipes/native/go/go.js";
+import { rustRecipe } from "../recipes/native/rust/rust.js";
+import { brightnessctlRecipe } from "../recipes/native/brightnessctl/brightnessctl.js";
+import { playerctlRecipe } from "../recipes/native/playerctl/playerctl.js";
+import { podmanRecipe } from "../recipes/native/podman/podman.js";
+import { crunRecipe } from "../recipes/native/crun/crun.js";
+import { conmonRecipe } from "../recipes/native/conmon/conmon.js";
+import { passtRecipe } from "../recipes/native/passt/passt.js";
+import { netavarkRecipe } from "../recipes/native/netavark/netavark.js";
+import { aardvarkDnsRecipe } from "../recipes/native/aardvark-dns/aardvark-dns.js";
+import { containersConfigRecipe } from "../recipes/native/containers-config/containers-config.js";
+import { ghosttyRecipe } from "../recipes/native/ghostty/ghostty.js";
+import { userUnit } from "../js/src/systemd.js";
+
+const pk = (name: string, subpath: string = "") => {
+  const suffix = subpath === "" ? "" : `/${subpath}`;
+  return `%h/.hod/profiles/thinkpad/pkgs/${name}${suffix}`;
+};
+
+const systemdEnvFile = "%h/.hod/profiles/thinkpad/env.systemd";
+
+const userUnits = [
+  userUnit("voxtype", {
+    Unit: {
+      Description: "Voxtype push-to-talk voice-to-text daemon",
+      PartOf: ["graphical-session.target"],
+      After: ["graphical-session.target", "pipewire.service", "pipewire-pulse.service"],
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      Type: "simple",
+      ExecStart: "%h/.nix-profile/bin/voxtype -q daemon",
+      Restart: "on-failure",
+      RestartSec: 5,
+    },
+    Install: {
+      WantedBy: ["graphical-session.target"],
+    },
+  }),
+  userUnit("gloo-tunnel", {
+    Unit: {
+      Description: "SSH tunnel: Gloo ports -> bee",
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      ExecStart:
+        `${pk("openssh", "bin/ssh")} -N -o ExitOnForwardFailure=yes` +
+        " -L 3000:127.0.0.1:3000" +
+        " -L 3001:127.0.0.1:3001" +
+        " -L 3006:127.0.0.1:3006" +
+        " -L 8000:127.0.0.1:8000" +
+        " bee",
+      RestartSec: 5,
+    },
+  }),
+  userUnit("opencode-web", {
+    Unit: {
+      Description: "OpenCode Web Interface",
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      Type: "simple",
+      ExecStart: "/run/current-system/sw/bin/opencode web --port 4096",
+      WorkingDirectory: "%h",
+      Restart: "on-failure",
+      RestartSec: 5,
+    },
+  }),
+];
 
 export const profile = {
   name: "thinkpad",
+  user_units: userUnits,
   packages: [
     // Daily CLI tools already present in the ThinkPad Home Manager config.
     { name: "bat", recipe: batRecipe },
@@ -85,5 +158,32 @@ export const profile = {
     { name: "wl-clipboard", recipe: wlClipboardRecipe },
     { name: "distrobox", recipe: distroboxRecipe },
     { name: "lsof", recipe: lsofRecipe },
+
+    // Dev toolchains.
+    { name: "go", recipe: goRecipe },
+    { name: "rust", recipe: rustRecipe },
+
+    // Security / encryption.
+    { name: "age", recipe: ageRecipe },
+    { name: "gnupg", recipe: gnupgRecipe },
+
+    // Backup.
+    { name: "restic", recipe: resticRecipe },
+
+    // Wayland CLI utilities (need D-Bus/session bus at runtime).
+    { name: "brightnessctl", recipe: brightnessctlRecipe },
+    { name: "playerctl", recipe: playerctlRecipe },
+
+    // GUI applications.
+    { name: "ghostty", recipe: ghosttyRecipe },
+
+    // Container stack (rootless podman + distrobox).
+    { name: "containers-config", recipe: containersConfigRecipe },
+    { name: "crun", recipe: crunRecipe },
+    { name: "conmon", recipe: conmonRecipe },
+    { name: "passt", recipe: passtRecipe },
+    { name: "netavark", recipe: netavarkRecipe },
+    { name: "aardvark-dns", recipe: aardvarkDnsRecipe },
+    { name: "podman", recipe: podmanRecipe },
   ],
 };

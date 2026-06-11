@@ -40,3 +40,7 @@ export { fromHod, importToStore } from "./import.js";
 // System configuration
 export { defineSystem, buildSystemOutput } from "./system.js";
 export type { SystemConfig, SystemUser, SystemGroup, SystemDefinition } from "./system.js";
+
+// Systemd unit helpers
+export { userUnit, unitToIni } from "./systemd.js";
+export type { SystemdUnitConfig, SystemdSection, SystemdValue, UserUnitDefinition } from "./systemd.js";

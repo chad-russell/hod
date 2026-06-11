@@ -57,6 +57,7 @@
             buildah
             bootc
             ostree
+            e2fsprogs
 
             # TypeScript recipe SDK.
             bun

@@ -225,9 +225,12 @@ pub fn generate_wrappers(
         None => String::new(),
     };
 
+<<<<<<< HEAD
     let ghostty_resources_export =
         "if [ -d \"$prefix/share/ghostty\" ]; then export GHOSTTY_RESOURCES_DIR=\"$prefix/share/ghostty\"; fi\n";
 
+=======
+>>>>>>> 24417d8 (wtf)
     let ld_linux_path: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
         let shard = hash_shard(hash);
         let hex = hash_to_hex(hash);
@@ -320,7 +323,10 @@ pub fn generate_wrappers(
             &mesa_dri_export,
             &egl_vendor_export,
             &magic_export,
+<<<<<<< HEAD
             ghostty_resources_export,
+=======
+>>>>>>> 24417d8 (wtf)
             ld_linux_path.as_deref(),
         );
 
@@ -383,7 +389,10 @@ fn generate_wrapper_script(
     mesa_dri_export: &str,
     egl_vendor_export: &str,
     magic_export: &str,
+<<<<<<< HEAD
     ghostty_resources_export: &str,
+=======
+>>>>>>> 24417d8 (wtf)
     ld_linux_path: Option<&str>,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
@@ -485,7 +494,11 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
+<<<<<<< HEAD
 {gsk_export}{gio_extra_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}{ghostty_resources_export}{exec_line}
+=======
+{gsk_export}{gio_extra_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}{exec_line}
+>>>>>>> 24417d8 (wtf)
 "#
     )
 }
@@ -507,7 +520,10 @@ mod tests {
             "",
             "",
             "",
+<<<<<<< HEAD
             "",
+=======
+>>>>>>> 24417d8 (wtf)
             None,
         )
     }

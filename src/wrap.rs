@@ -183,6 +183,15 @@ pub fn generate_wrappers(
         String::new()
     };
 
+    let gio_extra_export = if has_gtk4 {
+        "# Prevent GTK from loading system GIO modules (e.g., NixOS gvfs)\n\
+         # which link against a different glib and cause symbol conflicts.\n\
+         export GIO_EXTRA_MODULES=\"\"\n"
+            .to_string()
+    } else {
+        String::new()
+    };
+
     let xkb_export = match &xkb_root {
         Some(path) => format!("export XKB_CONFIG_ROOT=\"{path}\"\n"),
         None => String::new(),
@@ -216,6 +225,21 @@ pub fn generate_wrappers(
         None => String::new(),
     };
 
+    let ghostty_resources_export =
+        "if [ -d \"$prefix/share/ghostty\" ]; then export GHOSTTY_RESOURCES_DIR=\"$prefix/share/ghostty\"; fi\n";
+
+    let ld_linux_path: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
+        let shard = hash_shard(hash);
+        let hex = hash_to_hex(hash);
+        let staging = store.root().join("staging").join(&shard).join(&hex);
+        for rel in ["lib/ld-linux-x86-64.so.2", "sysroot/lib/ld-linux-x86-64.so.2"] {
+            if staging.join(rel).is_file() {
+                return Some(format!("$staging_root/{shard}/{hex}/{rel}"));
+            }
+        }
+        None
+    });
+
     let mut count = 0;
 
     // Read directory entries first, then process — avoids borrow issues
@@ -247,13 +271,15 @@ pub fn generate_wrappers(
             continue;
         }
 
-        // Only wrap ELF executables (skip shell scripts the package may
-        // have installed, like wrapper scripts from libtool)
+        // Only wrap ELF executables by default. Some packages (notably
+        // Ghostty) install a shell launcher that execs the real binary, and
+        // that launcher still needs Hod's runtime env setup.
         let data = match std::fs::read(&path) {
             Ok(d) => d,
             Err(_) => continue,
         };
-        if !is_elf(&data) {
+        let is_ghostty_launcher = name == "ghostty" && data.starts_with(b"#!");
+        if !is_elf(&data) && !is_ghostty_launcher {
             continue;
         }
 
@@ -269,7 +295,7 @@ pub fn generate_wrappers(
         //      and no XDG_DATA_DIRS-style runtime concerns.
         // Static ELFs have no PT_INTERP, which `crate::packed::parse_interp`
         // returns as `None`.
-        if crate::packed::parse_interp(&data).is_none() {
+        if is_elf(&data) && crate::packed::parse_interp(&data).is_none() && name != "ghostty-bin" {
             continue;
         }
 
@@ -287,12 +313,15 @@ pub fn generate_wrappers(
             &wrapped_name,
             &dep_shard_hex,
             &gsk_export,
+            &gio_extra_export,
             &gio_launch_export,
             &xkb_export,
             &xlocale_export,
             &mesa_dri_export,
             &egl_vendor_export,
             &magic_export,
+            ghostty_resources_export,
+            ld_linux_path.as_deref(),
         );
 
         std::fs::write(&path, &wrapper_content).map_err(WrapError::Io)?;
@@ -347,12 +376,15 @@ fn generate_wrapper_script(
     wrapped_name: &str,
     dep_shard_hex: &[(String, String)],
     gsk_export: &str,
+    gio_extra_export: &str,
     gio_launch_export: &str,
     xkb_export: &str,
     xlocale_export: &str,
     mesa_dri_export: &str,
     egl_vendor_export: &str,
     magic_export: &str,
+    ghostty_resources_export: &str,
+    ld_linux_path: Option<&str>,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
     // Each path is: $staging_root/<shard>/<hex>/share
@@ -390,27 +422,36 @@ fn generate_wrapper_script(
 
     let xdg_data_str = xdg_data_parts.join(":");
     let ld_lib_str = ld_lib_parts.join(":");
+    let lib_path = format!("$prefix/lib:{ld_lib_str}");
     let gsettings_str = format!("{}:{}", own_gsettings, gsettings_parts.join(":"));
 
     // Most Hod binaries should not leak Hod's runtime library path to child
     // processes. Tools such as bat spawn system/Nix pagers, and those children
     // can break if they inherit Hod's libc path. Keep LD_LIBRARY_PATH only for
     // GUI/runtime-heavy apps that need dlopen() lookups after startup.
-    let keep_ld_library_path = matches!(name, "alacritty");
+    let keep_ld_library_path = matches!(name, "alacritty" | "ghostty-bin");
 
-    let ld_export = if keep_ld_library_path {
+    let ld_export = if keep_ld_library_path && name != "ghostty-bin" {
         format!(
-            "# Build LD_LIBRARY_PATH from all runtime deps for dlopen() resolution\nexport LD_LIBRARY_PATH=\"{ld_lib_str}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n"
+            "# Build LD_LIBRARY_PATH from own lib/ and runtime deps for dlopen() resolution\nexport LD_LIBRARY_PATH=\"{lib_path}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}\"\n"
         )
     } else {
         "# Hod RUNPATH relocation handles linked libraries; do not export Hod LD_LIBRARY_PATH.\n"
             .to_string()
     };
 
-    let extra_exec_args = if name == "alacritty" {
-        " --option 'env.LD_LIBRARY_PATH=\"\"'"
+    let exec_line = if name == "ghostty-bin" {
+        if let Some(ld_linux_path) = ld_linux_path {
+            format!(
+                "exec \"{ld_linux_path}\" --library-path \"{lib_path}\" \"$bin_dir/{wrapped_name}\" \"$@\""
+            )
+        } else {
+            format!("exec \"$bin_dir/{wrapped_name}\" \"$@\"")
+        }
+    } else if name == "alacritty" {
+        format!("exec \"$bin_dir/{wrapped_name}\" --option 'env.LD_LIBRARY_PATH=\"\"' \"$@\"")
     } else {
-        ""
+        format!("exec \"$bin_dir/{wrapped_name}\" \"$@\"")
     };
 
     format!(
@@ -418,15 +459,16 @@ fn generate_wrapper_script(
 # Hod wrapper — sets up runtime environment and execs the real binary.
 # Generated automatically by the hod build system.
 
-# Resolve paths using only shell builtins — no readlink/dirname from PATH.
-# This ensures the wrapper works even when PATH is entirely Hod-managed
-# (e.g., inside an Alpine/musl VM where coreutils come from Hod).
+# Resolve paths using shell builtins only — no readlink/dirname from PATH.
+# Use pwd -P so profile symlinks resolve back to the real staging tree;
+# runtime dependency paths are addressed by staging shard/hash.
 case "$0" in
     /*) _wrapper="$0" ;;
     *)  _wrapper="$(pwd)/$0" ;;
 esac
 bin_dir="${{_wrapper%/*}}"
-prefix="${{bin_dir%/*}}"
+prefix="$(cd "$bin_dir/.." && pwd -P)"
+bin_dir="$prefix/bin"
 _staging="${{prefix%/*}}"
 staging_root="${{_staging%/*}}"
 
@@ -443,7 +485,7 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
-{gsk_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}exec "$bin_dir/{wrapped_name}"{extra_exec_args} "$@"
+{gsk_export}{gio_extra_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}{ghostty_resources_export}{exec_line}
 "#
     )
 }
@@ -464,6 +506,9 @@ mod tests {
             "",
             "",
             "",
+            "",
+            "",
+            None,
         )
     }
 

@@ -1,7 +1,7 @@
 //! Profile management — evaluate TypeScript profile modules, build packages,
 //! create symlink farms, and write activation env scripts.
 //!
-//! A profile is a `.ts` file exporting `{ name: string, packages: BuiltRecipe[] }`.
+//! A profile is a `.ts` file exporting `{ name, packages, user_units? }`.
 //! This module evaluates it via Bun, builds any unbuilt packages, and produces
 //! a symlink farm at `~/.hod/profiles/<name>/` with `env.sh` and `env.fish`.
 //!
@@ -22,6 +22,7 @@
 //! them via `LD_LIBRARY_PATH`.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,8 @@ use crate::store::{Store, StoreConfig};
 struct ProfileOutput {
     name: String,
     packages: Vec<ProfilePackageOutput>,
+    #[serde(default)]
+    user_units: Vec<UserUnit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,22 +55,36 @@ pub struct ProfilePackage {
     pub hash: Hash,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserUnit {
+    pub name: String,
+    pub content: String,
+    pub enable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileDefinition {
+    pub name: String,
+    pub packages: Vec<ProfilePackage>,
+    #[serde(default)]
+    pub user_units: Vec<UserUnit>,
+}
+
 pub fn package_hashes(packages: &[ProfilePackage]) -> Vec<Hash> {
     packages.iter().map(|pkg| pkg.hash).collect()
 }
 
-/// Evaluate a profile `.ts` file via Bun and return the profile name and
-/// package recipe hashes.
+/// Evaluate a profile `.ts` file via Bun and return the resolved profile.
 ///
 /// This writes a temporary evaluation script, runs `bun run` on it, and
-/// parses a single JSON line from stdout containing `{ name, packages }`.
+/// parses a single JSON line from stdout containing `{ name, packages, user_units }`.
 ///
 /// Side effects: evaluating the profile imports all recipe modules, which
 /// call `importToStore()` — so all recipes end up in the store.
 pub fn evaluate_profile(
     profile_path: &Path,
     _store_config: &StoreConfig,
-) -> Result<(String, Vec<ProfilePackage>), String> {
+) -> Result<ProfileDefinition, String> {
     // Canonicalize to absolute path so the Bun import works from any cwd
     let abs_path = profile_path.canonicalize().map_err(|e| {
         format!(
@@ -90,7 +107,11 @@ const pkgs = profile.packages.map((p, index) => {{
   if (recipe && typeof recipe === 'object' && 'hash' in recipe) return {{ name: p.name, hash: recipe.hash }};
   throw new Error(`invalid profile package at index ${{index}}`);
 }});
-console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
+console.log(JSON.stringify({{
+  name: profile.name,
+  packages: pkgs,
+  user_units: profile.user_units ?? [],
+}}));
 "#,
         profile_str = profile_str,
     );
@@ -98,7 +119,7 @@ console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
 
     // Run bun
     let bun = std::env::var("BUN").unwrap_or_else(|_| "bun".to_string());
-    let mut command = std::process::Command::new(&bun);
+    let mut command = Command::new(&bun);
     command.arg("run").arg(&tmp);
     if std::env::var_os("HOD_BIN").is_none() {
         if let Ok(current_exe) = std::env::current_exe() {
@@ -150,7 +171,11 @@ console.log(JSON.stringify({{ name: profile.name, packages: pkgs }}));
         });
     }
 
-    Ok((profile_out.name, packages))
+    Ok(ProfileDefinition {
+        name: profile_out.name,
+        packages,
+        user_units: profile_out.user_units,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +259,18 @@ fn profiles_dir() -> PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home).join(".hod/profiles")
+}
+
+fn user_systemd_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(p).join("systemd/user");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".config/systemd/user")
+}
+
+fn managed_units_manifest_path(profile_name: &str) -> PathBuf {
+    user_systemd_dir().join(format!(".hod-{profile_name}-units.manifest"))
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +398,9 @@ pub fn populate_farm(
                             let bin_src = bin_entry.path();
                             let bin_dst = dst.join(&bin_name);
 
-                            if is_packed_elf(&bin_src) {
+                            if is_packed_elf(&bin_src)
+                                && bin_name.to_string_lossy() != "ghostty-bin"
+                            {
                                 // Write a wrapper script that execs the store binary.
                                 // Set _LIBCONTAINER_CLONED_BINARY=1 to prevent crun
                                 // from re-exec'ing itself via memfd (which breaks
@@ -542,14 +581,18 @@ fn is_packed_elf(path: &std::path::Path) -> bool {
 /// Runtime deps are linked separately under `runtime/` for inspection and for
 /// wrapper/runtime logic outside the profile env scripts.
 pub fn create_farm(store: &Store, name: &str, hashes: &[Hash]) -> Result<PathBuf, String> {
-    let packages: Vec<ProfilePackage> = hashes
-        .iter()
-        .map(|hash| ProfilePackage {
-            name: None,
-            hash: *hash,
-        })
-        .collect();
-    create_farm_from_packages(store, name, &packages)
+    let profile = ProfileDefinition {
+        name: name.to_string(),
+        packages: hashes
+            .iter()
+            .map(|hash| ProfilePackage {
+                name: None,
+                hash: *hash,
+            })
+            .collect(),
+        user_units: Vec::new(),
+    };
+    create_farm_from_profile(store, &profile)
 }
 
 pub fn create_farm_from_packages(
@@ -557,10 +600,23 @@ pub fn create_farm_from_packages(
     name: &str,
     profile_packages: &[ProfilePackage],
 ) -> Result<PathBuf, String> {
+    let profile = ProfileDefinition {
+        name: name.to_string(),
+        packages: profile_packages.to_vec(),
+        user_units: Vec::new(),
+    };
+    create_farm_from_profile(store, &profile)
+}
+
+pub fn create_farm_from_profile(
+    store: &Store,
+    profile: &ProfileDefinition,
+) -> Result<PathBuf, String> {
     let base = profiles_dir();
-    let farm_dir = base.join(name);
-    let tmp_dir = base.join(format!(".{name}.tmp"));
-    let old_dir = base.join(format!(".{name}.old"));
+    let farm_dir = base.join(&profile.name);
+    let tmp_dir = base.join(format!(".{}.tmp", profile.name));
+    let old_dir = base.join(format!(".{}.old", profile.name));
+    let changed_units = changed_user_units(&farm_dir, &profile.user_units)?;
 
     // Ensure base directory exists
     std::fs::create_dir_all(&base)
@@ -573,7 +629,7 @@ pub fn create_farm_from_packages(
     }
 
     // Populate pkgs/ and runtime/ via the shared helper.
-    let entries = populate_farm(&tmp_dir, store, profile_packages)?;
+    let entries = populate_farm(&tmp_dir, store, &profile.packages)?;
     let packages: Vec<ResolvedPackage> = entries
         .into_iter()
         .map(|e| ResolvedPackage {
@@ -583,7 +639,8 @@ pub fn create_farm_from_packages(
         .collect();
 
     // Write env snippets (user-profile-specific; system profiles skip this).
-    write_env_snippets(&tmp_dir, name, &packages)?;
+    write_env_snippets(&tmp_dir, &profile.name, &packages)?;
+    write_user_units(&tmp_dir, &profile.user_units)?;
 
     // Atomic swap
     if farm_dir.exists() {
@@ -601,7 +658,163 @@ pub fn create_farm_from_packages(
         let _ = std::fs::remove_dir_all(&old_dir);
     }
 
+    if !profile.user_units.is_empty() || managed_units_manifest_path(&profile.name).exists() {
+        activate_user_units(&profile.name, &farm_dir, &profile.user_units, &changed_units)?;
+    }
+
     Ok(farm_dir)
+}
+
+fn write_user_units(farm_dir: &Path, user_units: &[UserUnit]) -> Result<(), String> {
+    if user_units.is_empty() {
+        return Ok(());
+    }
+    let units_dir = farm_dir.join("units");
+    std::fs::create_dir_all(&units_dir)
+        .map_err(|e| format!("cannot create units dir {}: {e}", units_dir.display()))?;
+    for unit in user_units {
+        std::fs::write(units_dir.join(&unit.name), &unit.content)
+            .map_err(|e| format!("cannot write unit {}: {e}", unit.name))?;
+    }
+    Ok(())
+}
+
+fn changed_user_units(farm_dir: &Path, user_units: &[UserUnit]) -> Result<Vec<String>, String> {
+    let mut changed = Vec::new();
+    for unit in user_units {
+        let existing_path = farm_dir.join("units").join(&unit.name);
+        let differs = match std::fs::read_to_string(&existing_path) {
+            Ok(existing) => existing != unit.content,
+            Err(_) => true,
+        };
+        if differs {
+            changed.push(unit.name.clone());
+        }
+    }
+    Ok(changed)
+}
+
+fn read_managed_units(profile_name: &str) -> Result<Vec<String>, String> {
+    let manifest_path = managed_units_manifest_path(profile_name);
+    if !manifest_path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("cannot read {}: {e}", manifest_path.display()))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn run_systemctl_user(args: &[&str]) -> Result<(), String> {
+    let status = Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run systemctl --user {}: {e}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "systemctl --user {} failed with exit {:?}",
+            args.join(" "),
+            status.code()
+        ))
+    }
+}
+
+fn systemctl_user_status(args: &[&str]) -> Result<bool, String> {
+    let status = Command::new("systemctl")
+        .arg("--user")
+        .args(args)
+        .status()
+        .map_err(|e| format!("failed to run systemctl --user {}: {e}", args.join(" ")))?;
+    Ok(status.success())
+}
+
+fn activate_user_units(
+    profile_name: &str,
+    farm_dir: &Path,
+    user_units: &[UserUnit],
+    changed_units: &[String],
+) -> Result<(), String> {
+    let systemd_dir = user_systemd_dir();
+    std::fs::create_dir_all(&systemd_dir)
+        .map_err(|e| format!("cannot create systemd user dir {}: {e}", systemd_dir.display()))?;
+
+    let previous_units = read_managed_units(profile_name)?;
+    let desired_names: std::collections::HashSet<&str> =
+        user_units.iter().map(|unit| unit.name.as_str()).collect();
+
+    for unit_name in &previous_units {
+        if desired_names.contains(unit_name.as_str()) {
+            continue;
+        }
+        let _ = run_systemctl_user(&["stop", unit_name]);
+        let _ = run_systemctl_user(&["disable", unit_name]);
+        let link_path = systemd_dir.join(unit_name);
+        if link_path.exists() || link_path.is_symlink() {
+            std::fs::remove_file(&link_path)
+                .map_err(|e| format!("cannot remove unit link {}: {e}", link_path.display()))?;
+        }
+    }
+
+    for unit in user_units {
+        let link_path = systemd_dir.join(&unit.name);
+        let target = farm_dir.join("units").join(&unit.name);
+        if link_path.exists() || link_path.is_symlink() {
+            let managed = previous_units.iter().any(|name| name == &unit.name);
+            if !managed {
+                return Err(format!(
+                    "refusing to overwrite unmanaged user unit {} at {}",
+                    unit.name,
+                    link_path.display()
+                ));
+            }
+            std::fs::remove_file(&link_path)
+                .map_err(|e| format!("cannot replace unit link {}: {e}", link_path.display()))?;
+        }
+        std::os::unix::fs::symlink(&target, &link_path)
+            .map_err(|e| format!("cannot link {} -> {}: {e}", link_path.display(), target.display()))?;
+    }
+
+    let needs_reload = !previous_units.is_empty() || !user_units.is_empty();
+    if needs_reload {
+        run_systemctl_user(&["daemon-reload"])?;
+    }
+
+    for unit in user_units {
+        if unit.enable {
+            run_systemctl_user(&["enable", &unit.name])?;
+        } else if systemctl_user_status(&["is-enabled", "--quiet", &unit.name])? {
+            run_systemctl_user(&["disable", &unit.name])?;
+        }
+    }
+
+    for unit_name in changed_units {
+        if systemctl_user_status(&["is-active", "--quiet", unit_name])? {
+            run_systemctl_user(&["restart", unit_name])?;
+        }
+    }
+
+    let mut names: Vec<&str> = user_units.iter().map(|unit| unit.name.as_str()).collect();
+    names.sort_unstable();
+    let manifest_path = managed_units_manifest_path(profile_name);
+    if names.is_empty() {
+        if manifest_path.exists() {
+            std::fs::remove_file(&manifest_path)
+                .map_err(|e| format!("cannot remove {}: {e}", manifest_path.display()))?;
+        }
+    } else {
+        let manifest = format!("{}\n", names.join("\n"));
+        std::fs::write(&manifest_path, manifest)
+            .map_err(|e| format!("cannot write {}: {e}", manifest_path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn unique_package_name(name: &str, seen: &mut std::collections::HashSet<String>) -> String {
@@ -736,7 +949,7 @@ fn collect_runtime_deps(
 // Environment snippets
 // ---------------------------------------------------------------------------
 
-/// Write `env.sh` and `env.fish` into the farm directory.
+/// Write `env.sh`, `env.fish`, and `env.systemd` into the farm directory.
 ///
 /// Composes PATH, MANPATH, and XDG_DATA_DIRS from the linked package
 /// directories.
@@ -819,16 +1032,18 @@ fn write_env_snippets(
     let man_val = man_parts.join(":");
     let xdg_val = xdg_parts.join(":");
 
-    let mut extra_env = String::new();
+    let mut extra_env_sh = String::new();
+    let mut extra_env_systemd = String::new();
 
     // Generate containers.conf when the profile includes podman.
     if pkg_names.iter().any(|n| *n == "podman") {
         let containers_conf = generate_containers_conf(&farm_path, &pkg_names);
         std::fs::write(farm_dir.join("containers.conf"), &containers_conf)
             .map_err(|e| format!("cannot write containers.conf: {e}"))?;
-        extra_env.push_str(&format!(
+        extra_env_sh.push_str(&format!(
             "export CONTAINERS_CONF=\"{farm_path}/containers.conf\"\n"
         ));
+        extra_env_systemd.push_str(&format!("CONTAINERS_CONF={farm_path}/containers.conf\n"));
     }
 
     let env_sh = format!(
@@ -837,10 +1052,16 @@ export HOD_PROFILE="{name}"
 export PATH="{path_val}:$PATH"
 export MANPATH="{man_val}${{MANPATH:+:$MANPATH}}"
 export XDG_DATA_DIRS="{xdg_val}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
-{extra_env}"#,
+{extra_env_sh}"#,
     );
     std::fs::write(farm_dir.join("env.sh"), &env_sh)
         .map_err(|e| format!("cannot write env.sh: {e}"))?;
+
+    let env_systemd = format!(
+        "# hod profile: {name}\nHOD_PROFILE={name}\nPATH={path_val}:/usr/local/bin:/usr/bin:/bin\nMANPATH={man_val}\nXDG_DATA_DIRS={xdg_val}\n{extra_env_systemd}",
+    );
+    std::fs::write(farm_dir.join("env.systemd"), &env_systemd)
+        .map_err(|e| format!("cannot write env.systemd: {e}"))?;
 
     // env.fish
     let fish_path = path_parts.join("\" $PATH \"");

@@ -45,7 +45,8 @@ pub fn relocate_staged_output(
 
     for elf_path in &elf_files {
         match relocate_single_elf(store, elf_path, output_staging_dir, runtime_dep_outputs) {
-            Ok(()) => count += 1,
+            Ok(true) => count += 1,
+            Ok(false) => {}
             Err(e) => {
                 eprintln!(
                     "[hod] warning: failed to relocate {}: {e}",
@@ -136,7 +137,7 @@ fn relocate_single_elf(
     elf_path: &Path,
     output_staging_dir: &Path,
     runtime_dep_outputs: &BTreeMap<String, Hash>,
-) -> Result<(), RelocateError> {
+) -> Result<bool, RelocateError> {
     let mut data = std::fs::read(elf_path)?;
 
     // Step 1: Discover DT_NEEDED library names
@@ -144,7 +145,7 @@ fn relocate_single_elf(
 
     if needed_libs.is_empty() {
         // Static or no dependencies — nothing to relocate
-        return Ok(());
+        return Ok(false);
     }
 
     // Step 2: Resolve each needed library to a dependency output
@@ -222,12 +223,16 @@ fn relocate_single_elf(
     // Shared libraries only need RUNPATH. Executables also need the bootstrap
     // in Step 8 so they can locate ld-linux from their own invocation path on
     // both the host store and in sandboxes.
+    let mut patched_any = false;
+    let mut patch_failed = false;
     match patch_elf_for_relocation(
         &mut data,
         runpath.as_bytes(),
         new_interp.as_deref().map(|s| s.as_bytes()),
     ) {
-        Ok(true) => {}
+        Ok(true) => {
+            patched_any = true;
+        }
         Ok(false) => {
             eprintln!(
                 "[hod] warning: no RUNPATH to patch in {}",
@@ -235,6 +240,7 @@ fn relocate_single_elf(
             );
         }
         Err(e) => {
+            patch_failed = true;
             eprintln!(
                 "[hod] warning: failed to patch RUNPATH in {}: {e}",
                 elf_path.display()
@@ -247,9 +253,16 @@ fn relocate_single_elf(
     // works when executed from arbitrary CWDs on the host and via /deps/<name>
     // aliases inside sandboxes. Shared libraries have no PT_INTERP and are
     // skipped automatically.
-    if let Some(interp) = new_interp.as_deref() {
+    if patch_failed {
+        eprintln!(
+            "[hod] warning: skipping bootstrap injection in {} because RUNPATH/interpreter patching failed",
+            elf_path.display()
+        );
+    } else if let Some(interp) = new_interp.as_deref() {
         match inject_bootstrap(&mut data, interp) {
-            Ok(true) => {}
+            Ok(true) => {
+                patched_any = true;
+            }
             Ok(false) => {}
             Err(e) => {
                 eprintln!(
@@ -261,9 +274,11 @@ fn relocate_single_elf(
     }
 
     // Step 9: Write the modified binary back
-    std::fs::write(elf_path, &data)?;
+    if patched_any {
+        std::fs::write(elf_path, &data)?;
+    }
 
-    Ok(())
+    Ok(patched_any)
 }
 
 /// Discover DT_NEEDED library names from an ELF binary.

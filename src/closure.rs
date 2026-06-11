@@ -431,8 +431,9 @@ pub fn parse_destination(
     dest_str: &str,
     remote_store_override: Option<&Path>,
 ) -> Result<Destination, String> {
-    // Check for SSH destination: contains @ but doesn't start with / or .
-    if dest_str.contains('@') && !dest_str.starts_with('/') && !dest_str.starts_with('.') {
+    // SSH destination: either user@host, user@host:path, or a bare hostname.
+    // Local relative paths must be written explicitly as ./path or ../path.
+    if !dest_str.starts_with('/') && !dest_str.starts_with('.') && !dest_str.contains('/') {
         if let Some(colon_pos) = dest_str.find(':') {
             let user_host = &dest_str[..colon_pos];
             let path_str = &dest_str[colon_pos + 1..];

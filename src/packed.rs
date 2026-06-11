@@ -343,7 +343,7 @@ fn patch_runpath_by_extension(
     match patch_elf_with_new_segment(data, new_rpath, None) {
         Ok(true) => return Ok(true),
         Ok(false) => {}
-        Err(_) => {}
+        Err(e) => eprintln!("[hod] warning: RUNPATH new-segment patch failed: {e}"),
     }
 
     // Strategy 3: Extend the last PT_LOAD segment in-place.
@@ -1046,8 +1046,8 @@ fn patch_elf_with_new_segment(
         let mut old_dynstr =
             data[info.dynstr_file_off..info.dynstr_file_off + info.actual_str_end].to_vec();
 
-        let rpath_off_in_copy = info.old_rpath_file_off - info.dynstr_file_off;
-        if rpath_off_in_copy < old_dynstr.len() {
+        let rpath_off_in_copy = info.old_rpath_file_off.checked_sub(info.dynstr_file_off);
+        if let Some(rpath_off_in_copy) = rpath_off_in_copy.filter(|off| *off < old_dynstr.len()) {
             let zero_end = (rpath_off_in_copy + info.old_rpath_len).min(old_dynstr.len());
             old_dynstr[rpath_off_in_copy..zero_end].fill(0);
         }

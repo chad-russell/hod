@@ -335,6 +335,43 @@ fn do_build(
                 }
             }
 
+            let raw_dir = artifact_staging_path(store, &output_hash);
+
+            // Generate wrapper scripts before relocation. Relocation embeds
+            // executable-relative bootstrap paths, so it must see the final
+            // wrapper layout (for example bin/_hod_wrapped/<name>).
+            if !runtime_dep_outputs.is_empty() {
+                let wrap_dir = raw_dir.with_extension("wrap");
+                if wrap_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&wrap_dir);
+                }
+                copy_dir_recursive(&raw_dir, &wrap_dir)?;
+
+                match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
+                    Ok(count) if count > 0 => {
+                        eprintln!("[hod] generated {} wrapper script(s)", count,);
+
+                        let wrapped_artifact = capture_output(&wrap_dir, store)?;
+                        let wrapped_hash = artifact_to_hash(&wrapped_artifact);
+                        stage_artifact(store, &wrapped_artifact, &wrapped_hash)?;
+
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
+
+                        if wrapped_hash != output_hash {
+                            let _ = std::fs::remove_dir_all(&raw_dir);
+                        }
+                        output_hash = wrapped_hash;
+                    }
+                    Ok(_) => {
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
+                    }
+                    Err(e) => {
+                        eprintln!("[hod] warning: wrapper generation failed: {e}");
+                        let _ = std::fs::remove_dir_all(&wrap_dir);
+                    }
+                }
+            }
+
             let pre_reloc_dir = artifact_staging_path(store, &output_hash);
 
             // Copy the pre-relocation staging dir before modifying it in-place.
@@ -374,43 +411,6 @@ fn do_build(
                 Err(e) => {
                     eprintln!("[hod] warning: runtime fixup failed: {e}");
                     let _ = std::fs::remove_dir_all(&reloc_dir);
-                }
-            }
-
-            // Generate wrapper scripts for executables in bin/.
-            // This runs after relocation so that the wrappers replace the
-            // already-relocated ELF binaries.
-            if !runtime_dep_outputs.is_empty() {
-                let wrap_src_dir = artifact_staging_path(store, &output_hash);
-
-                let wrap_dir = wrap_src_dir.with_extension("wrap");
-                if wrap_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&wrap_dir);
-                }
-                copy_dir_recursive(&wrap_src_dir, &wrap_dir)?;
-
-                match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
-                    Ok(count) if count > 0 => {
-                        eprintln!("[hod] generated {} wrapper script(s)", count,);
-
-                        let wrapped_artifact = capture_output(&wrap_dir, store)?;
-                        let wrapped_hash = artifact_to_hash(&wrapped_artifact);
-                        stage_artifact(store, &wrapped_artifact, &wrapped_hash)?;
-
-                        let _ = std::fs::remove_dir_all(&wrap_dir);
-
-                        if wrapped_hash != output_hash {
-                            let _ = std::fs::remove_dir_all(&wrap_src_dir);
-                        }
-                        output_hash = wrapped_hash;
-                    }
-                    Ok(_) => {
-                        let _ = std::fs::remove_dir_all(&wrap_dir);
-                    }
-                    Err(e) => {
-                        eprintln!("[hod] warning: wrapper generation failed: {e}");
-                        let _ = std::fs::remove_dir_all(&wrap_dir);
-                    }
                 }
             }
         }
@@ -683,32 +683,7 @@ pub fn restage_output(
         let _ = std::fs::remove_dir_all(&old_dir);
     }
 
-    // Copy pre-relocation staging dir for relocation.
-    let reloc_dir = pre_reloc_dir.with_extension("reloc");
-    if reloc_dir.exists() {
-        let _ = std::fs::remove_dir_all(&reloc_dir);
-    }
-    copy_dir_recursive(&pre_reloc_dir, &reloc_dir)?;
-
     let mut output_hash = build_output_hash;
-
-    match apply_runtime_fixup(&p.platform, store, &reloc_dir, &runtime_dep_outputs) {
-        Ok(count) if count > 0 => {
-            eprintln!("[hod] restage: applied {} runtime fixup(s)", count);
-            let fixed_artifact = capture_output(&reloc_dir, store)?;
-            let fixed_hash = artifact_to_hash(&fixed_artifact);
-            stage_artifact(store, &fixed_artifact, &fixed_hash)?;
-            let _ = std::fs::remove_dir_all(&reloc_dir);
-            output_hash = fixed_hash;
-        }
-        Ok(_) => {
-            let _ = std::fs::remove_dir_all(&reloc_dir);
-        }
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&reloc_dir);
-            return Err(e.into());
-        }
-    }
 
     if !runtime_dep_outputs.is_empty() {
         let wrap_src_dir = artifact_staging_path(store, &output_hash);
@@ -737,6 +712,36 @@ pub fn restage_output(
                 let _ = std::fs::remove_dir_all(&wrap_dir);
                 eprintln!("[hod] warning: wrapper generation failed: {e}");
             }
+        }
+    }
+
+    // Relocate after wrapping so embedded interpreter paths match the final
+    // executable locations under bin/_hod_wrapped/.
+    let pre_reloc_dir = artifact_staging_path(store, &output_hash);
+    let reloc_dir = pre_reloc_dir.with_extension("reloc");
+    if reloc_dir.exists() {
+        let _ = std::fs::remove_dir_all(&reloc_dir);
+    }
+    copy_dir_recursive(&pre_reloc_dir, &reloc_dir)?;
+
+    match apply_runtime_fixup(&p.platform, store, &reloc_dir, &runtime_dep_outputs) {
+        Ok(count) if count > 0 => {
+            eprintln!("[hod] restage: applied {} runtime fixup(s)", count);
+            let fixed_artifact = capture_output(&reloc_dir, store)?;
+            let fixed_hash = artifact_to_hash(&fixed_artifact);
+            stage_artifact(store, &fixed_artifact, &fixed_hash)?;
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+            if fixed_hash != output_hash {
+                let _ = std::fs::remove_dir_all(&pre_reloc_dir);
+            }
+            output_hash = fixed_hash;
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&reloc_dir);
+            return Err(e.into());
         }
     }
 

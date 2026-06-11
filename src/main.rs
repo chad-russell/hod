@@ -382,6 +382,10 @@ enum Commands {
         #[arg(long)]
         remote_store: Option<PathBuf>,
 
+        /// Hod executable to use on the remote for --from closure queries.
+        #[arg(long, default_value = "hod")]
+        remote_hod: String,
+
         /// Show what would be copied without copying.
         #[arg(short = 'n', long)]
         dry_run: bool,
@@ -691,6 +695,7 @@ fn main() {
             from,
             store,
             remote_store,
+            remote_hod,
             dry_run,
             list,
             archive,
@@ -704,6 +709,7 @@ fn main() {
             from,
             store,
             remote_store,
+            remote_hod,
             dry_run,
             list,
             archive,
@@ -2046,30 +2052,29 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
 
     // Evaluate the profile module via Bun
     eprintln!("[hod] evaluating profile {}", profile_file.display());
-    let (name, packages) = match hod::profile::evaluate_profile(&profile_file, &store_config) {
+    let profile = match hod::profile::evaluate_profile(&profile_file, &store_config) {
         Ok(result) => result,
         Err(e) => {
             eprintln!("hod: {e}");
             process::exit(4);
         }
     };
-    let hashes = hod::profile::package_hashes(&packages);
+    let hashes = hod::profile::package_hashes(&profile.packages);
 
-    eprintln!("[hod] profile '{}': {} package(s)", name, hashes.len());
+    eprintln!("[hod] profile '{}': {} package(s)", profile.name, hashes.len());
 
     if let Some(ref builder) = remote_builder {
         cmd_remote_builder_profile(
             &builder,
             &remote_hod,
             &store_config,
-            &name,
-            &packages,
+            &profile,
             &hashes,
             activate,
             quiet,
         );
     } else {
-        cmd_local_profile(&store_config, &hashes, &name, &packages, activate, quiet);
+        cmd_local_profile(&store_config, &hashes, &profile, activate, quiet);
     }
 
     process::exit(0);
@@ -2078,8 +2083,7 @@ fn cmd_profile(action: ProfileAction, store_path: Option<PathBuf>, quiet: bool) 
 fn cmd_local_profile(
     store_config: &StoreConfig,
     hashes: &[[u8; 32]],
-    name: &str,
-    packages: &[hod::profile::ProfilePackage],
+    profile: &hod::profile::ProfileDefinition,
     activate: bool,
     quiet: bool,
 ) -> ! {
@@ -2104,7 +2108,7 @@ fn cmd_local_profile(
     }
 
     if activate {
-        let farm_dir = match hod::profile::create_farm_from_packages(&store, name, packages) {
+        let farm_dir = match hod::profile::create_farm_from_profile(&store, profile) {
             Ok(dir) => dir,
             Err(e) => {
                 eprintln!("hod: {e}");
@@ -2113,7 +2117,7 @@ fn cmd_local_profile(
         };
 
         let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
-        let env_path = format!("{home}/.hod/profiles/{name}/env.sh");
+        let env_path = format!("{home}/.hod/profiles/{}/env.sh", profile.name);
 
         eprintln!("[hod] symlink farm: {}/", farm_dir.display());
         eprintln!("[hod] activated. Add to your shell config:");
@@ -2127,8 +2131,7 @@ fn cmd_remote_builder_profile(
     builder: &str,
     remote_hod: &str,
     store_config: &StoreConfig,
-    name: &str,
-    packages: &[hod::profile::ProfilePackage],
+    profile: &hod::profile::ProfileDefinition,
     _hashes: &[[u8; 32]],
     activate: bool,
     quiet: bool,
@@ -2136,7 +2139,7 @@ fn cmd_remote_builder_profile(
     if !quiet {
         eprintln!(
             "[hod] remote builder: building {} package(s) on {}",
-            packages.len(),
+            profile.packages.len(),
             builder
         );
     }
@@ -2161,39 +2164,22 @@ fn cmd_remote_builder_profile(
         eprintln!("[hod] remote builder: syncing recipe files to {}...", builder);
     }
 
-    let mut synced_recipes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
-    for package in packages {
-        let hex = hash_to_hex(&package.hash);
+    let remote_recipes_dir = format!("{}:{}/recipes/", builder, remote_store_path.display());
+    let mut local_recipes_dir = store.root().join("recipes");
+    local_recipes_dir.push(""); // trailing slash for rsync content-only transfer
 
-        let closure = match hod::closure::resolve_closure(&store, &package.hash) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("hod: failed to resolve closure for {}: {e}", hex);
-                process::exit(10);
-            }
-        };
+    let rsync_status = process::Command::new(system_rsync())
+        .args(["-a", "-q", "--ignore-existing", "-e", system_ssh()])
+        .arg(&local_recipes_dir)
+        .arg(&remote_recipes_dir)
+        .status()
+        .unwrap();
 
-        for entry in &closure.entries {
-            if !synced_recipes.insert(entry.recipe_hash) {
-                continue;
-            }
-
-            let entry_hex = hash_to_hex(&entry.recipe_hash);
-            let shard = &entry_hex[..2];
-            let local_recipe = store.root().join(format!("recipes/{shard}/{entry_hex}"));
-
-            if local_recipe.exists() {
-                let remote_dir = format!("{}:{}/recipes/{shard}/", builder, remote_store_path.display());
-                let _ = process::Command::new(system_rsync())
-                    .args(["-q", "-e", system_ssh(), "--ignore-existing"])
-                    .arg(&local_recipe)
-                    .arg(&remote_dir)
-                    .status();
-            }
-        }
+    if !rsync_status.success() {
+        eprintln!("hod: warning: recipe sync to {} had errors", builder);
     }
 
-    for (i, package) in packages.iter().enumerate() {
+    for (i, package) in profile.packages.iter().enumerate() {
         let hex = hash_to_hex(&package.hash);
         let pkg_label = package.name.as_deref().unwrap_or(&hex[..16]);
 
@@ -2201,7 +2187,7 @@ fn cmd_remote_builder_profile(
             eprintln!(
                 "[hod] [{}/{}] building {} on {}...",
                 i + 1,
-                packages.len(),
+                profile.packages.len(),
                 pkg_label,
                 builder,
             );
@@ -2232,7 +2218,7 @@ fn cmd_remote_builder_profile(
         }
     };
 
-    for (i, package) in packages.iter().enumerate() {
+    for (i, package) in profile.packages.iter().enumerate() {
         let hex = hash_to_hex(&package.hash);
         let pkg_label = package.name.as_deref().unwrap_or(&hex[..16]);
 
@@ -2240,7 +2226,7 @@ fn cmd_remote_builder_profile(
             eprintln!(
                 "[hod] [{}/{}] pulling {} ({})",
                 i + 1,
-                packages.len(),
+                profile.packages.len(),
                 pkg_label,
                 &hex[..16],
             );
@@ -2337,7 +2323,7 @@ fn cmd_remote_builder_profile(
         }
     };
 
-    let farm_dir = match hod::profile::create_farm_from_packages(&store, name, packages) {
+    let farm_dir = match hod::profile::create_farm_from_profile(&store, profile) {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("hod: {e}");
@@ -2346,7 +2332,7 @@ fn cmd_remote_builder_profile(
     };
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "$HOME".to_string());
-    let env_path = format!("{home}/.hod/profiles/{name}/env.sh");
+    let env_path = format!("{home}/.hod/profiles/{}/env.sh", profile.name);
 
     eprintln!("[hod] symlink farm: {}/", farm_dir.display());
     eprintln!("[hod] activated. Add to your shell config:");
@@ -2366,14 +2352,19 @@ fn cmd_profile_copy(
     pin: bool,
 ) -> ! {
     eprintln!("[hod] evaluating profile {}", profile_file.display());
-    let (profile_name, packages) =
+    let profile =
         match hod::profile::evaluate_profile(&profile_file, &store_config) {
-            Ok((name, packages)) => (name_override.unwrap_or(name), packages),
+            Ok(profile) => hod::profile::ProfileDefinition {
+                name: name_override.unwrap_or(profile.name),
+                ..profile
+            },
             Err(e) => {
                 eprintln!("hod: {e}");
                 process::exit(4);
             }
         };
+    let profile_name = profile.name.clone();
+    let packages = profile.packages;
     let hashes = hod::profile::package_hashes(&packages);
 
     eprintln!(
@@ -2507,14 +2498,19 @@ fn cmd_profile_pin(
     store_config: StoreConfig,
 ) -> ! {
     eprintln!("[hod] evaluating profile {}", profile_file.display());
-    let (profile_name, packages) =
+    let profile =
         match hod::profile::evaluate_profile(&profile_file, &store_config) {
-            Ok((name, packages)) => (name_override.unwrap_or(name), packages),
+            Ok(profile) => hod::profile::ProfileDefinition {
+                name: name_override.unwrap_or(profile.name),
+                ..profile
+            },
             Err(e) => {
                 eprintln!("hod: {e}");
                 process::exit(4);
             }
         };
+    let profile_name = profile.name.clone();
+    let packages = profile.packages;
     let hashes = hod::profile::package_hashes(&packages);
 
     let path = profile_roots_path(&profile_name);
@@ -3516,6 +3512,7 @@ fn cmd_copy_closure(
     from: Option<String>,
     store_path: Option<PathBuf>,
     remote_store: Option<PathBuf>,
+    remote_hod: String,
     dry_run: bool,
     list: bool,
     archive: bool,
@@ -3530,6 +3527,7 @@ fn cmd_copy_closure(
             from_str,
             store_path.as_deref(),
             remote_store.as_deref(),
+            &remote_hod,
             dry_run,
             force,
             quiet,
@@ -3635,6 +3633,7 @@ fn cmd_copy_closure_from(
     from_str: &str,
     store_path: Option<&Path>,
     remote_store_override: Option<&Path>,
+    remote_hod: &str,
     dry_run: bool,
     force: bool,
     quiet: bool,
@@ -3682,7 +3681,7 @@ fn cmd_copy_closure_from(
                     user_host
                 );
             }
-            match ssh_resolve(&user_host, specifier) {
+            match ssh_resolve(&user_host, remote_hod, specifier) {
                 Ok(hex) => hex_to_hash(&hex).unwrap_or_else(|| {
                     eprintln!("hod: remote returned invalid hash: '{hex}'");
                     process::exit(4);
@@ -3714,7 +3713,7 @@ fn cmd_copy_closure_from(
     }
 
     // Query remote closure list via SSH.
-    let closure_output = match ssh_closure_list(&user_host, &remote_store, &recipe_hex) {
+    let closure_output = match ssh_closure_list(&user_host, remote_hod, &remote_store, &recipe_hex) {
         Ok(output) => output,
         Err(e) => {
             eprintln!("hod: {e}");
@@ -3919,13 +3918,14 @@ struct ClosureListEntry {
 /// Run `hod closure --list` on the remote via SSH and capture output.
 fn ssh_closure_list(
     user_host: &str,
+    remote_hod: &str,
     remote_store: &Path,
     recipe_hex: &str,
 ) -> Result<String, String> {
     let output = process::Command::new("ssh")
         .args([
             user_host,
-            "hod",
+            remote_hod,
             "closure",
             recipe_hex,
             "--list",
@@ -3947,9 +3947,9 @@ fn ssh_closure_list(
 }
 
 /// Run `hod resolve <specifier>` on the remote via SSH and capture the hash.
-fn ssh_resolve(user_host: &str, specifier: &str) -> Result<String, String> {
+fn ssh_resolve(user_host: &str, remote_hod: &str, specifier: &str) -> Result<String, String> {
     let output = process::Command::new("ssh")
-        .args([user_host, "hod", "resolve", specifier])
+        .args([user_host, remote_hod, "resolve", specifier])
         .output()
         .map_err(|e| format!("failed to ssh to {user_host}: {e}"))?;
 
@@ -4160,7 +4160,7 @@ fn pull_and_merge_db(
     for entry in entries {
         let recipe_hex = hash_to_hex(&entry.recipe_hash);
         let mut stmt = remote_conn
-            .prepare("SELECT dep_name, dep_recipe_hash FROM dependencies WHERE recipe_hash = ?1")
+            .prepare("SELECT dep_name, dep_hash FROM dependencies WHERE recipe_hash = ?1")
             .map_err(|e| format!("failed to query remote dependencies: {e}"))?;
 
         let dep_rows: Vec<(String, String)> = stmt
@@ -4174,7 +4174,7 @@ fn pull_and_merge_db(
         if !dep_rows.is_empty() {
             for (dep_name, dep_hash) in &dep_rows {
                 let _ = local_store.conn().execute(
-                    "INSERT OR IGNORE INTO dependencies (recipe_hash, dep_name, dep_recipe_hash) VALUES (?1, ?2, ?3)",
+                    "INSERT OR IGNORE INTO dependencies (recipe_hash, dep_name, dep_hash) VALUES (?1, ?2, ?3)",
                     rusqlite::params![recipe_hex, dep_name, dep_hash],
                 );
             }

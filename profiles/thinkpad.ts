@@ -58,6 +58,7 @@ import { aardvarkDnsRecipe } from "../recipes/native/aardvark-dns/aardvark-dns.j
 import { containersConfigRecipe } from "../recipes/native/containers-config/containers-config.js";
 import { ghosttyRecipe } from "../recipes/native/ghostty/ghostty.js";
 import { userUnit } from "../js/src/systemd.js";
+import { sourceFile } from "../js/src/profile-files.js";
 
 const pk = (name: string, subpath: string = "") => {
   const suffix = subpath === "" ? "" : `/${subpath}`;
@@ -115,9 +116,29 @@ const userUnits = [
   }),
 ];
 
+const configFiles = [
+  sourceFile(".config/ghostty/config", "../configs/thinkpad/ghostty/config", import.meta.url),
+  sourceFile(".config/gtk-3.0/settings.ini", "../configs/thinkpad/gtk/settings-gtk3.ini", import.meta.url),
+  sourceFile(".config/gtk-4.0/settings.ini", "../configs/thinkpad/gtk/settings-gtk4.ini", import.meta.url),
+  sourceFile(".config/mimeapps.list", "../configs/thinkpad/mimeapps.list", import.meta.url),
+  sourceFile(".config/niri/config.kdl", "../configs/thinkpad/niri/config.kdl", import.meta.url),
+  sourceFile(".config/oh-my-posh/config.json", "../configs/thinkpad/oh-my-posh/config.json", import.meta.url),
+  sourceFile(".config/ssh/config", "../configs/thinkpad/ssh/config", import.meta.url),
+  sourceFile(".config/zellij/config.kdl", "../configs/thinkpad/zellij/config.kdl", import.meta.url),
+  sourceFile(".config/zsh/fzf-history-widget.zsh", "../configs/thinkpad/zsh/fzf-history-widget.zsh", import.meta.url),
+  sourceFile(".config/zsh/plugins/zsh-autosuggestions.zsh", "../configs/thinkpad/zsh/plugins/zsh-autosuggestions.zsh", import.meta.url),
+  sourceFile(".config/zsh/plugins/zsh-syntax-highlighting.zsh", "../configs/thinkpad/zsh/plugins/zsh-syntax-highlighting.zsh", import.meta.url),
+  sourceFile(".pi/agent/extensions/searxng-search/index.ts", "../configs/thinkpad/pi-extensions/searxng-search/index.ts", import.meta.url),
+  sourceFile(".pi/agent/extensions/gloo-proxy/index.ts", "../configs/thinkpad/pi-extensions/gloo-proxy/index.ts", import.meta.url),
+  sourceFile(".zshenv", "../configs/thinkpad/zsh/zshenv", import.meta.url),
+  sourceFile(".zprofile", "../configs/thinkpad/zsh/zprofile", import.meta.url),
+  sourceFile(".zshrc", "../configs/thinkpad/zsh/zshrc", import.meta.url),
+];
+
 export const profile = {
   name: "thinkpad",
   user_units: userUnits,
+  files: configFiles,
   packages: [
     // Daily CLI tools already present in the ThinkPad Home Manager config.
     { name: "bat", recipe: batRecipe },

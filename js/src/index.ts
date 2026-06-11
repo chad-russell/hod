@@ -44,3 +44,7 @@ export type { SystemConfig, SystemUser, SystemGroup, SystemDefinition } from "./
 // Systemd unit helpers
 export { userUnit, unitToIni } from "./systemd.js";
 export type { SystemdUnitConfig, SystemdSection, SystemdValue, UserUnitDefinition } from "./systemd.js";
+
+// Profile file management
+export { homeFile, configFile, sourceFile, homeDir } from "./profile-files.js";
+export type { ManagedFileDefinition } from "./profile-files.js";

@@ -1,0 +1,7 @@
+if [[ "$TERM" == "xterm-ghostty" ]]; then
+  export TERM=xterm-256color
+fi
+
+if [[ -n "$WAYLAND_DISPLAY" && -z "$DISPLAY" ]]; then
+  export DISPLAY=":0"
+fi

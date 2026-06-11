@@ -42,10 +42,13 @@ export async function bunPackage(opts: BunPackageOptions): Promise<BuiltRecipe> 
   const wrapperScripts = opts.bins.map((bin) => `
 cat > $OUT/bin/${bin.name} <<'EOF'
 #!/bin/sh
-self=$(readlink -f "$0")
-prefix=$(cd "$(dirname "$self")/.." && pwd)
-export PATH="$prefix/bin:$prefix/node_modules/.bin\${PATH:+:$PATH}"
-exec bun "$prefix/node_modules/${opts.packageName}/${bin.target}" "$@"
+case "\$0" in
+    /*) _self="\$0" ;;
+    *)  _self="\$(pwd)/\$0" ;;
+esac
+prefix="\$(cd "\${_self%/*}/.." && pwd -P)"
+export PATH="\$prefix/bin:\$prefix/node_modules/.bin\${PATH:+:\$PATH}"
+exec bun "\$prefix/node_modules/${opts.packageName}/${bin.target}" "\$@"
 EOF
 chmod +x $OUT/bin/${bin.name}
 `).join("\n");

@@ -35,8 +35,12 @@ cp /deps/source/meson.py $OUT/lib/meson/meson.py
 # Works both at build time ($OUT/bin/meson) and as a dep (/deps/meson/bin/meson).
 cat > $OUT/bin/meson << 'WRAPPER'
 #!/bin/sh
-MESON_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-exec /deps/python/bin/python3 "$MESON_DIR/lib/meson/meson.py" "$@"
+case "\$0" in
+    /*) _self="\$0" ;;
+    *)  _self="\$(pwd)/\$0" ;;
+esac
+MESON_DIR="\$(cd "\${_self%/*}/.." && pwd -P)"
+exec /deps/python/bin/python3 "\$MESON_DIR/lib/meson/meson.py" "\$@"
 WRAPPER
 chmod +x $OUT/bin/meson
 

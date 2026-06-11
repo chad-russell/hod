@@ -1,0 +1,77 @@
+# -- Oh My Posh prompt --
+if command -v oh-my-posh &>/dev/null; then
+  eval "$(oh-my-posh init zsh --config $HOME/.config/oh-my-posh/config.json)"
+fi
+
+# -- fzf-history-widget (Ctrl+R) --
+source "$HOME/.config/zsh/fzf-history-widget.zsh"
+bindkey -M viins '^R' fzf-history-widget
+
+# -- Keybindings --
+bindkey '^F' autosuggest-accept
+bindkey '^[[C' autosuggest-accept
+bindkey '^P' up-line-or-history
+bindkey '^N' down-line-or-history
+
+# -- History search aliases --
+alias -- hist='history 1'
+
+hgrep() {
+  history 1 | command grep --color=auto "$@"
+}
+
+# -- Custom functions --
+mkcd() {
+  mkdir -p $1
+  cd $1
+}
+
+killport() {
+  lsof -ti:$1 | xargs kill -9
+}
+
+# -- Completion --
+typeset -U path cdpath fpath manpath
+autoload -U compinit && compinit
+
+# -- Default keymap --
+bindkey -v
+
+# -- Zsh autosuggestions --
+source "$HOME/.config/zsh/plugins/zsh-autosuggestions.zsh"
+ZSH_AUTOSUGGEST_STRATEGY=(history)
+
+# -- Zoxide (replaces cd) --
+if command -v zoxide &>/dev/null; then
+  eval "$(zoxide init zsh)"
+fi
+
+# -- History --
+HISTSIZE="100000"
+SAVEHIST="100000"
+HISTFILE="$HOME/.local/state/zsh/history"
+mkdir -p "$(dirname "$HISTFILE")"
+
+set_opts=(
+  HIST_FCNTL_LOCK EXTENDED_HISTORY HIST_EXPIRE_DUPS_FIRST HIST_IGNORE_DUPS
+  HIST_IGNORE_SPACE SHARE_HISTORY NO_APPEND_HISTORY NO_HIST_FIND_NO_DUPS
+  NO_HIST_IGNORE_ALL_DUPS NO_HIST_SAVE_NO_DUPS
+)
+for opt in "${set_opts[@]}"; do
+  setopt "$opt"
+done
+unset opt set_opts
+
+# -- Aliases --
+alias -- cd=z
+alias -- e=eza
+alias -- el='eza -alF'
+alias -- hl='ssh -o IdentitiesOnly=yes crussell@10.10.0.6 '\''bun /etc/homelab-monitor/collect.ts report'\'''
+alias -- nrs='sudo nixos-rebuild switch --flake /home/crussell/nixos-config#think'
+alias -- v=nvim
+alias -- vi=nvim
+alias -- wycliffe-tunnel='ssh -L 33000:127.0.0.1:33000 -L 33001:127.0.0.1:33001 crussell@10.10.0.12'
+
+# -- Zsh syntax highlighting (must be last) --
+source "$HOME/.config/zsh/plugins/zsh-syntax-highlighting.zsh"
+ZSH_HIGHLIGHT_HIGHLIGHTERS=(main)

@@ -1,0 +1,20 @@
+if [[ -z "$__HOD_ZSH_ENV_SESS_VARS_SOURCED" ]]; then
+  export __HOD_ZSH_ENV_SESS_VARS_SOURCED=1
+  export EDITOR="nvim"
+  export NIXOS_OZONE_WL="1"
+  export VISUAL="zeditor"
+  export XCURSOR_SIZE="24"
+  export XCURSOR_THEME="Adwaita"
+  export _ZO_DATA_DIR="$HOME/.local/share/zoxide"
+  export _ZO_ECHO="1"
+  export _ZO_EXCLUDE_DIRS="$HOME/.cache:$HOME/.cache/*:$HOME/tmp"
+fi
+
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+
+for _hod_env in "$HOME/.hod/profiles/"*/env.sh; do
+  if [[ -f "$_hod_env" ]]; then
+    source "$_hod_env"
+  fi
+done
+unset _hod_env

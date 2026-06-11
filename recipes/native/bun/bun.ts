@@ -44,9 +44,12 @@ done
 
 cat > $OUT/bin/bun <<'EOF'
 #!/bin/sh
-self=\$(readlink -f "\$0")
-bin_dir=\$(dirname "\$self")
-prefix=\$(cd "\$bin_dir/.." && pwd)
+case "\$0" in
+    /*) _self="\$0" ;;
+    *)  _self="\$(pwd)/\$0" ;;
+esac
+bin_dir="\${_self%/*}"
+prefix="\$(cd "\$bin_dir/.." && pwd -P)"
 
 export PATH="\$prefix/libexec/hod-bin\${PATH:+:\$PATH}"
 

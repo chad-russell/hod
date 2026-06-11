@@ -1,7 +1,8 @@
 //! Profile management — evaluate TypeScript profile modules, build packages,
-//! create symlink farms, and write activation env scripts.
+//! create symlink farms, deploy managed config files, and write activation
+//! env scripts.
 //!
-//! A profile is a `.ts` file exporting `{ name, packages, user_units? }`.
+//! A profile is a `.ts` file exporting `{ name, packages, user_units?, files? }`.
 //! This module evaluates it via Bun, builds any unbuilt packages, and produces
 //! a symlink farm at `~/.hod/profiles/<name>/` with `env.sh` and `env.fish`.
 //!
@@ -41,6 +42,8 @@ struct ProfileOutput {
     packages: Vec<ProfilePackageOutput>,
     #[serde(default)]
     user_units: Vec<UserUnit>,
+    #[serde(default)]
+    files: Vec<ManagedFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,11 +66,21 @@ pub struct UserUnit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedFile {
+    pub target: String,
+    pub content_hash: String,
+    #[serde(default)]
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileDefinition {
     pub name: String,
     pub packages: Vec<ProfilePackage>,
     #[serde(default)]
     pub user_units: Vec<UserUnit>,
+    #[serde(default)]
+    pub files: Vec<ManagedFile>,
 }
 
 pub fn package_hashes(packages: &[ProfilePackage]) -> Vec<Hash> {
@@ -107,10 +120,13 @@ const pkgs = profile.packages.map((p, index) => {{
   if (recipe && typeof recipe === 'object' && 'hash' in recipe) return {{ name: p.name, hash: recipe.hash }};
   throw new Error(`invalid profile package at index ${{index}}`);
 }});
+const rawFiles = profile.files ?? [];
+const files = rawFiles.length > 0 ? await Promise.all(rawFiles) : [];
 console.log(JSON.stringify({{
   name: profile.name,
   packages: pkgs,
   user_units: profile.user_units ?? [],
+  files: files,
 }}));
 "#,
         profile_str = profile_str,
@@ -175,6 +191,7 @@ console.log(JSON.stringify({{
         name: profile_out.name,
         packages,
         user_units: profile_out.user_units,
+        files: profile_out.files,
     })
 }
 
@@ -572,6 +589,10 @@ fn is_packed_elf(path: &std::path::Path) -> bool {
 /// ~/.hod/profiles/<name>/
 ///   pkgs/<link-name> → <store staging path>
 ///   runtime/<dep-name> → <runtime dep staging path>
+///   units/<unit-name> → <systemd unit content>
+///   files/<target> → <file content from store blob>
+///   files.manifest → list of managed file targets
+///   files.dirs → directories hod created (for cleanup)
 ///   env.sh
 ///   env.fish
 /// ```
@@ -580,6 +601,8 @@ fn is_packed_elf(path: &std::path::Path) -> bool {
 /// preserves the store-relative paths that the bootstrap and RPATH rely on.
 /// Runtime deps are linked separately under `runtime/` for inspection and for
 /// wrapper/runtime logic outside the profile env scripts.
+/// Managed files are written from store blobs into `files/` and symlinked into
+/// the user's home directory during activation.
 pub fn create_farm(store: &Store, name: &str, hashes: &[Hash]) -> Result<PathBuf, String> {
     let profile = ProfileDefinition {
         name: name.to_string(),
@@ -591,6 +614,7 @@ pub fn create_farm(store: &Store, name: &str, hashes: &[Hash]) -> Result<PathBuf
             })
             .collect(),
         user_units: Vec::new(),
+        files: Vec::new(),
     };
     create_farm_from_profile(store, &profile)
 }
@@ -604,6 +628,7 @@ pub fn create_farm_from_packages(
         name: name.to_string(),
         packages: profile_packages.to_vec(),
         user_units: Vec::new(),
+        files: Vec::new(),
     };
     create_farm_from_profile(store, &profile)
 }
@@ -641,6 +666,7 @@ pub fn create_farm_from_profile(
     // Write env snippets (user-profile-specific; system profiles skip this).
     write_env_snippets(&tmp_dir, &profile.name, &packages)?;
     write_user_units(&tmp_dir, &profile.user_units)?;
+    write_managed_files_to_farm(store, &tmp_dir, &profile.files)?;
 
     // Atomic swap
     if farm_dir.exists() {
@@ -662,6 +688,10 @@ pub fn create_farm_from_profile(
         activate_user_units(&profile.name, &farm_dir, &profile.user_units, &changed_units)?;
     }
 
+    if !profile.files.is_empty() || managed_files_manifest_path(&profile.name).exists() {
+        activate_managed_files(&profile.name, &farm_dir, &profile.files)?;
+    }
+
     Ok(farm_dir)
 }
 
@@ -676,6 +706,255 @@ fn write_user_units(farm_dir: &Path, user_units: &[UserUnit]) -> Result<(), Stri
         std::fs::write(units_dir.join(&unit.name), &unit.content)
             .map_err(|e| format!("cannot write unit {}: {e}", unit.name))?;
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Managed files
+// ---------------------------------------------------------------------------
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+}
+
+fn managed_files_manifest_path(profile_name: &str) -> PathBuf {
+    profiles_dir().join(profile_name).join("files.manifest")
+}
+
+fn managed_dirs_path(profile_name: &str) -> PathBuf {
+    profiles_dir().join(profile_name).join("files.dirs")
+}
+
+/// Read the list of previously managed file target paths from the manifest.
+fn read_managed_files(profile_name: &str) -> Result<Vec<String>, String> {
+    let manifest_path = managed_files_manifest_path(profile_name);
+    if !manifest_path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("cannot read {}: {e}", manifest_path.display()))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+/// Read the list of directories hod created (for cleanup).
+fn read_managed_dirs(profile_name: &str) -> Result<Vec<String>, String> {
+    let dirs_path = managed_dirs_path(profile_name);
+    if !dirs_path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(&dirs_path)
+        .map_err(|e| format!("cannot read {}: {e}", dirs_path.display()))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+/// Write managed file content to the farm under `files/`.
+///
+/// For each ManagedFile, reads the content blob from the store and writes it
+/// to `farm/files/<target>`. Sets executable bit if requested.
+fn write_managed_files_to_farm(
+    store: &Store,
+    farm_dir: &Path,
+    files: &[ManagedFile],
+) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    for file in files {
+        let content_hash = hex_to_hash(&file.content_hash).ok_or_else(|| {
+            format!(
+                "invalid content_hash '{}' for file '{}'",
+                file.content_hash, file.target
+            )
+        })?;
+
+        let content = store.read_blob(&content_hash).map_err(|e| {
+            format!(
+                "cannot read content blob {} for file '{}': {e}",
+                file.content_hash, file.target
+            )
+        })?;
+
+        let file_path = farm_dir.join("files").join(&file.target);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create files dir {}: {e}", parent.display()))?;
+        }
+
+        std::fs::write(&file_path, &content)
+            .map_err(|e| format!("cannot write farm file {}: {e}", file_path.display()))?;
+
+        if file.executable {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("cannot chmod farm file {}: {e}", file_path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Deploy managed file symlinks from the farm to the user's home directory.
+///
+/// After the farm is atomically swapped into place, this function:
+/// 1. Removes symlinks for files no longer in the profile
+/// 2. Cleans up empty directories that hod created
+/// 3. Creates new symlinks from target paths → farm copies
+/// 4. Refuses to overwrite unmanaged files (safety)
+/// 5. Writes updated manifest and dirs tracking files
+fn activate_managed_files(
+    profile_name: &str,
+    farm_dir: &Path,
+    files: &[ManagedFile],
+) -> Result<(), String> {
+    let home = home_dir();
+    let files_dir = farm_dir.join("files");
+
+    let previous_files = read_managed_files(profile_name)?;
+    let previous_dirs = read_managed_dirs(profile_name)?;
+
+    let desired_targets: std::collections::HashSet<&str> =
+        files.iter().map(|f| f.target.as_str()).collect();
+
+    // Remove files no longer in the profile
+    for target in &previous_files {
+        if desired_targets.contains(target.as_str()) {
+            continue;
+        }
+        let abs_target = home.join(target);
+        if abs_target.is_symlink() {
+            let _ = std::fs::remove_file(&abs_target);
+        } else if abs_target.exists() {
+            eprintln!(
+                "[hod] warning: not removing managed file {} (no longer a symlink)",
+                abs_target.display()
+            );
+        }
+    }
+
+    // Clean up empty directories that hod created (bottom-up by depth)
+    let mut dirs_to_check: Vec<String> = previous_dirs;
+    dirs_to_check.sort_by(|a, b| b.len().cmp(&a.len()));
+    for dir_rel in &dirs_to_check {
+        let dir_abs = home.join(dir_rel);
+        if dir_abs.is_dir() {
+            let is_empty = std::fs::read_dir(&dir_abs)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false);
+            if is_empty {
+                let _ = std::fs::remove_dir(&dir_abs);
+            }
+        }
+    }
+
+    // Collect directories that hod will need to create
+    let mut managed_dirs: Vec<String> = Vec::new();
+
+    // Deploy new/updated files
+    for file in files {
+        let abs_target = home.join(&file.target);
+        let farm_copy = files_dir.join(&file.target);
+
+        if !farm_copy.exists() {
+            return Err(format!(
+                "farm copy for '{}' does not exist at {}",
+                file.target,
+                farm_copy.display()
+            ));
+        }
+
+        // Ensure parent directories exist, tracking which ones we create
+        if let Some(parent_rel) = Path::new(&file.target).parent() {
+            let parent_rel_str = parent_rel.to_string_lossy();
+            if !parent_rel_str.is_empty() {
+                let abs_parent = home.join(parent_rel);
+                if !abs_parent.exists() {
+                    // Walk up and track each directory we need to create
+                    let mut components: Vec<String> = Vec::new();
+                    for component in parent_rel.components() {
+                        components.push(component.as_os_str().to_string_lossy().to_string());
+                        let partial = components.join("/");
+                        let partial_abs = home.join(&partial);
+                        if !partial_abs.exists() {
+                            managed_dirs.push(partial);
+                        }
+                    }
+                    std::fs::create_dir_all(&abs_parent).map_err(|e| {
+                        format!(
+                            "cannot create directory {}: {e}",
+                            abs_parent.display()
+                        )
+                    })?;
+                }
+            }
+        }
+
+        // Safety check: refuse to overwrite unmanaged files
+        if abs_target.exists() || abs_target.is_symlink() {
+            let managed = previous_files.iter().any(|t| t == &file.target);
+            if !managed {
+                return Err(format!(
+                    "refusing to overwrite unmanaged file {} at {}",
+                    file.target,
+                    abs_target.display()
+                ));
+            }
+            // Remove old symlink/file managed by hod
+            if abs_target.is_symlink() {
+                let _ = std::fs::remove_file(&abs_target);
+            } else {
+                std::fs::remove_file(&abs_target)
+                    .map_err(|e| format!("cannot remove old file {}: {e}", abs_target.display()))?;
+            }
+        }
+
+        std::os::unix::fs::symlink(&farm_copy, &abs_target).map_err(|e| {
+            format!(
+                "cannot link {} -> {}: {e}",
+                abs_target.display(),
+                farm_copy.display()
+            )
+        })?;
+    }
+
+    // Write manifest
+    let manifest_path = managed_files_manifest_path(profile_name);
+    let mut targets: Vec<&str> = files.iter().map(|f| f.target.as_str()).collect();
+    targets.sort_unstable();
+    if targets.is_empty() {
+        if manifest_path.exists() {
+            let _ = std::fs::remove_file(&manifest_path);
+        }
+    } else {
+        let manifest = format!("{}\n", targets.join("\n"));
+        std::fs::write(&manifest_path, manifest)
+            .map_err(|e| format!("cannot write {}: {e}", manifest_path.display()))?;
+    }
+
+    // Write dirs tracking
+    let dirs_path = managed_dirs_path(profile_name);
+    managed_dirs.sort();
+    managed_dirs.dedup();
+    if managed_dirs.is_empty() {
+        if dirs_path.exists() {
+            let _ = std::fs::remove_file(&dirs_path);
+        }
+    } else {
+        let dirs_content = format!("{}\n", managed_dirs.join("\n"));
+        std::fs::write(&dirs_path, dirs_content)
+            .map_err(|e| format!("cannot write {}: {e}", dirs_path.display()))?;
+    }
+
     Ok(())
 }
 

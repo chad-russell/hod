@@ -80,13 +80,17 @@ for bin in $OUT/bin/wpctl $OUT/bin/wpexec $OUT/bin/wireplumber; do
   mv "$bin" "$OUT/bin/$real"
   cat > "$bin" <<'EOF'
 #!/bin/sh
-prefix="\$(cd "\$(dirname "\$0")/.." && pwd)"
-export SPA_PLUGIN_DIR="\${SPA_PLUGIN_DIR:-$prefix/lib/spa-0.2}"
-export PIPEWIRE_MODULE_DIR="\${PIPEWIRE_MODULE_DIR:-$prefix/lib/pipewire-0.3}"
-export PIPEWIRE_CONFIG_DIR="\${PIPEWIRE_CONFIG_DIR:-$prefix/share/pipewire}"
-export WIREPLUMBER_MODULE_DIR="\${WIREPLUMBER_MODULE_DIR:-$prefix/lib/wireplumber-0.5}"
+case "\$0" in
+    /*) _self="\$0" ;;
+    *)  _self="\$(pwd)/\$0" ;;
+esac
+prefix="\$(cd "\${_self%/*}/.." && pwd -P)"
+export SPA_PLUGIN_DIR="\${SPA_PLUGIN_DIR:-\$prefix/lib/spa-0.2}"
+export PIPEWIRE_MODULE_DIR="\${PIPEWIRE_MODULE_DIR:-\$prefix/lib/pipewire-0.3}"
+export PIPEWIRE_CONFIG_DIR="\${PIPEWIRE_CONFIG_DIR:-\$prefix/share/pipewire}"
+export WIREPLUMBER_MODULE_DIR="\${WIREPLUMBER_MODULE_DIR:-\$prefix/lib/wireplumber-0.5}"
 EOF
-  printf 'exec "$(dirname "$0")/%s" "$@"\n' "$real" >> "$bin"
+  printf 'exec "\${_self%/*}/%s" "\$@"\n' "\$real" >> "\$bin"
   chmod +x "$bin"
 done
 

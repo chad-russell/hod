@@ -55,6 +55,7 @@ CFLAGS="-O2" \\
 CXXFLAGS="-O2" \\
 /tmp/build/configure \\
   --prefix=/ \\
+  --target=x86_64-linux-gnu \\
   --disable-werror \\
   --disable-nls \\
   --disable-gdb \\
@@ -68,6 +69,12 @@ CXXFLAGS="-O2" \\
 
 make -j$(nproc)
 make install DESTDIR=$OUT
+
+for tool in ar as ld ld.bfd nm objcopy objdump ranlib readelf strip addr2line c++filt elfedit size strings gprof; do
+  if [ -x "\$OUT/bin/x86_64-linux-gnu-\$tool" ] && [ ! -e "\$OUT/bin/\$tool" ]; then
+    ln -sf "x86_64-linux-gnu-\$tool" "\$OUT/bin/\$tool"
+  fi
+done
 
 # Verify and strip
 for bin in $OUT/bin/*; do

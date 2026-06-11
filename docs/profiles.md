@@ -5,10 +5,11 @@
 
 ## What Are Profiles?
 
-A **profile** is a TypeScript module that declares a named list of packages.
-Activating a profile builds any unbuilt packages and creates a **symlink farm**
-— a lightweight directory of symlinks into the Hod store — plus shell
-activation scripts (`env.sh`, `env.fish`).
+A **profile** is a TypeScript module that declares a named list of packages,
+optional user systemd units, and optional managed config files. Activating a
+profile builds any unbuilt packages and creates a **symlink farm** — a
+lightweight directory of symlinks into the Hod store — plus shell activation
+scripts (`env.sh`, `env.fish`).
 
 ## Profile Module Shape
 
@@ -178,6 +179,8 @@ roots files fail closed instead of being ignored.
 ~/.hod/profiles/<name>/
   pkgs/<link-name>   →   <store staging path>   (whole-directory symlink)
   runtime/<dep-name> →   <runtime dep staging path>
+  units/<unit-name>  →   <systemd unit content>
+  files/<target>     →   <file content from store blob>
   env.sh
   env.fish
 ```
@@ -240,8 +243,99 @@ Activation is idempotent:
 - Building is idempotent (cached outputs are used).
 - The farm is rebuilt from scratch via atomic swap (build into `.tmp`, rename
   into place, delete `.old`).
+- Managed file symlinks are updated; files removed from the profile are cleaned
+  up.
 
 No diffing, no special cleanup. Just re-run `hod profile activate`.
+
+## Managed Files
+
+Profiles can declare config files that hod places in your home directory via
+symlinks. This is the equivalent of home-manager's `home.file`.
+
+### TypeScript API
+
+```typescript
+import { homeFile, configFile, sourceFile, homeDir } from "../js/src/profile-files.js";
+
+export const profile = {
+  name: "thinkpad",
+  packages: [...],
+  files: [
+    // Inline text content
+    homeFile(".bashrc", {
+      text: `
+export EDITOR=vim
+source ~/.hod/profiles/thinkpad/env.sh
+`,
+    }),
+
+    // Sugar: targets ~/.config/<path>
+    configFile("git/config", {
+      text: `
+[user]
+  name = Charles
+  email = charles@...
+[core]
+  editor = vim
+`,
+    }),
+
+    // Source from a file on disk (relative to the profile module)
+    sourceFile(".config/niri/config.kdl", "../configs/niri.kdl", import.meta.url),
+
+    // Deploy a directory tree
+    ...await homeDir(".config/nvim", {
+      "init.lua": { text: 'require("config")' },
+      "lua/config.lua": { text: "..." },
+    }),
+
+    // Executable script
+    homeFile(".local/bin/my-tool", {
+      text: `#!/bin/sh\nexec echo hello`,
+      executable: true,
+    }),
+  ],
+};
+```
+
+### How It Works
+
+1. `homeFile()` / `sourceFile()` import file content into the hod store as
+   content-addressed blobs.
+2. During activation, hod reads the blobs from the store, writes them to the
+   farm under `files/`, and creates symlinks from target paths to the farm
+   copies.
+3. A manifest tracks which files hod manages. Files removed from the profile
+   have their symlinks removed on next activation.
+4. Hod **refuses to overwrite** files it doesn't manage (same safety model as
+   user units).
+
+### Farm Layout (with files)
+
+```
+~/.hod/profiles/<name>/
+  pkgs/<link-name>     → <store staging path>
+  runtime/<dep-name>   → <runtime dep staging path>
+  units/<unit-name>    → <systemd unit content>
+  files/<target-path>  → <file content from store blob>
+  files.manifest       → list of managed target paths
+  files.dirs           → directories hod created (for cleanup)
+  env.sh
+  env.fish
+```
+
+### Home Directory Symlinks
+
+```
+~/.bashrc                        → ~/.hod/profiles/thinkpad/files/.bashrc
+~/.config/git/config             → ~/.hod/profiles/thinkpad/files/.config/git/config
+~/.config/niri/config.kdl        → ~/.hod/profiles/thinkpad/files/.config/niri/config.kdl
+```
+
+Managed config files are **immutable by design** — they are symlinks to the
+farm, which is regenerated on each activation. To change a config, edit the
+TypeScript profile and re-run `hod profile activate`.
 
 ## Profiles Directory
 

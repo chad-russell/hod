@@ -45,15 +45,18 @@ m4_store_path="\${m4_abs#/store/staging/}"
 
 cat > $OUT/bin/bison <<'EOF'
 #!/bin/sh
-self="$(readlink -f "$0")"
-bin_dir="$(dirname "$self")"
-prefix="$(cd "$bin_dir/.." && pwd)"
-staging_root="$(cd "$bin_dir/../../.." && pwd)"
-export BISON_PKGDATADIR="\${BISON_PKGDATADIR:-$prefix/share/bison}"
+case "\$0" in
+    /*) _self="\$0" ;;
+    *)  _self="\$(pwd)/\$0" ;;
+esac
+bin_dir="\${_self%/*}"
+prefix="\$(cd "\$bin_dir/.." && pwd -P)"
+staging_root="\$(cd "\$bin_dir/../../.." && pwd -P)"
+export BISON_PKGDATADIR="\${BISON_PKGDATADIR:-\$prefix/share/bison}"
 if [ -z "\${M4+x}" ]; then
-  export M4="$staging_root/@M4_STORE_PATH@/bin/m4"
+  export M4="\$staging_root/@M4_STORE_PATH@/bin/m4"
 fi
-exec "$prefix/libexec/bison/bison" "$@"
+exec "\$prefix/libexec/bison/bison" "\$@"
 EOF
 sed -i "s|@M4_STORE_PATH@|$m4_store_path|g" $OUT/bin/bison
 chmod +x $OUT/bin/bison

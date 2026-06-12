@@ -299,6 +299,28 @@ pub fn generate_wrappers(
             continue;
         }
 
+        // Skip compiler and build-tool executables. These compute internal
+        // paths (e.g., iprefix) relative to argv[0]; wrapping them in a
+        // shell script breaks that resolution because the real binary ends
+        // up in bin/_hod_wrapped/<name>, shifting the relative path by one
+        // directory level and making tools like cc1 unreachable.
+        if matches!(
+            name.as_str(),
+            "gcc"
+                | "g++"
+                | "cc"
+                | "c++"
+                | "cc1"
+                | "cc1plus"
+                | "collect2"
+                | "ld"
+                | "x86_64-linux-gnu-gcc"
+                | "x86_64-linux-gnu-g++"
+                | "x86_64-linux-gnu-ld"
+        ) {
+            continue;
+        }
+
         let wrapped_dir = bin_dir.join("_hod_wrapped");
         std::fs::create_dir_all(&wrapped_dir).map_err(WrapError::Io)?;
         let wrapped_name = format!("_hod_wrapped/{name}");

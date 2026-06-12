@@ -44,6 +44,8 @@ struct ProfileOutput {
     user_units: Vec<UserUnit>,
     #[serde(default)]
     files: Vec<ManagedFile>,
+    #[serde(default)]
+    secrets: Vec<SecretDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +76,18 @@ pub struct ManagedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretDef {
+    pub name: String,
+    pub content_hash: String,
+    #[serde(default = "default_secret_mode")]
+    pub mode: String,
+}
+
+fn default_secret_mode() -> String {
+    "0400".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileDefinition {
     pub name: String,
     pub packages: Vec<ProfilePackage>,
@@ -81,6 +95,8 @@ pub struct ProfileDefinition {
     pub user_units: Vec<UserUnit>,
     #[serde(default)]
     pub files: Vec<ManagedFile>,
+    #[serde(default)]
+    pub secrets: Vec<SecretDef>,
 }
 
 pub fn package_hashes(packages: &[ProfilePackage]) -> Vec<Hash> {
@@ -122,11 +138,14 @@ const pkgs = profile.packages.map((p, index) => {{
 }});
 const rawFiles = profile.files ?? [];
 const files = rawFiles.length > 0 ? await Promise.all(rawFiles) : [];
+const rawSecrets = profile.secrets ?? [];
+const secrets = rawSecrets.length > 0 ? await Promise.all(rawSecrets) : [];
 console.log(JSON.stringify({{
   name: profile.name,
   packages: pkgs,
   user_units: profile.user_units ?? [],
   files: files,
+  secrets: secrets,
 }}));
 "#,
         profile_str = profile_str,
@@ -192,6 +211,7 @@ console.log(JSON.stringify({{
         packages,
         user_units: profile_out.user_units,
         files: profile_out.files,
+        secrets: profile_out.secrets,
     })
 }
 
@@ -615,6 +635,7 @@ pub fn create_farm(store: &Store, name: &str, hashes: &[Hash]) -> Result<PathBuf
             .collect(),
         user_units: Vec::new(),
         files: Vec::new(),
+        secrets: Vec::new(),
     };
     create_farm_from_profile(store, &profile)
 }
@@ -629,6 +650,7 @@ pub fn create_farm_from_packages(
         packages: profile_packages.to_vec(),
         user_units: Vec::new(),
         files: Vec::new(),
+        secrets: Vec::new(),
     };
     create_farm_from_profile(store, &profile)
 }
@@ -665,7 +687,30 @@ pub fn create_farm_from_profile(
 
     // Write env snippets (user-profile-specific; system profiles skip this).
     write_env_snippets(&tmp_dir, &profile.name, &packages)?;
-    write_user_units(&tmp_dir, &profile.user_units)?;
+
+    // Secrets: write encrypted blobs to farm and generate decrypt unit/script.
+    // Blobs are written to tmp_dir (for atomic swap), but the decrypt script
+    // and ExecStart must reference the final farm_dir path (post-rename).
+    let secrets_unit = if profile.secrets.is_empty() {
+        None
+    } else {
+        write_secret_blobs_to_farm(store, &tmp_dir, &profile.secrets)?;
+        Some(generate_secrets_unit(
+            store,
+            &tmp_dir,
+            &farm_dir,
+            &profile.name,
+            &profile.secrets,
+            &packages,
+        )?)
+    };
+
+    // Write user units (profile-defined + secrets unit if present).
+    let mut all_units = profile.user_units.clone();
+    if let Some(ref unit) = secrets_unit {
+        all_units.push(unit.clone());
+    }
+    write_user_units(&tmp_dir, &all_units)?;
     write_managed_files_to_farm(store, &tmp_dir, &profile.files)?;
 
     // Atomic swap
@@ -684,8 +729,8 @@ pub fn create_farm_from_profile(
         let _ = std::fs::remove_dir_all(&old_dir);
     }
 
-    if !profile.user_units.is_empty() || managed_units_manifest_path(&profile.name).exists() {
-        activate_user_units(&profile.name, &farm_dir, &profile.user_units, &changed_units)?;
+    if !all_units.is_empty() || managed_units_manifest_path(&profile.name).exists() {
+        activate_user_units(&profile.name, &farm_dir, &all_units, &changed_units)?;
     }
 
     if !profile.files.is_empty() || managed_files_manifest_path(&profile.name).exists() {
@@ -707,6 +752,140 @@ fn write_user_units(farm_dir: &Path, user_units: &[UserUnit]) -> Result<(), Stri
             .map_err(|e| format!("cannot write unit {}: {e}", unit.name))?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Secrets
+// ---------------------------------------------------------------------------
+
+/// Write encrypted age blobs from the store into `secrets/` in the farm.
+fn write_secret_blobs_to_farm(
+    store: &Store,
+    farm_dir: &Path,
+    secrets: &[SecretDef],
+) -> Result<(), String> {
+    let secrets_dir = farm_dir.join("secrets");
+    std::fs::create_dir_all(&secrets_dir)
+        .map_err(|e| format!("cannot create secrets dir {}: {e}", secrets_dir.display()))?;
+
+    for secret in secrets {
+        let content_hash = hex_to_hash(&secret.content_hash).ok_or_else(|| {
+            format!(
+                "invalid content_hash '{}' for secret '{}'",
+                secret.content_hash, secret.name
+            )
+        })?;
+
+        let content = store.read_blob(&content_hash).map_err(|e| {
+            format!(
+                "cannot read encrypted blob {} for secret '{}': {e}",
+                secret.content_hash, secret.name
+            )
+        })?;
+
+        std::fs::write(secrets_dir.join(&secret.name), &content).map_err(|e| {
+            format!(
+                "cannot write secret blob {}: {e}",
+                secrets_dir.join(&secret.name).display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Find the `age` binary in the profile's package farm.
+fn find_age_binary(packages: &[ResolvedPackage]) -> Option<String> {
+    for pkg in packages {
+        let age_path = pkg.staging_path.join("bin").join("age");
+        if age_path.exists() {
+            return Some(age_path.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Generate the secrets decrypt unit and decrypt script.
+///
+/// Writes a decrypt script into the farm and returns a `UserUnit` for the
+/// `hod-secrets-<profile>.service` that runs it.
+fn generate_secrets_unit(
+    store: &Store,
+    write_dir: &Path,
+    final_dir: &Path,
+    profile_name: &str,
+    secrets: &[SecretDef],
+    packages: &[ResolvedPackage],
+) -> Result<UserUnit, String> {
+    let _ = store;
+    let age_bin = find_age_binary(packages).map(|_| {
+        format!(
+            "{}/pkgs/age/bin/age",
+            final_dir.to_string_lossy()
+        )
+    }).unwrap_or_else(|| "age".to_string());
+
+    let unit_name = format!("hod-secrets-{profile_name}.service");
+    let script_name = format!("decrypt-secrets-{profile_name}.sh");
+    let script_write_path = write_dir.join("secrets").join(&script_name);
+
+    let secrets_dir = format!("$XDG_RUNTIME_DIR/hod/secrets/{profile_name}");
+
+    let mut script_lines = vec![
+        "#!/bin/bash".to_string(),
+        "set -euo pipefail".to_string(),
+        String::new(),
+        format!("mkdir -p \"{secrets_dir}\""),
+        String::new(),
+    ];
+
+    for secret in secrets {
+        let encrypted_path = final_dir
+            .join("secrets")
+            .join(&secret.name)
+            .to_string_lossy()
+            .to_string();
+        script_lines.push(format!(
+            "\"{age_bin}\" --decrypt --identity \"$HOME/.config/hod/age-identity.txt\" \
+             \"{encrypted_path}\" > \"{secrets_dir}/{name}\"",
+            name = secret.name,
+        ));
+        script_lines.push(format!("chmod {mode} \"{secrets_dir}/{name}\"", mode = secret.mode, name = secret.name));
+        script_lines.push(String::new());
+    }
+
+    let script_content = script_lines.join("\n");
+    std::fs::write(&script_write_path, &script_content)
+        .map_err(|e| format!("cannot write decrypt script: {e}"))?;
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script_write_path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("cannot chmod decrypt script: {e}"))?;
+
+    let exec_start = final_dir
+        .join("secrets")
+        .join(&script_name)
+        .to_string_lossy()
+        .to_string();
+
+    let unit_content = format!(
+        "[Unit]\n\
+         Description=Decrypt Hod secrets for profile {profile_name}\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         RemainAfterExit=yes\n\
+         ExecStart={exec_start}\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n"
+    );
+
+    Ok(UserUnit {
+        name: unit_name,
+        content: unit_content,
+        enable: true,
+    })
 }
 
 // ---------------------------------------------------------------------------

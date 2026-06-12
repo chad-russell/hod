@@ -494,7 +494,15 @@ fn generate_wrapper_script(
             .to_string()
     };
 
-    let exec_line = if name == "ghostty-bin" {
+    let exec_line = if name == "git" {
+        // Git installs several aliases as symlinks back to bin/git, such as
+        // git-upload-pack -> git. A shell wrapper cannot portably preserve
+        // argv[0], so when invoked through a git-* alias, translate the alias
+        // back into Git's normal subcommand form.
+        format!(
+            "case \"$_cmd\" in\n    git) exec \"$bin_dir/{wrapped_name}\" \"$@\" ;;\n    git-*) exec \"$bin_dir/{wrapped_name}\" \"${{_cmd#git-}}\" \"$@\" ;;\n    *) exec \"$bin_dir/{wrapped_name}\" \"$@\" ;;\nesac"
+        )
+    } else if name == "ghostty-bin" {
         if let Some(ld_linux_path) = ld_linux_path {
             format!(
                 "exec \"{ld_linux_path}\" --library-path \"{lib_path}\" \"$bin_dir/{wrapped_name}\" \"$@\""
@@ -520,6 +528,7 @@ case "$0" in
     *)  _wrapper="$(pwd)/$0" ;;
 esac
 _cur="${{_wrapper%/*}}"
+_cmd="${{_wrapper##*/}}"
 while [ "$_cur" != "/" ]; do
     if [ -d "$_cur/bin" ]; then
         prefix="$(cd "$_cur" && pwd -P)"

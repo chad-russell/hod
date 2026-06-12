@@ -48,3 +48,7 @@ export type { SystemdUnitConfig, SystemdSection, SystemdValue, UserUnitDefinitio
 // Profile file management
 export { homeFile, configFile, sourceFile, homeDir } from "./profile-files.js";
 export type { ManagedFileDefinition } from "./profile-files.js";
+
+// Profile secrets
+export { ageSecret } from "./secrets.js";
+export type { SecretDefinition } from "./secrets.js";

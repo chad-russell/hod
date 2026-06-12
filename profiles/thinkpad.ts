@@ -59,14 +59,119 @@ import { containersConfigRecipe } from "../recipes/native/containers-config/cont
 import { ghosttyRecipe } from "../recipes/native/ghostty/ghostty.js";
 import { zshSyntaxHighlightingRecipe } from "../recipes/native/zsh-syntax-highlighting/zsh-syntax-highlighting.js";
 import { userUnit } from "../js/src/systemd.js";
-import { sourceFile } from "../js/src/profile-files.js";
+import { homeFile, sourceFile } from "../js/src/profile-files.js";
+import { ageSecret } from "../js/src/secrets.js";
+
+const PROFILE = "thinkpad";
+const secretsDir = `$XDG_RUNTIME_DIR/hod/secrets/${PROFILE}`;
 
 const pk = (name: string, subpath: string = "") => {
   const suffix = subpath === "" ? "" : `/${subpath}`;
-  return `%h/.hod/profiles/thinkpad/pkgs/${name}${suffix}`;
+  return `%h/.hod/profiles/${PROFILE}/pkgs/${name}${suffix}`;
 };
 
 const systemdEnvFile = "%h/.hod/profiles/thinkpad/env.systemd";
+
+const backupPaths = ["$HOME/Code", "$HOME/.config", "$HOME/.ssh"];
+const backupExcludes = [
+  "**/node_modules",
+  "**/.cache",
+  "**/target",
+  "**/.local/share/hod",
+  "**/.local/share/vicinae",
+  "**/dist",
+  "**/.next",
+  "*.log",
+  "*.tmp",
+];
+
+const shArgs = (args: string[]) => args.map((arg) => `  "${arg}" \\`).join("\n");
+const resticOptions = (args: string[]) => args.map((arg) => `  ${arg} \\`).join("\n");
+
+function resticBackupScript(opts: {
+  label: string;
+  repo: string;
+  environmentFile?: string;
+  requireRepoDirectory?: boolean;
+  retention: string[];
+}) {
+  const environment = opts.environmentFile ? `source "${secretsDir}/${opts.environmentFile}"\n\n` : "";
+  const repoCheck = opts.requireRepoDirectory
+    ? `if [ ! -d "$REPO" ]; then\n  echo "${opts.label} backup target not mounted: $REPO"\n  exit 1\nfi\n\n`
+    : "";
+
+  return `#!/bin/bash
+set -euo pipefail
+
+${environment}RESTIC="$HOME/.hod/profiles/${PROFILE}/pkgs/restic/bin/restic"
+PASSWORD_FILE="${secretsDir}/restic-password"
+REPO="${opts.repo}"
+
+${repoCheck}echo "Starting ${opts.label} backup at $(date)"
+
+"$RESTIC" backup \
+${shArgs(backupPaths)}
+${resticOptions(backupExcludes.map((exclude) => `--exclude "${exclude}"`))}
+  --cleanup-cache \
+  --one-file-system \
+  --password-file "$PASSWORD_FILE" \
+  --repo "$REPO"
+
+"$RESTIC" forget --prune \
+${resticOptions(opts.retention)}
+  --password-file "$PASSWORD_FILE" \
+  --repo "$REPO"
+
+echo "Finished ${opts.label} backup at $(date)"
+`;
+}
+
+const backupScripts = [
+  homeFile(".config/hod-backup/backup-nas.sh", {
+    executable: true,
+    text: resticBackupScript({
+      label: "NAS",
+      repo: "/mnt/backups/thinkpad",
+      requireRepoDirectory: true,
+      retention: ["--keep-daily 30"],
+    }),
+  }),
+  homeFile(".config/hod-backup/backup-s3.sh", {
+    executable: true,
+    text: resticBackupScript({
+      label: "S3",
+      repo: "s3:https://s3.us-east-2.amazonaws.com/crussell-restic-backups/thinkpad",
+      environmentFile: "s3-credentials",
+      retention: ["--keep-daily 30", "--keep-monthly 12"],
+    }),
+  }),
+  homeFile(".config/hod-backup/notify-failure.sh", {
+    executable: true,
+    text: `#!/bin/bash
+set -euo pipefail
+
+TARGET="$1"
+CURL="$HOME/.hod/profiles/thinkpad/pkgs/curl/bin/curl"
+NTFY_URL="https://ntfy.internal.crussell.io/homelab-backups"
+
+"$CURL" -s \
+  -H "Title: Backup FAILED on thinkpad" \
+  -H "Tags: rotating_light" \
+  -H "Priority: high" \
+  -d "Backup $TARGET on thinkpad: Check journalctl for details" \
+  "$NTFY_URL" > /dev/null 2>&1 || true
+`,
+  }),
+];
+
+const secrets = [
+  ageSecret("restic-password", {
+    source: new URL("../../cn/secrets/restic-password-think.age", import.meta.url).pathname,
+  }),
+  ageSecret("restic-s3-credentials", {
+    source: new URL("../../cn/secrets/restic-s3-credentials.age", import.meta.url).pathname,
+  }),
+];
 
 const userUnits = [
   userUnit("voxtype", {
@@ -115,6 +220,65 @@ const userUnits = [
       RestartSec: 5,
     },
   }),
+
+  // ── Restic backups (NAS + S3) ──────────────────────────────────────
+
+  userUnit("restic-backup-nas", {
+    Unit: {
+      Description: "Restic backup to NAS",
+      Requires: [`hod-secrets-${PROFILE}.service`],
+      After: [`hod-secrets-${PROFILE}.service`],
+      OnFailure: ["restic-ntfy-failure@nas.service"],
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      Type: "oneshot",
+      ExecStart: "%h/.config/hod-backup/backup-nas.sh",
+    },
+  }),
+  userUnit("restic-backup-nas.timer", {
+    Timer: {
+      OnCalendar: "daily",
+      Persistent: true,
+      RandomizedDelaySec: "1h",
+    },
+    Install: {
+      WantedBy: ["timers.target"],
+    },
+  }),
+  userUnit("restic-backup-s3", {
+    Unit: {
+      Description: "Restic backup to S3",
+      Requires: [`hod-secrets-${PROFILE}.service`],
+      After: [`hod-secrets-${PROFILE}.service`],
+      OnFailure: ["restic-ntfy-failure@s3.service"],
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      Type: "oneshot",
+      ExecStart: "%h/.config/hod-backup/backup-s3.sh",
+    },
+  }),
+  userUnit("restic-backup-s3.timer", {
+    Timer: {
+      OnCalendar: "daily",
+      Persistent: true,
+      RandomizedDelaySec: "1h",
+    },
+    Install: {
+      WantedBy: ["timers.target"],
+    },
+  }),
+  userUnit("restic-ntfy-failure@", {
+    Unit: {
+      Description: "Send ntfy notification on restic backup failure",
+    },
+    Service: {
+      EnvironmentFile: systemdEnvFile,
+      Type: "oneshot",
+      ExecStart: "%h/.config/hod-backup/notify-failure.sh %i",
+    },
+  }),
 ];
 
 const configFiles = [
@@ -134,12 +298,16 @@ const configFiles = [
   sourceFile(".zshenv", "../configs/thinkpad/zsh/zshenv", import.meta.url),
   sourceFile(".zprofile", "../configs/thinkpad/zsh/zprofile", import.meta.url),
   sourceFile(".zshrc", "../configs/thinkpad/zsh/zshrc", import.meta.url),
+
+  // Backup scripts (hod-managed, generated above and referenced by restic user units).
+  ...backupScripts,
 ];
 
 export const profile = {
-  name: "thinkpad",
+  name: PROFILE,
   user_units: userUnits,
   files: configFiles,
+  secrets,
   packages: [
     // Daily CLI tools already present in the ThinkPad Home Manager config.
     { name: "bat", recipe: batRecipe },

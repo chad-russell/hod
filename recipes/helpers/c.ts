@@ -87,23 +87,26 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
   pathEntries.push(depSubpath(tc, "bin"));
   pathEntries.push(...(opts.binDeps ?? []).map((dep) => depSubpath(dep, "bin")));
 
+  const sysroot = depSubpath(tc, "sysroot");
+  const tcBin = depSubpath(tc, "bin");
+
   const env: Record<string, string> = {
     PATH: pathList(pathEntries),
-    CC: depSubpath(tc, "bin/gcc"),
-    CPP: `${depSubpath(tc, "bin/gcc")} -E`,
+    CC: `${depSubpath(tc, "bin/gcc")} --sysroot=${sysroot}`,
+    CPP: `${depSubpath(tc, "bin/gcc")} -E --sysroot=${sysroot}`,
     AR: depSubpath(tc, "bin/ar"),
     RANLIB: depSubpath(tc, "bin/ranlib"),
     STRIP: depSubpath(tc, "bin/strip"),
-    CPPFLAGS: `--sysroot=${depSubpath(tc, "sysroot")}`,
-    CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
+    CPPFLAGS: `--sysroot=${sysroot}`,
+    CFLAGS: `-O2 --sysroot=${sysroot} -B${tcBin}`,
     HOD_DUMMY_RPATH: rpathFlag,
-    LDFLAGS: `${rpathFlag} --sysroot=${depSubpath(tc, "sysroot")}`,
+    LDFLAGS: `${rpathFlag} --sysroot=${sysroot}`,
   };
 
   if (opts.cxx) {
-    env.CXX = depSubpath(tc, "bin/g++");
-    env.CXXFLAGS = `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`;
-    env.CXXCPP = `${depSubpath(tc, "bin/g++")} -E`;
+    env.CXX = `${depSubpath(tc, "bin/g++")} --sysroot=${sysroot}`;
+    env.CXXFLAGS = `-O2 --sysroot=${sysroot} -B${tcBin}`;
+    env.CXXCPP = `${depSubpath(tc, "bin/g++")} -E --sysroot=${sysroot}`;
   }
 
   const includePath = pathList([

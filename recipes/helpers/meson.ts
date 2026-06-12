@@ -50,8 +50,7 @@ export function mesonProfile(opts: MesonProfileOptions = {}): Partial<ShellBuild
   const ms = opts.meson ?? "meson";
   const nj = opts.ninja ?? "ninja";
 
-  // Get the base C profile
-  const base = cProfile(opts);
+  const base = cProfile({ ...opts, python: opts.python ?? "python" });
 
   // Extend PATH with meson and ninja bin directories
   const existingPath = (base.env as Record<string, string>).PATH ?? "";

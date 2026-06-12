@@ -97,7 +97,7 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
     CPPFLAGS: `--sysroot=${depSubpath(tc, "sysroot")}`,
     CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
     HOD_DUMMY_RPATH: rpathFlag,
-    LDFLAGS: rpathFlag,
+    LDFLAGS: `${rpathFlag} --sysroot=${depSubpath(tc, "sysroot")}`,
   };
 
   if (opts.cxx) {

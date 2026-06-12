@@ -17,7 +17,7 @@ const recipe = await shellBuild({
   ...cProfile(),
   sourceDir: true,
   script: `
-CFLAGS="-Wall -Winline -O2 -D_FILE_OFFSET_BITS=64"
+CFLAGS="$CFLAGS -Wall -Winline -D_FILE_OFFSET_BITS=64"
 LDFLAGS="$HOD_DUMMY_RPATH"
 
 # Compile objects with -fPIC for shared library

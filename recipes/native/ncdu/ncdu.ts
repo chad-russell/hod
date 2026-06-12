@@ -39,7 +39,7 @@ mkdir -p /tmp/ncdu-include
 cp /deps/ncurses/include/ncursesw/curses.h /tmp/ncdu-include/curses.h
 
 ac_cv_header_curses_h=yes \
-CPPFLAGS="-I/tmp/ncdu-include -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw" \
+CPPFLAGS="$CPPFLAGS -I/tmp/ncdu-include -I/deps/ncurses/include -I/deps/ncurses/include/ncursesw" \
 LDFLAGS="$HOD_DUMMY_RPATH -L/deps/ncurses/lib" \
 ./configure \\
   --prefix=/ \\

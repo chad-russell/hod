@@ -22,7 +22,7 @@ const recipe = await shellBuild({
   sourceDir: true,
   script: `
 export LDFLAGS="$HOD_DUMMY_RPATH -L/deps/zlib/lib -L/deps/bzip2/lib -L/deps/xz/lib"
-export CPPFLAGS="-I/deps/zlib/include -I/deps/bzip2/include -I/deps/xz/include"
+export CPPFLAGS="$CPPFLAGS -I/deps/zlib/include -I/deps/bzip2/include -I/deps/xz/include"
 
 # Allow the just-built 'file' binary to find shared deps during 'make' (needed for magic.mgc compilation)
 export LD_LIBRARY_PATH=/deps/zlib/lib:/deps/bzip2/lib:/deps/xz/lib

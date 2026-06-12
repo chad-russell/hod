@@ -14,6 +14,11 @@ const recipe = await shellBuild({
   sourceDir: true,
   script: `
 
+echo "=== zlib diag: CC=$CC CFLAGS=$CFLAGS ===" >&2
+echo 'int foo(){return 0;}' > /tmp/ztest.c
+$CC -v -c $CFLAGS /tmp/ztest.c -o /tmp/ztest.o 2>&1 || { echo "GCC FAILED"; exit 1; }
+echo "=== zlib diag: gcc ok ===" >&2
+
 # Build shared + static (zlib's configure enables both by default without --static)
 ./configure --prefix=/
 

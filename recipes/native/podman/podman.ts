@@ -51,6 +51,7 @@ const recipe = await shellBuild({
       depSubpath("libseccomp", "lib/pkgconfig"),
     ].join(":"),
     CGO_CFLAGS: [
+      profile.env.CGO_CFLAGS,
       `-I${depSubpath("libseccomp", "include")}`,
     ].join(" "),
     CGO_LDFLAGS: [

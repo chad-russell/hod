@@ -304,6 +304,10 @@ pub fn generate_wrappers(
         // shell script breaks that resolution because the real binary ends
         // up in bin/_hod_wrapped/<name>, shifting the relative path by one
         // directory level and making tools like cc1 unreachable.
+        if name == "clang" || name == "clang++" || name.starts_with("clang-") {
+            continue;
+        }
+
         if matches!(
             name.as_str(),
             "gcc"
@@ -317,6 +321,7 @@ pub fn generate_wrappers(
                 | "x86_64-linux-gnu-gcc"
                 | "x86_64-linux-gnu-g++"
                 | "x86_64-linux-gnu-ld"
+                | "llvm-config"
                 | "cmake"
                 | "ctest"
                 | "cpack"

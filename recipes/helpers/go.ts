@@ -68,15 +68,19 @@ export function goProfile(opts: GoProfileOptions = {}): {
   const preamble = hermeticPreamble({ shell: tc, glibcLinker: tc });
 
   if (cgo) {
+    const sysroot = depSubpath(tc, "sysroot");
+    const tcBin = depSubpath(tc, "bin");
+
     return {
       shell: depSubpath(tc, "bin/busybox"),
       preamble,
       env: {
         ...baseEnv,
-        CC: depSubpath(tc, "bin/gcc"),
-        CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
+        CC: `${depSubpath(tc, "bin/gcc")} --sysroot=${sysroot} -B${tcBin}`,
+        CFLAGS: `-O2 --sysroot=${sysroot} -B${tcBin}`,
+        CGO_CFLAGS: `-O2 --sysroot=${sysroot} -B${tcBin}`,
         HOD_DUMMY_RPATH: HOD_DUMMY_RPATH_FLAG,
-        CGO_LDFLAGS: HOD_DUMMY_RPATH_FLAG,
+        CGO_LDFLAGS: `${HOD_DUMMY_RPATH_FLAG} --sysroot=${sysroot}`,
       },
     };
   }

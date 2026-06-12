@@ -53,7 +53,9 @@ prefix="\$(cd "\$bin_dir/.." && pwd -P)"
 
 export PATH="\$prefix/libexec/hod-bin\${PATH:+:\$PATH}"
 
-exec "\$bin_dir/.bun-real" "\$@"
+exec "\$prefix/lib/ld-musl-x86_64.so.1" \
+  --library-path "\$prefix/lib" \
+  "\$bin_dir/.bun-real" "\$@"
 EOF
 chmod +x $OUT/bin/bun
 `,

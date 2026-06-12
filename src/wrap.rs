@@ -228,6 +228,25 @@ pub fn generate_wrappers(
     let ghostty_resources_export =
         "if [ -d \"$prefix/share/ghostty\" ]; then export GHOSTTY_RESOURCES_DIR=\"$prefix/share/ghostty\"; fi\n";
 
+    // Detect git exec-path and template-dir from own output.
+    // Git hardcodes prefix at build time and resolves libexec/templates relative
+    // to it. With prefix=/ and DESTDIR staging, the compiled-in paths point to
+    // the filesystem root, not the store. Set GIT_EXEC_PATH and GIT_TEMPLATE_DIR
+    // to override.
+    let git_exec_export = if output_staging_dir.join("libexec/git-core").is_dir() {
+        "if [ -z \"${GIT_EXEC_PATH:-}\" ]; then export GIT_EXEC_PATH=\"$prefix/libexec/git-core\"; fi\n"
+    } else {
+        ""
+    };
+    let git_template_export = if output_staging_dir
+        .join("share/git-core/templates")
+        .is_dir()
+    {
+        "if [ -z \"${GIT_TEMPLATE_DIR:-}\" ]; then export GIT_TEMPLATE_DIR=\"$prefix/share/git-core/templates\"; fi\n"
+    } else {
+        ""
+    };
+
     let ld_linux_path: Option<String> = runtime_dep_outputs.iter().find_map(|(_name, hash)| {
         let shard = hash_shard(hash);
         let hex = hash_to_hex(hash);
@@ -353,6 +372,8 @@ pub fn generate_wrappers(
             &egl_vendor_export,
             &magic_export,
             ghostty_resources_export,
+            git_exec_export,
+            git_template_export,
             ld_linux_path.as_deref(),
         );
 
@@ -372,7 +393,6 @@ pub fn generate_wrappers(
     Ok(count)
 }
 
-/// Error type for wrapper generation.
 #[derive(Debug)]
 pub enum WrapError {
     /// An IO error occurred.
@@ -416,6 +436,8 @@ fn generate_wrapper_script(
     egl_vendor_export: &str,
     magic_export: &str,
     ghostty_resources_export: &str,
+    git_exec_export: &str,
+    git_template_export: &str,
     ld_linux_path: Option<&str>,
 ) -> String {
     // Build the list of runtime dep staging paths for XDG_DATA_DIRS.
@@ -492,14 +514,19 @@ fn generate_wrapper_script(
 # Generated automatically by the hod build system.
 
 # Resolve paths using shell builtins only — no readlink/dirname from PATH.
-# Use pwd -P so profile symlinks resolve back to the real staging tree;
-# runtime dependency paths are addressed by staging shard/hash.
+# Walk upward from $0 to find the output prefix (the directory containing bin/).
 case "$0" in
     /*) _wrapper="$0" ;;
     *)  _wrapper="$(pwd)/$0" ;;
 esac
-bin_dir="${{_wrapper%/*}}"
-prefix="$(cd "$bin_dir/.." && pwd -P)"
+_cur="${{_wrapper%/*}}"
+while [ "$_cur" != "/" ]; do
+    if [ -d "$_cur/bin" ]; then
+        prefix="$(cd "$_cur" && pwd -P)"
+        break
+    fi
+    _cur="${{_cur%/*}}"
+done
 bin_dir="$prefix/bin"
 _staging="${{prefix%/*}}"
 staging_root="${{_staging%/*}}"
@@ -517,7 +544,7 @@ export XDG_DATA_DIRS="${{_xdg_data}}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
 # Build GSETTINGS_SCHEMA_PATH for GLib/GTK schema resolution
 export GSETTINGS_SCHEMA_PATH="{gsettings_str}${{GSETTINGS_SCHEMA_PATH:+:$GSETTINGS_SCHEMA_PATH}}"
 
-{gsk_export}{gio_extra_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}{ghostty_resources_export}{exec_line}
+{gsk_export}{gio_extra_export}{gio_launch_export}{xkb_export}{xlocale_export}{mesa_dri_export}{egl_vendor_export}{magic_export}{ghostty_resources_export}{git_exec_export}{git_template_export}{exec_line}
 "#
     )
 }
@@ -531,6 +558,8 @@ mod tests {
             name,
             &format!("_hod_wrapped/{name}"),
             &[("aa".to_string(), "aabbcc".to_string())],
+            "",
+            "",
             "",
             "",
             "",

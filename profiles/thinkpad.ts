@@ -57,6 +57,7 @@ import { netavarkRecipe } from "../recipes/native/netavark/netavark.js";
 import { aardvarkDnsRecipe } from "../recipes/native/aardvark-dns/aardvark-dns.js";
 import { containersConfigRecipe } from "../recipes/native/containers-config/containers-config.js";
 import { ghosttyRecipe } from "../recipes/native/ghostty/ghostty.js";
+import { zshSyntaxHighlightingRecipe } from "../recipes/native/zsh-syntax-highlighting/zsh-syntax-highlighting.js";
 import { userUnit } from "../js/src/systemd.js";
 import { sourceFile } from "../js/src/profile-files.js";
 
@@ -127,7 +128,7 @@ const configFiles = [
   sourceFile(".config/zellij/config.kdl", "../configs/thinkpad/zellij/config.kdl", import.meta.url),
   sourceFile(".config/zsh/fzf-history-widget.zsh", "../configs/thinkpad/zsh/fzf-history-widget.zsh", import.meta.url),
   sourceFile(".config/zsh/plugins/zsh-autosuggestions.zsh", "../configs/thinkpad/zsh/plugins/zsh-autosuggestions.zsh", import.meta.url),
-  sourceFile(".config/zsh/plugins/zsh-syntax-highlighting.zsh", "../configs/thinkpad/zsh/plugins/zsh-syntax-highlighting.zsh", import.meta.url),
+
   sourceFile(".pi/agent/extensions/searxng-search/index.ts", "../configs/thinkpad/pi-extensions/searxng-search/index.ts", import.meta.url),
   sourceFile(".pi/agent/extensions/gloo-proxy/index.ts", "../configs/thinkpad/pi-extensions/gloo-proxy/index.ts", import.meta.url),
   sourceFile(".zshenv", "../configs/thinkpad/zsh/zshenv", import.meta.url),
@@ -197,6 +198,9 @@ export const profile = {
 
     // GUI applications.
     { name: "ghostty", recipe: ghosttyRecipe },
+
+    // Zsh plugins.
+    { name: "zsh-syntax-highlighting", recipe: zshSyntaxHighlightingRecipe },
 
     // Container stack (rootless podman + distrobox).
     { name: "containers-config", recipe: containersConfigRecipe },

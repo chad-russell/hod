@@ -859,6 +859,7 @@ fn activate_managed_files(
 
     // Collect directories that hod will need to create
     let mut managed_dirs: Vec<String> = Vec::new();
+    let mut activated_targets: Vec<String> = Vec::new();
 
     // Deploy new/updated files
     for file in files {
@@ -903,14 +904,20 @@ fn activate_managed_files(
         if abs_target.exists() || abs_target.is_symlink() {
             let managed = previous_files.iter().any(|t| t == &file.target);
             if !managed {
-                return Err(format!(
-                    "refusing to overwrite unmanaged file {} at {}",
-                    file.target,
-                    abs_target.display()
-                ));
-            }
-            // Remove old symlink/file managed by hod
-            if abs_target.is_symlink() {
+                let backup_path = backup_path_for_unmanaged(&abs_target);
+                std::fs::rename(&abs_target, &backup_path).map_err(|e| {
+                    format!(
+                        "cannot back up unmanaged file {} to {}: {e}",
+                        abs_target.display(),
+                        backup_path.display()
+                    )
+                })?;
+                eprintln!(
+                    "[hod] backed up unmanaged file {} to {}",
+                    abs_target.display(),
+                    backup_path.display()
+                );
+            } else if abs_target.is_symlink() {
                 let _ = std::fs::remove_file(&abs_target);
             } else {
                 std::fs::remove_file(&abs_target)
@@ -925,11 +932,12 @@ fn activate_managed_files(
                 farm_copy.display()
             )
         })?;
+        activated_targets.push(file.target.clone());
     }
 
     // Write manifest
     let manifest_path = managed_files_manifest_path(profile_name);
-    let mut targets: Vec<&str> = files.iter().map(|f| f.target.as_str()).collect();
+    let mut targets = activated_targets;
     targets.sort_unstable();
     if targets.is_empty() {
         if manifest_path.exists() {
@@ -988,8 +996,40 @@ fn read_managed_units(profile_name: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn backup_path_for_unmanaged(path: &Path) -> PathBuf {
+    let base = PathBuf::from(format!("{}.pre-hod", path.display()));
+    if !base.exists() && !base.is_symlink() {
+        return base;
+    }
+
+    for i in 1.. {
+        let candidate = PathBuf::from(format!("{}.pre-hod.{i}", path.display()));
+        if !candidate.exists() && !candidate.is_symlink() {
+            return candidate;
+        }
+    }
+
+    unreachable!()
+}
+
+fn systemctl_command() -> &'static str {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if dir.join("systemctl").is_file() {
+                return "systemctl";
+            }
+        }
+    }
+
+    if Path::new("/run/current-system/sw/bin/systemctl").is_file() {
+        return "/run/current-system/sw/bin/systemctl";
+    }
+
+    "systemctl"
+}
+
 fn run_systemctl_user(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("systemctl")
+    let status = Command::new(systemctl_command())
         .arg("--user")
         .args(args)
         .status()
@@ -1006,7 +1046,7 @@ fn run_systemctl_user(args: &[&str]) -> Result<(), String> {
 }
 
 fn systemctl_user_status(args: &[&str]) -> Result<bool, String> {
-    let status = Command::new("systemctl")
+    let status = Command::new(systemctl_command())
         .arg("--user")
         .args(args)
         .status()

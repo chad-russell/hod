@@ -73,5 +73,5 @@ alias -- vi=nvim
 alias -- wycliffe-tunnel='ssh -L 33000:127.0.0.1:33000 -L 33001:127.0.0.1:33001 crussell@10.10.0.12'
 
 # -- Zsh syntax highlighting (must be last) --
-source "$HOME/.config/zsh/plugins/zsh-syntax-highlighting.zsh"
+source "$HOME/.hod/profiles/thinkpad/pkgs/zsh-syntax-highlighting/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 ZSH_HIGHLIGHT_HIGHLIGHTERS=(main)

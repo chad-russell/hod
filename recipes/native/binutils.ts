@@ -55,7 +55,6 @@ CFLAGS="-O2" \\
 CXXFLAGS="-O2" \\
 /tmp/build/configure \\
   --prefix=/ \\
-  --target=x86_64-linux-gnu \\
   --disable-werror \\
   --disable-nls \\
   --disable-gdb \\
@@ -70,9 +69,11 @@ CXXFLAGS="-O2" \\
 make -j$(nproc)
 make install DESTDIR=$OUT
 
+# Create prefixed symlinks for tools that expect x86_64-linux-gnu-<tool> names
+# (e.g. node.js build system). The native build produces unprefixed names.
 for tool in ar as ld ld.bfd nm objcopy objdump ranlib readelf strip addr2line c++filt elfedit size strings gprof; do
-  if [ -x "\$OUT/bin/x86_64-linux-gnu-\$tool" ] && [ ! -e "\$OUT/bin/\$tool" ]; then
-    ln -sf "x86_64-linux-gnu-\$tool" "\$OUT/bin/\$tool"
+  if [ -x "\$OUT/bin/\$tool" ] && [ ! -e "\$OUT/bin/x86_64-linux-gnu-\$tool" ]; then
+    ln -sf "\$tool" "\$OUT/bin/x86_64-linux-gnu-\$tool"
   fi
 done
 

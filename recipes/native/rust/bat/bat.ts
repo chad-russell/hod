@@ -55,14 +55,7 @@ const recipe = await cargoBuild({
     dep("ca-certs", caCertificatesRecipe),
   ],
   env: caCertEnv(),
-  preBuildScript: `
-echo "=== bat C compiler diagnostic ==="
-echo "CC=$CC"
-echo "CFLAGS=$CFLAGS"
-echo 'int foo() { return 0; }' > /tmp/hod-cc-test.c
-"$CC" -v -c $CFLAGS /tmp/hod-cc-test.c -o /tmp/hod-cc-test.o
-echo "=== bat C compiler diagnostic ok ==="
-`,
+  cargoFlags: ["--no-default-features", "--features", "regex-onig,paging"],
   // Default features include `application` → `minimal-application` → `regex-onig`.
   // The `onig` crate compiles oniguruma from source via the `cc` crate,
   // which uses the C compiler from the toolchain dep.

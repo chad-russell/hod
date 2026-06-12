@@ -53,6 +53,20 @@ meson setup build \
 ninja -C build
 DESTDIR=$OUT ninja -C build install
 
+# Patch shebangs: meson hard-codes the build-time Python path into installed
+# scripts (gdbus-codegen, glib-mkenums, etc).  That path is sandbox-local and
+# breaks when the output is used by downstream recipes.  Rewrite to
+# #!/usr/bin/env python3 so the preamble's /usr/bin/python3 wrapper is used.
+for f in $OUT/bin/*; do
+  [ -f "$f" ] || continue
+  read -r line < "$f" || true
+  case "$line" in
+    '#!'*python*|'#!'*/store/*|'#!'*/*wrapped*)
+      sed -i '1s|^#!.*$|#!/usr/bin/env python3|' "$f"
+      ;;
+  esac
+done
+
 ${RELOCATE_PKG_CONFIG}
 
 ${STRIP_ALL}

@@ -31,6 +31,17 @@ export PKG_CONFIG_PATH=/deps/openssl/lib/pkgconfig:/deps/zlib/lib/pkgconfig
 # Allow configure's test programs to find shared deps
 export LD_LIBRARY_PATH=/deps/openssl/lib:/deps/zlib/lib
 
+# === Diagnostic: test gcc -E ===
+echo "int x;" > /tmp/test_cpp.c
+$CPP /tmp/test_cpp.c 2>&1 || echo "CPP FAILED with exit code $?"
+echo "=== gcc -v ==="
+/deps/toolchain/bin/gcc -v 2>&1 | tail -5
+echo "=== trying to run cc1 directly ==="
+/deps/toolchain/lib/gcc/x86_64-linux-gnu/13.2.0/cc1 --version 2>&1 || echo "cc1 FAILED with exit code $?"
+echo "=== ldd cc1 ==="
+LD_LIBRARY_PATH=/deps/toolchain/lib /deps/toolchain/lib/ld-linux-x86-64.so.2 --list /deps/toolchain/libexec/gcc/x86_64-linux-gnu/13.2.0/cc1 2>&1 || echo "ldd FAILED"
+echo "=== End diagnostic ==="
+
 ./configure \\
   --prefix=/ \\
   --enable-shared \\

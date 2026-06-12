@@ -90,6 +90,7 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
   const env: Record<string, string> = {
     PATH: pathList(pathEntries),
     CC: depSubpath(tc, "bin/gcc"),
+    CPP: `${depSubpath(tc, "bin/gcc")} -E`,
     AR: depSubpath(tc, "bin/ar"),
     RANLIB: depSubpath(tc, "bin/ranlib"),
     STRIP: depSubpath(tc, "bin/strip"),

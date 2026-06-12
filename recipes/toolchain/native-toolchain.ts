@@ -175,11 +175,12 @@ printf '%s\n' "$LIBCXX_CXXFLAGS" > $OUT/share/hod/cc/libcxx-cxxflags
 # internal search first tries lib/gcc/.../ relative to its iprefix.
 # Create symlinks so cc1 is found at the expected relative path.
 mkdir -p $OUT/lib/gcc/x86_64-linux-gnu/$GCC_VER
-for bin in $OUT/libexec/gcc/x86_64-linux-gnu/$GCC_VER/cc1{,plus}; do
-  [ -f "$bin" ] || continue
-  name=$(basename "$bin")
-  [ -e "$OUT/lib/gcc/x86_64-linux-gnu/$GCC_VER/$name" ] && continue
+for name in cc1 cc1plus; do
+  bin="$OUT/libexec/gcc/x86_64-linux-gnu/$GCC_VER/$name"
+  [ -f "$bin" ] || { echo "DEBUG: $bin not found"; continue; }
+  [ -e "$OUT/lib/gcc/x86_64-linux-gnu/$GCC_VER/$name" ] && { echo "DEBUG: $name already exists"; continue; }
   ln -sf "../../../../libexec/gcc/x86_64-linux-gnu/$GCC_VER/$name" "$OUT/lib/gcc/x86_64-linux-gnu/$GCC_VER/$name"
+  echo "DEBUG: symlinked $name"
 done
 
 # === Verification ===

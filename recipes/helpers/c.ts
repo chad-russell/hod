@@ -94,6 +94,7 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
     AR: depSubpath(tc, "bin/ar"),
     RANLIB: depSubpath(tc, "bin/ranlib"),
     STRIP: depSubpath(tc, "bin/strip"),
+    CPPFLAGS: `--sysroot=${depSubpath(tc, "sysroot")}`,
     CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
     HOD_DUMMY_RPATH: rpathFlag,
     LDFLAGS: rpathFlag,
@@ -102,6 +103,7 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
   if (opts.cxx) {
     env.CXX = depSubpath(tc, "bin/g++");
     env.CXXFLAGS = `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`;
+    env.CXXCPP = `${depSubpath(tc, "bin/g++")} -E`;
   }
 
   const includePath = pathList([

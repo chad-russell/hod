@@ -1,10 +1,13 @@
 # Plan: Declarative Runtime Metadata + Generic Wrapper Mechanism
 
-**Status:** Active — Steps 1–3 implemented; Step 4 in progress. First vertical
-slice (`file`) landed and **verified end-to-end on a full from-source toolchain
-bootstrap** (gcc/glibc) on a remote builder, including stamp + run + clean
-closure. Launcher provisioning settled on **Model B (build-system
-infrastructure)**, not a recipe dependency. Remaining: migrate more providers,
+**Status:** Active — Steps 1–3 implemented; Step 4 in progress. The `wrapper`
+facet (`file`) is **verified end-to-end on a full from-source toolchain
+bootstrap** (gcc/glibc), and the cross-recipe `provides` facet (xkeyboard-config
+→ consumer) is **verified end-to-end** (then reverted — see finding). Launcher
+provisioning settled on **Model B (build-system infrastructure)**, not a recipe
+dependency. **Key finding:** the launcher path is all-or-nothing per output, so
+the next required step is the **generic base in `composer.rs`**, after which
+consumers migrate atomically. Remaining: generic base, per-consumer migration,
 delete shell-wrapper generator.
 **Supersedes the ad hoc policy in:** `src/wrap.rs`
 **Related docs:** `docs/build-environment-and-metadata.md`,
@@ -283,17 +286,65 @@ Share it so `run.rs` and `profile.rs` use the same logic — closing the gap whe
       moot: the launcher is never a dependency, and the manifest path simply
       doesn't engage for recipes with no runtime directives (the toolchain,
       busybox, etc. take the shell fallback / no wrap, unchanged hashes).
-   2. Add generic `XDG_DATA_DIRS` + `GSETTINGS_SCHEMA_PATH` base composition to
-      `src/composer.rs` as mechanism (own + closure providers' `share`), shared
-      by `wrap.rs` / `run.rs` / `profile.rs`; de-dupe with `run.rs::build_env`.
-   3. Migrate the remaining providers/apps to metadata, one at a time, deleting
-      the matching `wrap.rs` special case as each is confirmed launcher-wrapped:
-      glib (`GIO_LAUNCH_DESKTOP`, schemas), xkeyboard-config (`XKB_CONFIG_ROOT`),
-      libX11 (`XLOCALEDIR`), mesa (`LIBGL_DRIVERS_PATH`,
-      `__EGL_VENDOR_LIBRARY_DIRS`), gtk4 (`GSK_RENDERER`, `GIO_EXTRA_MODULES`),
-      git (`GIT_EXEC_PATH` / `GIT_TEMPLATE_DIR`; the argv0 alias hack dissolves
-      under the launcher), ghostty (`GHOSTTY_RESOURCES_DIR`), alacritty/ghostty
-      `LD_LIBRARY_PATH`.
+   ### `provides` facet proven end-to-end (second increment)
+
+   The `file` slice only exercised the `wrapper` (self) facet. The cross-recipe
+   `provides` facet — a *dependency* contributing env to its dependents — was
+   then proven on real `hod` (bees) with a throwaway consumer (not committed):
+
+   - `xkeyboard-config` declared `provides: [setEnv("XKB_CONFIG_ROOT",
+     selfPath("share/X11/xkb"))]`; a minimal dynamically-linked probe declared
+     **no runtime metadata of its own**, only `runtime_deps: [xkeyboard-config]`.
+   - The probe's launcher manifest came out as
+     `SET XKB_CONFIG_ROOT @store@/5f/5f50496d…/share/X11/xkb` — the directive was
+     aggregated from the **provider**, and `@store@/5f…` is **xkeyboard-config's
+     output hash**, proving `self:` rebases to the *provider's* prefix (not the
+     consumer's). `hod run` printed the same resolved path.
+
+   This validates `collect_runtime_closure` + `StoreResolver`/`ManifestResolver`
+   against real stored recipes, not just the `FakeResolver` unit tests.
+
+   ### Architectural finding: the launcher path is all-or-nothing per output
+
+   When an output's aggregated directive list is non-empty, **every** eligible
+   executable in it takes the launcher/manifest path and the shell wrapper is not
+   generated at all (`src/wrap.rs` `manifest_plan` short-circuit). The shell
+   wrapper is where the **generic base** (`XDG_DATA_DIRS`, `GSETTINGS_SCHEMA_PATH`,
+   the `LD_LIBRARY_PATH` allowlist, EGL/DRI/`XLOCALEDIR` probes) lives today; the
+   composer/manifest path emits **only** the resolved directives. Consequences:
+
+   - Declaring `provides` on a provider **flips every consumer in its runtime
+     closure** onto the launcher path the moment aggregation becomes non-empty.
+     A consumer cannot be migrated "one special case at a time" — it flips
+     atomically and must have **all** of its env covered before it flips, or it
+     regresses (loses base env + its package-specific env).
+   - Example: `xkeyboard-config`'s only real consumer is `alacritty`, which also
+     needs `LD_LIBRARY_PATH` (dlopen of mesa/EGL), `__EGL_VENDOR_LIBRARY_DIRS`,
+     `LIBGL_DRIVERS_PATH`, the generic base, and its `--option env.LD_LIBRARY_PATH=""`
+     scrub. Committing `xkeyboard-config`'s `provides` alone would arm an
+     `alacritty` regression on its next rebuild. **So it was reverted, not
+     committed.** (`hod run`/profiles are unaffected — `run.rs::build_env`
+     already sets the base independently and composes metadata additively.)
+
+   ### Revised rollout order (evidence-based)
+
+   1. **Generic base as mechanism first (was step 2).** Add `XDG_DATA_DIRS` +
+      `GSETTINGS_SCHEMA_PATH` (own + closure `share`) to `src/composer.rs` so a
+      flipped output keeps its base. Shared by `wrap.rs`/`run.rs`/`profile.rs`;
+      de-dupe `run.rs::build_env`. This is the unblocker for flipping any GUI app.
+   2. **Migrate atomically per consumer**, smallest first, deleting all of that
+      consumer's `wrap.rs` special cases together once it is confirmed
+      launcher-wrapped and runs after `copy-closure`. The provider declarations
+      (`glib` `GIO_LAUNCH_DESKTOP`/schemas, `xkeyboard-config` `XKB_CONFIG_ROOT`,
+      `libX11` `XLOCALEDIR`, `mesa` `LIBGL_DRIVERS_PATH`/EGL, `gtk4`
+      `GSK_RENDERER`/`GIO_EXTRA_MODULES`, `git` exec/template, `ghostty`
+      resources, `alacritty`/`ghostty` `LD_LIBRARY_PATH`) land as part of the
+      first consumer that pulls them in, then are reused.
+   3. **Compiler/cmake exclusion still required.** The launcher preserves
+      `argv[0]` but still execs `_hod_wrapped/<tool>`, so a compiler's
+      `argv[0]`-relative `cc1`/`iprefix` resolution shifts by one dir exactly as
+      with the shell wrapper. Keep these on the no-wrap path (ideally via the
+      structural guard / opt-in-by-consequence, not a name blocklist).
    4. Once nothing reaches the shell path, delete the shell-wrapper generator;
       `wrap.rs` becomes a dumb manifest writer (acceptance criteria below).
 

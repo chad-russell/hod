@@ -119,6 +119,7 @@ pub fn make_process_recipe(command: &str, deps: Vec<(&str, Hash)>) -> Recipe {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     })
 }
 
@@ -156,6 +157,7 @@ pub fn make_process_with_env(
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     })
 }
 

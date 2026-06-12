@@ -16,10 +16,12 @@
 
 pub mod build;
 pub mod closure;
+pub mod composer;
 pub mod download;
 pub mod encoding;
 pub mod git_fetch;
 pub mod hash;
+pub mod manifest;
 pub mod packed;
 pub mod profile;
 pub mod recipe;

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::encoding::EncodeError;
-use crate::hash::{hash_bytes, hash_shard, hash_to_hex, Hash};
+use crate::hash::{hash_bytes, hash_shard, hash_to_hex, hex_to_hash, Hash};
 use crate::recipe::{
     ArchiveFormat, Recipe, RecipeDirectory, RecipeFile, RecipeProcess, RecipeSymlink, RecipeType,
     RecipeUnpack,
@@ -347,7 +347,17 @@ fn do_build(
                 }
                 copy_dir_recursive(&raw_dir, &wrap_dir)?;
 
-                match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
+                // The launcher is provisioned by the build system (registered
+                // in store config), not declared as a recipe dependency.
+                let launcher_bytes = resolve_launcher_bytes(store, options, building);
+
+                match crate::wrap::generate_wrappers(
+                    store,
+                    &wrap_dir,
+                    &runtime_dep_outputs,
+                    Some(&recipe_hash),
+                    launcher_bytes.as_deref(),
+                ) {
                     Ok(count) if count > 0 => {
                         eprintln!("[hod] generated {} wrapper script(s)", count,);
 
@@ -579,6 +589,67 @@ fn collect_dep_edges(recipe: &Recipe, dep_outputs: &DepOutputs) -> Vec<(Option<S
 /// | `x86_64-darwin`     | None (future: Mach-O install_name editing)  |
 /// | other               | None (no-op, deps still recorded as metadata) |
 ///
+/// Resolve the bytes of the active `hod-launcher`, building it on demand.
+///
+/// The launcher is build-system infrastructure, not a recipe dependency: its
+/// recipe hash is recorded in store config (see `hod register-launcher`). The
+/// build system stamps its bytes over wrapped executables during post-build
+/// fixup. Returns `None` (with a warning) when no launcher is registered or it
+/// cannot be built/read — callers then fall back to the legacy shell wrappers.
+fn resolve_launcher_bytes(
+    store: &Store,
+    options: &BuildOptions,
+    building: &mut std::collections::HashSet<Hash>,
+) -> Option<Vec<u8>> {
+    let hex = match store.get_config(crate::manifest::LAUNCHER_RECIPE_CONFIG_KEY) {
+        Ok(Some(h)) => h,
+        Ok(None) => return None,
+        Err(e) => {
+            eprintln!("[hod] warning: could not read launcher config: {e}");
+            return None;
+        }
+    };
+    let launcher_recipe = hex_to_hash(&hex)?;
+
+    // Ensure the launcher is built (a cache hit after the first time). Never
+    // force-rebuild it as a side effect of building/wrapping another recipe.
+    let output_hash = match store.get_output(&launcher_recipe) {
+        Ok(Some(h)) if artifact_staging_path(store, &h).exists() => h,
+        _ => {
+            let recipe_bytes = match store.get_recipe(&launcher_recipe) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[hod] warning: launcher recipe not in store: {e}");
+                    return None;
+                }
+            };
+            let launcher_opts = BuildOptions {
+                force: false,
+                ..options.clone()
+            };
+            match do_build(store, &recipe_bytes, &launcher_opts, building) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[hod] warning: failed to build launcher: {e}");
+                    return None;
+                }
+            }
+        }
+    };
+
+    let path = artifact_staging_path(store, &output_hash).join(crate::manifest::LAUNCHER_REL);
+    match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) => {
+            eprintln!(
+                "[hod] warning: launcher binary not found at {}: {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
 /// Returns `Ok(count)` with the number of binaries modified.
 fn apply_runtime_fixup(
     platform: &str,
@@ -693,7 +764,26 @@ pub fn restage_output(
         }
         copy_dir_recursive(&wrap_src_dir, &wrap_dir)?;
 
-        match crate::wrap::generate_wrappers(store, &wrap_dir, &runtime_dep_outputs) {
+        // Provision the launcher from store config (built on demand), same as
+        // the normal build path.
+        let launcher_opts = BuildOptions {
+            force: false,
+            quiet: true,
+            keep_failed: false,
+        };
+        let launcher_bytes = resolve_launcher_bytes(
+            store,
+            &launcher_opts,
+            &mut std::collections::HashSet::new(),
+        );
+
+        match crate::wrap::generate_wrappers(
+            store,
+            &wrap_dir,
+            &runtime_dep_outputs,
+            Some(recipe_hash),
+            launcher_bytes.as_deref(),
+        ) {
             Ok(count) if count > 0 => {
                 eprintln!("[hod] restage: generated {} wrapper script(s)", count);
                 let wrapped_artifact = capture_output(&wrap_dir, store)?;

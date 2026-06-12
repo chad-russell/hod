@@ -28,6 +28,8 @@ src/
   sandbox.rs       Linux sandbox setup for Process recipes
   packed.rs        ELF RUNPATH patching + AT_EXECFN bootstrap injection
   relocate.rs      store-relative runtime relocation for Process outputs
+  composer.rs      generic runtime-env composer (aggregate + resolve metadata)
+  manifest.rs      launcher manifest format + static-launcher stamping
   wrap.rs          post-build wrapper generation for GUI/runtime env setup
   closure.rs       `hod closure` / `hod copy-closure`
   run.rs           `hod run` / `hod shell`

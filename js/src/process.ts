@@ -3,6 +3,7 @@
 import { encodeJson } from "./cli.js";
 import type { BuiltRecipe } from "./file.js";
 import type { ProcessDependency } from "./dep.js";
+import type { RuntimeMeta } from "./runtime.js";
 
 export interface EnvEntry {
   key: string;
@@ -24,6 +25,9 @@ export interface ProcessDefinition {
    *  patching on Linux, no-op on other platforms). Also serves as metadata
    *  for downstream consumers (initramfs builders, packed executable bundlers). */
   runtime_deps?: string[];
+  /** Optional declarative runtime metadata (provider contributions + wrapper
+   *  directives). When present, it is part of the recipe's hashed interface. */
+  runtime?: RuntimeMeta;
   /** Optional working directory contents hash. */
   workdir_hash?: string;
   /** Optional initial output directory contents hash. */
@@ -77,6 +81,19 @@ export async function process(definition: ProcessDefinition): Promise<BuiltRecip
   }
   if (definition.runtime_deps && definition.runtime_deps.length > 0) {
     json.runtime_deps = definition.runtime_deps;
+  }
+
+  // Only emit `runtime` when it carries content. An empty RuntimeMeta would
+  // still hash differently from "absent", so omit it to preserve recipe hashes.
+  if (definition.runtime) {
+    const provides = definition.runtime.provides ?? [];
+    const wrapper = definition.runtime.wrapper ?? [];
+    if (provides.length > 0 || wrapper.length > 0) {
+      const runtime: Record<string, unknown> = {};
+      if (provides.length > 0) runtime.provides = provides;
+      if (wrapper.length > 0) runtime.wrapper = wrapper;
+      json.runtime = runtime;
+    }
   }
 
   const hash = await encodeJson(json);

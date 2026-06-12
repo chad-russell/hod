@@ -299,6 +299,7 @@ fn e2e_determinism_process_recipe() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let hash1 = build_in_process(&store1, &process_recipe);

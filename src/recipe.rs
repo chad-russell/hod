@@ -218,6 +218,112 @@ pub struct EnvVar {
     pub value: String,
 }
 
+// ---------------------------------------------------------------------------
+// Declarative runtime metadata
+// ---------------------------------------------------------------------------
+//
+// Runtime metadata describes how a built output's executables should be
+// wrapped at runtime, and what runtime environment an output contributes to
+// anything that runtime-depends on it. Core Hod stores and resolves this data
+// generically — it embeds no package/ecosystem knowledge. Policy (which env
+// vars, which paths) lives in recipes/SDK helpers, mirroring the nixpkgs
+// setup-hook model. See `plans/declarative-runtime-wrappers.md`.
+
+/// A runtime wrapper operation. Mirrors the proven `makeWrapper` interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum WrapOp {
+    /// Always set the variable to the resolved value.
+    Set = 0x01,
+    /// Set the variable only if it is not already present.
+    SetDefault = 0x02,
+    /// Remove the variable from the environment.
+    Unset = 0x03,
+    /// Prepend the resolved value to the variable, joined by `sep`.
+    Prefix = 0x04,
+    /// Append the resolved value to the variable, joined by `sep`.
+    Suffix = 0x05,
+    /// Add flags to the executable invocation (before user args).
+    AddFlags = 0x06,
+    /// Set the executed process's `argv[0]` to the resolved value.
+    Argv0 = 0x07,
+    /// Inherit the original `argv[0]` passed to the wrapper (preferred for
+    /// keeping `ps`/profilers showing the real application name).
+    InheritArgv0 = 0x08,
+}
+
+impl WrapOp {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0x01 => Some(Self::Set),
+            0x02 => Some(Self::SetDefault),
+            0x03 => Some(Self::Unset),
+            0x04 => Some(Self::Prefix),
+            0x05 => Some(Self::Suffix),
+            0x06 => Some(Self::AddFlags),
+            0x07 => Some(Self::Argv0),
+            0x08 => Some(Self::InheritArgv0),
+            _ => None,
+        }
+    }
+}
+
+/// A reference to a subpath inside a named runtime dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepRef {
+    /// Dependency name (must be one of the recipe's `runtime_deps`).
+    pub name: String,
+    /// Subpath within the dependency output, e.g. `lib/dri`.
+    pub sub: String,
+}
+
+/// A single value source for a runtime directive. Path-valued sources carry an
+/// implicit "skip if the path does not exist on disk" guard, resolved by core
+/// at relocation time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSource {
+    /// A literal string value (no existence guard).
+    Literal(String),
+    /// A subpath within this output's own prefix, e.g. `share/glib-2.0/schemas`.
+    #[serde(rename = "self")]
+    SelfPath(String),
+    /// A subpath within a named runtime dependency.
+    Dep(DepRef),
+    /// Resolve to the first source whose path exists.
+    FirstExisting(Vec<RuntimeSource>),
+}
+
+/// A runtime directive: an operation on an environment variable (or argv),
+/// with one or more value sources joined by `sep` for prefix/suffix ops.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeDirective {
+    /// The operation to perform.
+    pub op: WrapOp,
+    /// The environment variable name. Empty for `AddFlags`/`InheritArgv0`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub var: String,
+    /// Separator for `Prefix`/`Suffix` ops (e.g. `:`). Ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sep: Option<String>,
+    /// Value sources, resolved and joined by `sep` (for prefix/suffix).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<RuntimeSource>,
+}
+
+/// Declarative runtime metadata attached to a Process recipe.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMeta {
+    /// Env this output contributes to anything that runtime-depends on it.
+    /// `self:` sources resolve against this output's prefix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<RuntimeDirective>,
+    /// Directives applied when wrapping this output's own executables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wrapper: Vec<RuntimeDirective>,
+}
+
 /// A process recipe — run a command in a sandbox.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecipeProcess {
@@ -254,6 +360,13 @@ pub struct RecipeProcess {
     /// and patches RUNPATH + bootstrap interpreter paths with store-relative paths.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub runtime_deps: Option<Vec<String>>,
+    /// Optional declarative runtime metadata (provider contributions + wrapper
+    /// directives). When present, it is part of the recipe's hashed interface.
+    ///
+    /// Backward-compatible tail field: absent in older recipes means `None`,
+    /// preserving their existing bytes/hashes.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub runtime: Option<RuntimeMeta>,
 }
 
 /// The top-level recipe enum — one of the recipe types.
@@ -372,12 +485,25 @@ impl Recipe {
                 enc.optional(p.workdir_hash.as_ref(), |e, h| e.hash(h));
                 enc.optional(p.output_scaffold_hash.as_ref(), |e, h| e.hash(h));
                 enc.u8(p.unsafe_flags);
-                // Backward-compatible tail extension: omitted when absent so
-                // legacy Process recipe bytes/hashes remain unchanged. When
-                // present, write a presence byte followed by the sorted list.
-                if let Some(runtime_deps) = p.runtime_deps.as_ref() {
-                    enc.u8(0x01);
-                    enc.list_u32(runtime_deps, |e, dep| e.str_u16(dep));
+                // Backward-compatible tail extension: omitted when both fields
+                // are absent so legacy Process recipe bytes/hashes remain
+                // unchanged. `runtime_deps` is written first; `runtime` follows
+                // only when present. A recipe with only `runtime_deps` encodes
+                // exactly as before (presence byte + list, then nothing).
+                let has_runtime_deps = p.runtime_deps.is_some();
+                let has_runtime = p.runtime.is_some();
+                if has_runtime_deps || has_runtime {
+                    match p.runtime_deps.as_ref() {
+                        Some(runtime_deps) => {
+                            enc.u8(0x01);
+                            enc.list_u32(runtime_deps, |e, dep| e.str_u16(dep));
+                        }
+                        None => enc.u8(0x00),
+                    }
+                    if let Some(runtime) = p.runtime.as_ref() {
+                        enc.u8(0x01);
+                        encode_runtime_meta(&mut enc, runtime);
+                    }
                 }
             }
             Recipe::GitFetch(gf) => {
@@ -591,6 +717,26 @@ impl Recipe {
             }
         };
 
+        // Optional `runtime` metadata follows `runtime_deps`. Absent for
+        // recipes that predate it (remaining == 0) or encode it as 0x00.
+        let runtime = if dec.remaining() == 0 {
+            None
+        } else {
+            match dec.u8()? {
+                0x00 => None,
+                0x01 => Some(decode_runtime_meta(dec)?),
+                v => {
+                    return Err(EncodeError::InvalidValue {
+                        field: "process runtime presence byte".into(),
+                        value: format!("expected 0x00 or 0x01, got 0x{v:02x}"),
+                    });
+                }
+            }
+        };
+        if let Some(ref rt) = runtime {
+            rt.validate()?;
+        }
+
         // Validate env sorted by key
         for window in env.windows(2) {
             if window[0].key >= window[1].key {
@@ -636,6 +782,7 @@ impl Recipe {
             output_scaffold_hash,
             unsafe_flags,
             runtime_deps,
+            runtime,
         }))
     }
 
@@ -649,6 +796,188 @@ impl Recipe {
             expected_hash,
         }))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime metadata: binary codec + validation
+// ---------------------------------------------------------------------------
+
+fn encode_runtime_meta(enc: &mut Encoder, m: &RuntimeMeta) {
+    enc.list_u32(&m.provides, |e, d| encode_runtime_directive(e, d));
+    enc.list_u32(&m.wrapper, |e, d| encode_runtime_directive(e, d));
+}
+
+fn encode_runtime_directive(enc: &mut Encoder, d: &RuntimeDirective) {
+    enc.u8(d.op as u8);
+    enc.str_u16(&d.var);
+    enc.optional(d.sep.as_ref(), |e, s| e.str_u16(s));
+    enc.list_u32(&d.sources, |e, s| encode_runtime_source(e, s));
+}
+
+fn encode_runtime_source(enc: &mut Encoder, s: &RuntimeSource) {
+    match s {
+        RuntimeSource::Literal(v) => {
+            enc.u8(0x01);
+            enc.str_u16(v);
+        }
+        RuntimeSource::SelfPath(v) => {
+            enc.u8(0x02);
+            enc.str_u16(v);
+        }
+        RuntimeSource::Dep(d) => {
+            enc.u8(0x03);
+            enc.str_u16(&d.name);
+            enc.str_u16(&d.sub);
+        }
+        RuntimeSource::FirstExisting(list) => {
+            enc.u8(0x04);
+            enc.list_u32(list, |e, x| encode_runtime_source(e, x));
+        }
+    }
+}
+
+fn decode_runtime_meta(dec: &mut Decoder) -> Result<RuntimeMeta> {
+    let provides = dec.list_u32(decode_runtime_directive)?;
+    let wrapper = dec.list_u32(decode_runtime_directive)?;
+    Ok(RuntimeMeta { provides, wrapper })
+}
+
+fn decode_runtime_directive(dec: &mut Decoder) -> Result<RuntimeDirective> {
+    let op_tag = dec.u8()?;
+    let op = WrapOp::from_u8(op_tag).ok_or(EncodeError::InvalidValue {
+        field: "runtime directive op".into(),
+        value: format!("0x{op_tag:02x}"),
+    })?;
+    let var = dec.str_u16()?;
+    let sep = dec.optional(|d| d.str_u16())?;
+    let sources = dec.list_u32(decode_runtime_source)?;
+    Ok(RuntimeDirective {
+        op,
+        var,
+        sep,
+        sources,
+    })
+}
+
+fn decode_runtime_source(dec: &mut Decoder) -> Result<RuntimeSource> {
+    let tag = dec.u8()?;
+    match tag {
+        0x01 => Ok(RuntimeSource::Literal(dec.str_u16()?)),
+        0x02 => Ok(RuntimeSource::SelfPath(dec.str_u16()?)),
+        0x03 => {
+            let name = dec.str_u16()?;
+            let sub = dec.str_u16()?;
+            Ok(RuntimeSource::Dep(DepRef { name, sub }))
+        }
+        0x04 => Ok(RuntimeSource::FirstExisting(
+            dec.list_u32(decode_runtime_source)?,
+        )),
+        v => Err(EncodeError::InvalidValue {
+            field: "runtime source tag".into(),
+            value: format!("0x{v:02x}"),
+        }),
+    }
+}
+
+impl RuntimeMeta {
+    /// Validate structural invariants of the directives. Called on decode so
+    /// stored recipes are always well-formed; SDK helpers construct valid data.
+    pub fn validate(&self) -> Result<()> {
+        validate_runtime_directives(&self.provides, "provides")?;
+        validate_runtime_directives(&self.wrapper, "wrapper")?;
+        Ok(())
+    }
+}
+
+fn validate_runtime_directives(dirs: &[RuntimeDirective], facet: &str) -> Result<()> {
+    use std::collections::HashSet;
+
+    let invalid = |msg: String| EncodeError::InvalidValue {
+        field: format!("runtime {facet} directive"),
+        value: msg,
+    };
+
+    // Singleton ops may appear at most once per (op, var) within a facet.
+    let mut singletons: HashSet<(u8, &str)> = HashSet::new();
+
+    for d in dirs {
+        let needs_var = matches!(
+            d.op,
+            WrapOp::Set
+                | WrapOp::SetDefault
+                | WrapOp::Unset
+                | WrapOp::Prefix
+                | WrapOp::Suffix
+                | WrapOp::Argv0
+        );
+        if needs_var && d.var.is_empty() {
+            return Err(invalid(format!("{:?} requires a non-empty var", d.op)));
+        }
+        if !needs_var && !d.var.is_empty() {
+            return Err(invalid(format!("{:?} must have an empty var", d.op)));
+        }
+
+        // `sep` is meaningful only for prefix/suffix.
+        match d.op {
+            WrapOp::Prefix | WrapOp::Suffix => {
+                if d.sep.is_none() {
+                    return Err(invalid(format!("{:?} requires a separator", d.op)));
+                }
+            }
+            _ => {
+                if d.sep.is_some() {
+                    return Err(invalid(format!("{:?} must not set a separator", d.op)));
+                }
+            }
+        }
+
+        // Source-count requirements per op.
+        match d.op {
+            WrapOp::Unset | WrapOp::InheritArgv0 => {
+                if !d.sources.is_empty() {
+                    return Err(invalid(format!("{:?} must have no sources", d.op)));
+                }
+            }
+            WrapOp::Argv0 => {
+                if d.sources.len() != 1 {
+                    return Err(invalid(format!("{:?} requires exactly one source", d.op)));
+                }
+            }
+            _ => {
+                if d.sources.is_empty() {
+                    return Err(invalid(format!("{:?} requires at least one source", d.op)));
+                }
+            }
+        }
+
+        for s in &d.sources {
+            validate_runtime_source(s, facet)?;
+        }
+
+        if matches!(
+            d.op,
+            WrapOp::Set | WrapOp::SetDefault | WrapOp::Unset | WrapOp::Argv0 | WrapOp::InheritArgv0
+        ) && !singletons.insert((d.op as u8, d.var.as_str()))
+        {
+            return Err(invalid(format!("duplicate {:?} for var '{}'", d.op, d.var)));
+        }
+    }
+    Ok(())
+}
+
+fn validate_runtime_source(s: &RuntimeSource, facet: &str) -> Result<()> {
+    if let RuntimeSource::FirstExisting(list) = s {
+        if list.is_empty() {
+            return Err(EncodeError::InvalidValue {
+                field: format!("runtime {facet} source"),
+                value: "first_existing must have at least one source".into(),
+            });
+        }
+        for inner in list {
+            validate_runtime_source(inner, facet)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

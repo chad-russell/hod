@@ -59,6 +59,7 @@ fn process_recipe(command: &str, deps: Vec<(&str, &Hash)>) -> Recipe {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     })
 }
 

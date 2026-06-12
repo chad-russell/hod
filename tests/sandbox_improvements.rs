@@ -90,6 +90,7 @@ fn build_dep_script(store: &Store, script: &str) -> (Hash, Hash) {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let recipe_hash = recipe.recipe_hash();
@@ -150,6 +151,7 @@ fn deps_with_bin_do_not_auto_set_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let _ = build_recipe(
@@ -182,6 +184,7 @@ fn deps_with_bin_do_not_auto_set_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -224,6 +227,7 @@ fn deps_with_lib_do_not_auto_set_library_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let _ = build_recipe(
@@ -255,6 +259,7 @@ fn deps_with_lib_do_not_auto_set_library_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -297,6 +302,7 @@ fn deps_with_include_do_not_auto_set_c_include_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let _ = build_recipe(
@@ -328,6 +334,7 @@ fn deps_with_include_do_not_auto_set_c_include_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -367,6 +374,7 @@ fn mixed_deps_do_not_auto_set_any_c_env() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     // Dep 2: has lib/ only
@@ -380,6 +388,7 @@ fn mixed_deps_do_not_auto_set_any_c_env() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     // Dep 3: has include/ only
@@ -393,6 +402,7 @@ fn mixed_deps_do_not_auto_set_any_c_env() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let _ = build_recipe(
@@ -448,6 +458,7 @@ fn mixed_deps_do_not_auto_set_any_c_env() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -503,6 +514,7 @@ fn host_path_not_inherited_when_no_deps() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -549,6 +561,7 @@ fn recipe_env_sets_path() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -590,6 +603,7 @@ fn standard_env_vars_always_set() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -646,6 +660,7 @@ fn recipe_env_cannot_override_standard_vars() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -692,6 +707,7 @@ fn dep_without_subdirs_contributes_nothing() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let _ = build_recipe(
@@ -719,6 +735,7 @@ fn dep_without_subdirs_contributes_nothing() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -782,6 +799,7 @@ fn no_host_env_vars_inherited() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -853,6 +871,7 @@ fn internal_deps_do_not_affect_env() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(

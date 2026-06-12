@@ -676,6 +676,7 @@ fn inspect_process_recipe_shows_dependencies() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
     let recipe_path = write_recipe_file(&tmp, &recipe);
     let recipe_hash = hash_to_hex(&hash_bytes(&recipe.encode()));

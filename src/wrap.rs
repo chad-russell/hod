@@ -19,7 +19,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::composer::{self, ResolvedDirective};
 use crate::hash::{hash_shard, hash_to_hex, Hash};
+use crate::manifest::{self, ManifestResolver};
 use crate::packed::is_elf;
 use crate::store::Store;
 
@@ -36,11 +38,28 @@ pub fn generate_wrappers(
     store: &Store,
     output_staging_dir: &Path,
     runtime_dep_outputs: &BTreeMap<String, Hash>,
+    recipe_hash: Option<&Hash>,
+    launcher_bytes: Option<&[u8]>,
 ) -> Result<usize, WrapError> {
     let bin_dir = output_staging_dir.join("bin");
     if !bin_dir.is_dir() {
         return Ok(0);
     }
+
+    // Declarative-metadata path (preferred): if the recipe + its runtime
+    // closure produce a non-empty resolved directive list AND the build system
+    // provisioned a launcher binary, wrap each eligible executable with a static
+    // launcher + per-binary manifest instead of a shell script. The launcher
+    // preserves argv[0] and needs no /bin/sh.
+    //
+    // The launcher is build-system infrastructure (provisioned by `build.rs`
+    // from store config), not a recipe dependency. When no launcher is
+    // available or the recipe declares no runtime directives, this plan is
+    // `None` and every executable takes the legacy shell path below.
+    let manifest_plan = match (recipe_hash, launcher_bytes) {
+        (Some(rh), Some(lb)) => build_manifest_plan(store, output_staging_dir, rh, lb),
+        _ => None,
+    };
 
     // Collect runtime dep staging paths (relative to the staging root)
     let dep_shard_hex: Vec<(String, String)> = runtime_dep_outputs
@@ -297,6 +316,24 @@ pub fn generate_wrappers(
             Ok(d) => d,
             Err(_) => continue,
         };
+
+        // Declarative-metadata wrapping: stamp the static launcher + manifest.
+        // Structural guard (the only one needed here): never wrap a static ELF
+        // (no PT_INTERP). Opt-in-by-consequence handles everything else — an
+        // executable is only reached here when the output produced directives.
+        if let Some(plan) = &manifest_plan {
+            if !is_elf(&data) || crate::packed::parse_interp(&data).is_none() {
+                continue;
+            }
+            match install_manifest_wrapper(&bin_dir, &name, plan) {
+                Ok(()) => count += 1,
+                Err(e) => {
+                    eprintln!("[hod] warning: launcher wrap failed for {name}: {e}");
+                }
+            }
+            continue;
+        }
+
         let is_ghostty_launcher = name == "ghostty" && data.starts_with(b"#!");
         if !is_elf(&data) && !is_ghostty_launcher {
             continue;
@@ -391,6 +428,59 @@ pub fn generate_wrappers(
     }
 
     Ok(count)
+}
+
+/// A computed plan for launcher-based (manifest) wrapping of an output.
+struct ManifestPlan {
+    /// Resolved directives shared by all of the output's executables (with
+    /// store-relative `@self@`/`@store@` tokens).
+    dirs: Vec<ResolvedDirective>,
+    /// The static launcher binary bytes to stamp over each executable.
+    launcher_bytes: Vec<u8>,
+}
+
+/// Compute the manifest wrapping plan, or `None` when launcher wrapping does
+/// not apply (no recipe metadata in the closure, or no resolved directives).
+///
+/// `launcher_bytes` is the build-system-provisioned launcher binary (see
+/// `build.rs::resolve_launcher_bytes`).
+fn build_manifest_plan(
+    store: &Store,
+    output_staging_dir: &Path,
+    recipe_hash: &Hash,
+    launcher_bytes: &[u8],
+) -> Option<ManifestPlan> {
+    let closure = composer::collect_runtime_closure(store, recipe_hash);
+    if closure.is_empty() {
+        return None;
+    }
+    let resolver = ManifestResolver::new(output_staging_dir, &closure.providers);
+    let dirs = composer::compose(&closure.own, &closure.providers, &resolver);
+    if dirs.is_empty() {
+        return None;
+    }
+    Some(ManifestPlan {
+        dirs,
+        launcher_bytes: launcher_bytes.to_vec(),
+    })
+}
+
+/// Move the real binary into `bin/_hod_wrapped/<name>`, stamp the launcher at
+/// `bin/<name>`, and write the per-binary manifest.
+fn install_manifest_wrapper(
+    bin_dir: &Path,
+    name: &str,
+    plan: &ManifestPlan,
+) -> Result<(), WrapError> {
+    let wrapped_dir = bin_dir.join(manifest::WRAPPED_DIR);
+    std::fs::create_dir_all(&wrapped_dir).map_err(WrapError::Io)?;
+    let real_path = bin_dir.join(name);
+    let wrapped_path = wrapped_dir.join(name);
+    std::fs::rename(&real_path, &wrapped_path).map_err(WrapError::Io)?;
+
+    let manifest_text = manifest::serialize(&manifest::wrapped_exec_token(name), &plan.dirs);
+    manifest::install(bin_dir, name, &plan.launcher_bytes, &manifest_text).map_err(WrapError::Io)?;
+    Ok(())
 }
 
 #[derive(Debug)]

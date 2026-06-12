@@ -49,6 +49,18 @@ export async function runHod(args: string[]): Promise<string> {
 }
 
 /**
+ * Register a recipe hash as the active `hod-launcher` in the store.
+ *
+ * The launcher is build-system infrastructure (stamped over wrapped
+ * executables during post-build fixup), not a recipe dependency. Recording its
+ * recipe hash here lets the build system build/read it without any package
+ * declaring `hod-launcher` in its deps. The recipe must already be imported.
+ */
+export async function registerLauncher(recipeHash: string): Promise<void> {
+  await runHod(["register-launcher", recipeHash]);
+}
+
+/**
  * Encode a JSON recipe file to binary .hod format.
  * Returns the BLAKE3 hex hash of the encoded bytes.
  */

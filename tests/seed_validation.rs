@@ -276,6 +276,7 @@ echo "PASS: hermetic sandbox has no host paths" > $OUT/result.txt
         output_scaffold_hash: None,
         unsafe_flags: 0,
             runtime_deps: None,
+            runtime: None,
     });
 
     let recipe_bytes = recipe.encode();

@@ -8,6 +8,7 @@
 import type { ProcessDependency } from "./dep.js";
 import type { BuiltRecipe } from "./file.js";
 import { process, type EnvEntry } from "./process.js";
+import type { RuntimeMeta } from "./runtime.js";
 
 export interface ShellBuildOptions {
   /** Absolute sandbox path to the shell binary (e.g., "/deps/toolchain/bin/busybox"). */
@@ -37,6 +38,11 @@ export interface ShellBuildOptions {
 
   /** Runtime dependency names for store-relative ELF relocation. */
   runtime_deps?: string[];
+
+  /** Optional declarative runtime metadata (provider contributions + wrapper
+   *  directives). Forwarded verbatim to `process()`. Compose helper-supplied
+   *  fragments with recipe directives via `mergeRuntime(...)`. */
+  runtime?: RuntimeMeta;
 
   /** Optional working directory contents hash. */
   workdir_hash?: string;
@@ -100,6 +106,7 @@ export async function shellBuild(opts: ShellBuildOptions): Promise<BuiltRecipe> 
     env: opts.env,
     dependencies: opts.deps,
     runtime_deps: opts.runtime_deps,
+    runtime: opts.runtime,
     workdir_hash: opts.workdir_hash,
     output_scaffold_hash: opts.output_scaffold_hash,
     unsafe_flags: opts.unsafe_flags,

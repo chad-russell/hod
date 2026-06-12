@@ -230,6 +230,31 @@ pub fn build_env(staging_paths: &[PathBuf]) -> HashMap<String, String> {
     env
 }
 
+/// Apply declarative runtime metadata to an environment map.
+///
+/// Aggregates the recipe's own runtime metadata plus the `provides`
+/// contributions of its transitive runtime closure, resolves them against the
+/// store, and applies the resulting env operations on top of `env`. This is
+/// the same generic composition the build-time wrapper uses, so `hod run` /
+/// `hod shell` see the same `XDG_DATA_DIRS` / `GSETTINGS_SCHEMA_PATH` / GTK /
+/// GIO / XKB environment a directly-launched wrapped binary would.
+///
+/// Recipes without declared runtime metadata contribute nothing, leaving `env`
+/// unchanged. Failures are non-fatal warnings — the command still runs.
+pub fn compose_runtime_env(
+    store: &Store,
+    recipe_hash: &Hash,
+    own_staging: &Path,
+    env: &mut HashMap<String, String>,
+) {
+    let closure = crate::composer::collect_runtime_closure(store, recipe_hash);
+    if closure.is_empty() {
+        return;
+    }
+    let dirs = crate::composer::compose_closure(&closure, own_staging);
+    crate::composer::apply_env(env, &dirs);
+}
+
 fn prepend_env(env: &mut HashMap<String, String>, key: &str, parts: &[String]) {
     if parts.is_empty() {
         return;

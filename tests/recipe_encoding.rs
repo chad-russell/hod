@@ -194,6 +194,7 @@ fn roundtrip_process_minimal() {
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
         runtime_deps: None,
+        runtime: None,
     });
     let bytes = recipe.encode();
     let decoded = Recipe::decode(&bytes).unwrap();
@@ -230,6 +231,7 @@ fn roundtrip_process_full() {
         output_scaffold_hash: Some(test_hash()),
         unsafe_flags: 0x01, // allow networking
         runtime_deps: None,
+        runtime: None,
     });
     let bytes = recipe.encode();
     let decoded = Recipe::decode(&bytes).unwrap();
@@ -257,6 +259,7 @@ fn process_env_must_be_sorted() {
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
         runtime_deps: None,
+        runtime: None,
     });
     let bytes = recipe.encode();
     let err = Recipe::decode(&bytes).unwrap_err();
@@ -291,6 +294,7 @@ fn process_deps_must_be_sorted() {
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
         runtime_deps: None,
+        runtime: None,
     });
     let bytes = recipe.encode();
     let err = Recipe::decode(&bytes).unwrap_err();
@@ -338,6 +342,7 @@ fn determinism_same_recipe_same_hash() {
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
         runtime_deps: None,
+        runtime: None,
     });
     let h1 = recipe.recipe_hash();
     let h2 = recipe.recipe_hash();
@@ -570,6 +575,7 @@ fn recipe_type_tag_matches_encode() {
         output_scaffold_hash: None,
         unsafe_flags: 0x00,
         runtime_deps: None,
+        runtime: None,
     });
     assert_eq!(proc.encode()[4], 0x05);
 }
@@ -655,4 +661,170 @@ fn roundtrip_unpack_zip() {
     assert_eq!(bytes[4], 0x06); // Unpack type tag
     let decoded = Recipe::decode(&bytes).unwrap();
     assert_eq!(recipe, decoded);
+}
+
+// ===========================================================================
+// Process runtime metadata
+// ===========================================================================
+
+fn process_with_runtime(runtime: Option<RuntimeMeta>) -> Recipe {
+    Recipe::Process(RecipeProcess {
+        platform: "x86_64-linux".into(),
+        command: "/bin/true".into(),
+        args: vec![],
+        env: vec![],
+        dependencies: vec![],
+        workdir_hash: None,
+        output_scaffold_hash: None,
+        unsafe_flags: 0x00,
+        runtime_deps: Some(vec!["glib".into(), "xkeyboard-config".into()]),
+        runtime,
+    })
+}
+
+#[test]
+fn process_runtime_absent_matches_legacy_bytes() {
+    // A recipe with `runtime: None` must encode byte-identically to the
+    // pre-runtime tail layout (runtime_deps present, nothing after it), so
+    // existing recipe hashes are preserved.
+    let recipe = process_with_runtime(None);
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    assert_eq!(recipe, decoded);
+
+    // Toggling runtime to an empty-but-present meta must change the bytes.
+    let with_empty = process_with_runtime(Some(RuntimeMeta::default()));
+    assert_ne!(with_empty.encode(), bytes);
+}
+
+#[test]
+fn process_runtime_roundtrips() {
+    let runtime = RuntimeMeta {
+        provides: vec![
+            RuntimeDirective {
+                op: WrapOp::Set,
+                var: "XKB_CONFIG_ROOT".into(),
+                sep: None,
+                sources: vec![RuntimeSource::SelfPath("share/X11/xkb".into())],
+            },
+            RuntimeDirective {
+                op: WrapOp::Prefix,
+                var: "GSETTINGS_SCHEMA_PATH".into(),
+                sep: Some(":".into()),
+                sources: vec![
+                    RuntimeSource::SelfPath("share/glib-2.0/schemas".into()),
+                    RuntimeSource::Dep(DepRef {
+                        name: "glib".into(),
+                        sub: "share/glib-2.0/schemas".into(),
+                    }),
+                ],
+            },
+        ],
+        wrapper: vec![
+            RuntimeDirective {
+                op: WrapOp::InheritArgv0,
+                var: String::new(),
+                sep: None,
+                sources: vec![],
+            },
+            RuntimeDirective {
+                op: WrapOp::SetDefault,
+                var: "MAGIC".into(),
+                sep: None,
+                sources: vec![RuntimeSource::FirstExisting(vec![
+                    RuntimeSource::SelfPath("share/misc/magic.mgc".into()),
+                    RuntimeSource::Dep(DepRef {
+                        name: "file".into(),
+                        sub: "share/misc/magic.mgc".into(),
+                    }),
+                ])],
+            },
+        ],
+    };
+    let recipe = process_with_runtime(Some(runtime));
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    assert_eq!(recipe, decoded);
+}
+
+#[test]
+fn process_runtime_without_runtime_deps_roundtrips() {
+    // runtime present, runtime_deps absent: the encoder must still emit the
+    // runtime_deps presence byte (0x00) so the decoder can reach `runtime`.
+    let recipe = Recipe::Process(RecipeProcess {
+        platform: "x86_64-linux".into(),
+        command: "/bin/true".into(),
+        args: vec![],
+        env: vec![],
+        dependencies: vec![],
+        workdir_hash: None,
+        output_scaffold_hash: None,
+        unsafe_flags: 0x00,
+        runtime_deps: None,
+        runtime: Some(RuntimeMeta {
+            provides: vec![],
+            wrapper: vec![RuntimeDirective {
+                op: WrapOp::Unset,
+                var: "LD_LIBRARY_PATH".into(),
+                sep: None,
+                sources: vec![],
+            }],
+        }),
+    });
+    let bytes = recipe.encode();
+    let decoded = Recipe::decode(&bytes).unwrap();
+    assert_eq!(recipe, decoded);
+}
+
+#[test]
+fn process_runtime_rejects_duplicate_singleton() {
+    let recipe = process_with_runtime(Some(RuntimeMeta {
+        provides: vec![
+            RuntimeDirective {
+                op: WrapOp::Set,
+                var: "FOO".into(),
+                sep: None,
+                sources: vec![RuntimeSource::Literal("a".into())],
+            },
+            RuntimeDirective {
+                op: WrapOp::Set,
+                var: "FOO".into(),
+                sep: None,
+                sources: vec![RuntimeSource::Literal("b".into())],
+            },
+        ],
+        wrapper: vec![],
+    }));
+    let bytes = recipe.encode();
+    assert!(Recipe::decode(&bytes).is_err());
+}
+
+#[test]
+fn process_runtime_rejects_prefix_without_sep() {
+    let recipe = process_with_runtime(Some(RuntimeMeta {
+        provides: vec![RuntimeDirective {
+            op: WrapOp::Prefix,
+            var: "PATH".into(),
+            sep: None,
+            sources: vec![RuntimeSource::SelfPath("bin".into())],
+        }],
+        wrapper: vec![],
+    }));
+    let bytes = recipe.encode();
+    assert!(Recipe::decode(&bytes).is_err());
+}
+
+#[test]
+fn process_runtime_rejects_argv0_with_wrong_source_count() {
+    let recipe = process_with_runtime(Some(RuntimeMeta {
+        provides: vec![],
+        wrapper: vec![RuntimeDirective {
+            op: WrapOp::Argv0,
+            var: "x".into(),
+            sep: None,
+            sources: vec![],
+        }],
+    }));
+    let bytes = recipe.encode();
+    assert!(Recipe::decode(&bytes).is_err());
 }

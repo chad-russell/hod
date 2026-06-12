@@ -138,7 +138,8 @@ fn roundtrip_process_minimal() {
         workdir_hash: None,
         output_scaffold_hash: None,
         unsafe_flags: 0,
-            runtime_deps: None,
+        runtime_deps: None,
+        runtime: None,
     });
     assert_binary_roundtrip(&recipe);
     assert_json_roundtrip(&recipe);
@@ -173,7 +174,8 @@ fn roundtrip_process_full() {
         workdir_hash: Some(test_hash_c()),
         output_scaffold_hash: Some(test_hash_a()),
         unsafe_flags: 1,
-            runtime_deps: None,
+        runtime_deps: None,
+        runtime: None,
     });
     assert_binary_roundtrip(&recipe);
     assert_json_roundtrip(&recipe);
@@ -461,7 +463,77 @@ fn json_process_accepts_absent_optionals() {
         Recipe::Process(p) => {
             assert_eq!(p.workdir_hash, None);
             assert_eq!(p.output_scaffold_hash, None);
+            assert_eq!(p.runtime, None);
         }
         _ => panic!("expected Process recipe"),
     }
+}
+
+// ===========================================================================
+// Runtime metadata wire shape (must match the SDK in js/src/runtime.ts)
+// ===========================================================================
+
+#[test]
+fn json_process_parses_runtime_metadata_from_sdk_shape() {
+    // This is the exact JSON shape the TypeScript SDK builders emit. Locking
+    // it here keeps the Rust serde representation and the SDK in sync.
+    let json = r#"{
+        "type": "process",
+        "platform": "x86_64-linux",
+        "command": "/bin/true",
+        "args": [],
+        "env": [],
+        "dependencies": [],
+        "unsafe_flags": 0,
+        "runtime_deps": ["glib", "xkeyboard-config"],
+        "runtime": {
+            "provides": [
+                { "op": "set", "var": "XKB_CONFIG_ROOT", "sources": [{ "self": "share/X11/xkb" }] },
+                { "op": "prefix", "var": "GSETTINGS_SCHEMA_PATH", "sep": ":",
+                  "sources": [
+                    { "self": "share/glib-2.0/schemas" },
+                    { "dep": { "name": "glib", "sub": "share/glib-2.0/schemas" } }
+                  ] }
+            ],
+            "wrapper": [
+                { "op": "inherit_argv0" },
+                { "op": "set_default", "var": "MAGIC",
+                  "sources": [{ "first_existing": [{ "self": "share/misc/magic.mgc" }] }] }
+            ]
+        }
+    }"#;
+    let recipe: Recipe = serde_json::from_str(json).unwrap();
+    let rt = match &recipe {
+        Recipe::Process(p) => p.runtime.clone().expect("runtime present"),
+        _ => panic!("expected Process recipe"),
+    };
+
+    assert_eq!(rt.provides.len(), 2);
+    assert_eq!(rt.provides[0].op, WrapOp::Set);
+    assert_eq!(rt.provides[0].var, "XKB_CONFIG_ROOT");
+    assert_eq!(
+        rt.provides[0].sources[0],
+        RuntimeSource::SelfPath("share/X11/xkb".into())
+    );
+    assert_eq!(rt.provides[1].op, WrapOp::Prefix);
+    assert_eq!(rt.provides[1].sep.as_deref(), Some(":"));
+    assert_eq!(
+        rt.provides[1].sources[1],
+        RuntimeSource::Dep(DepRef {
+            name: "glib".into(),
+            sub: "share/glib-2.0/schemas".into(),
+        })
+    );
+
+    assert_eq!(rt.wrapper[0].op, WrapOp::InheritArgv0);
+    assert_eq!(rt.wrapper[1].op, WrapOp::SetDefault);
+    assert!(matches!(
+        rt.wrapper[1].sources[0],
+        RuntimeSource::FirstExisting(_)
+    ));
+
+    // Validation accepts it, and it survives a binary round-trip.
+    rt.validate().unwrap();
+    assert_binary_roundtrip(&recipe);
+    assert_json_roundtrip(&recipe);
 }

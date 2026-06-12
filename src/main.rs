@@ -124,6 +124,23 @@ enum Commands {
         store: Option<PathBuf>,
     },
 
+    /// Register the active `hod-launcher` recipe in the store.
+    ///
+    /// Records the launcher's recipe hash in store config so the build system
+    /// can build/read it and stamp it over wrapped executables, without any
+    /// package having to declare `hod-launcher` as a dependency. The launcher is
+    /// build-system infrastructure, not a recipe dependency. The TS SDK calls
+    /// this automatically when `hod-launcher.ts` is imported.
+    #[command(name = "register-launcher")]
+    RegisterLauncher {
+        /// BLAKE3 hash (hex, 64 characters) of the launcher recipe.
+        hash: String,
+
+        /// Override store location.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
+
     /// Inspect a recipe in the store by hash. Prints JSON to stdout.
     Inspect {
         /// BLAKE3 hash (hex, 64 characters) of the recipe to inspect.
@@ -634,6 +651,7 @@ fn main() {
         Commands::HashFile { file } => cmd_hash_file(file),
         Commands::ImportRecipe { recipe_file, store } => cmd_import_recipe(recipe_file, store),
         Commands::ImportFromJson { store } => cmd_import_from_json(store),
+        Commands::RegisterLauncher { hash, store } => cmd_register_launcher(hash, store),
         Commands::Inspect { hash, store } => cmd_inspect(hash, store),
         Commands::ImportBlob { file, store } => cmd_import_blob(file, store),
         Commands::ExportRecipe {
@@ -1115,6 +1133,50 @@ fn cmd_import_from_json(store_path: Option<PathBuf>) -> ! {
 }
 
 // ---------------------------------------------------------------------------
+// `hod register-launcher`
+// ---------------------------------------------------------------------------
+
+fn cmd_register_launcher(hash_str: String, store_path: Option<PathBuf>) -> ! {
+    let hash = match hex_to_hash(&hash_str) {
+        Some(h) => h,
+        None => {
+            eprintln!("hod: invalid hash: '{hash_str}' (expected 64 hex characters)");
+            process::exit(3);
+        }
+    };
+
+    let config = StoreConfig { path: store_path };
+    let store = match Store::open(&config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    };
+
+    // The launcher recipe must be in the store so the build system can build it.
+    match store.recipe_exists(&hash) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("hod: cannot register launcher: recipe {hash_str} is not in the store");
+            process::exit(4);
+        }
+        Err(e) => {
+            eprintln!("hod: store error: {e}");
+            process::exit(10);
+        }
+    }
+
+    if let Err(e) = store.set_config(hod::manifest::LAUNCHER_RECIPE_CONFIG_KEY, &hash_str) {
+        eprintln!("hod: store error: {e}");
+        process::exit(10);
+    }
+
+    eprintln!("Registered hod-launcher recipe {hash_str}");
+    process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
 // `hod inspect`
 // ---------------------------------------------------------------------------
 
@@ -1380,7 +1442,8 @@ fn cmd_run(specifier: String, command: Vec<String>, store_path: Option<PathBuf>)
         }
     };
 
-    let env = hod::run::build_env(&[staging_path.clone()]);
+    let mut env = hod::run::build_env(&[staging_path.clone()]);
+    hod::run::compose_runtime_env(&store, &recipe_hash, &staging_path, &mut env);
 
     // Resolve the command: either explicit or auto-detected from bin/
     let (cmd, args) = hod::run::resolve_run_command(&staging_path, &command);
@@ -1434,7 +1497,8 @@ fn cmd_shell(
         }
     };
 
-    let env = hod::run::build_env(&[staging_path]);
+    let mut env = hod::run::build_env(&[staging_path.clone()]);
+    hod::run::compose_runtime_env(&store, &recipe_hash, &staging_path, &mut env);
 
     match hod::run::exec_shell(env, command.as_deref(), &args) {
         Ok(()) => process::exit(0),
@@ -1602,11 +1666,26 @@ fn reachable_runtime_closure_recipes(
             continue;
         }
 
-        let bytes = store
-            .get_recipe(&hash)
-            .map_err(|e| format!("error loading recipe {}: {e}", hash_to_hex(&hash)))?;
-        let recipe = Recipe::decode(&bytes)
-            .map_err(|e| format!("invalid recipe {}: {e}", hash_to_hex(&hash)))?;
+        let bytes = match store.get_recipe(&hash) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "[hod] gc: skipping missing recipe {}: {e}",
+                    hash_to_hex(&hash)
+                );
+                continue;
+            }
+        };
+        let recipe = match Recipe::decode(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "[hod] gc: skipping corrupt recipe {}: {e}",
+                    hash_to_hex(&hash)
+                );
+                continue;
+            }
+        };
 
         for dep in recipe_dependencies(&recipe) {
             queue.push_back(dep);

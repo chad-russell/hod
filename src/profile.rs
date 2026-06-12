@@ -319,8 +319,10 @@ struct ResolvedPackage {
     /// Short name for the package directory symlink (derived from the binary name).
     link_name: String,
     /// Absolute path to the staging directory.
-    #[allow(dead_code)]
     staging_path: PathBuf,
+    /// Recipe hash, used to walk the package's runtime closure for env
+    /// composition.
+    recipe_hash: Hash,
 }
 
 /// Public form of [`ResolvedPackage`] for cross-module callers.
@@ -330,6 +332,8 @@ struct ResolvedPackage {
 pub struct FarmEntry {
     pub link_name: String,
     pub staging_path: PathBuf,
+    /// Recipe hash of the resolved package.
+    pub recipe_hash: Hash,
 }
 
 /// Populate `target_dir` with a symlink farm: `pkgs/<name> → store path` and
@@ -504,6 +508,7 @@ pub fn populate_farm(
         entries.push(FarmEntry {
             link_name,
             staging_path,
+            recipe_hash: *hash,
         });
     }
 
@@ -682,11 +687,12 @@ pub fn create_farm_from_profile(
         .map(|e| ResolvedPackage {
             link_name: e.link_name,
             staging_path: e.staging_path,
+            recipe_hash: e.recipe_hash,
         })
         .collect();
 
     // Write env snippets (user-profile-specific; system profiles skip this).
-    write_env_snippets(&tmp_dir, &profile.name, &packages)?;
+    write_env_snippets(store, &tmp_dir, &profile.name, &packages)?;
 
     // Secrets: write encrypted blobs to farm and generate decrypt unit/script.
     // Blobs are written to tmp_dir (for atomic swap), but the decrypt script
@@ -832,7 +838,7 @@ fn generate_secrets_unit(
     let secrets_dir = format!("$XDG_RUNTIME_DIR/hod/secrets/{profile_name}");
 
     let mut script_lines = vec![
-        "#!/bin/bash".to_string(),
+        "#!/usr/bin/env bash".to_string(),
         "set -euo pipefail".to_string(),
         String::new(),
         format!("mkdir -p \"{secrets_dir}\""),
@@ -845,6 +851,12 @@ fn generate_secrets_unit(
             .join(&secret.name)
             .to_string_lossy()
             .to_string();
+        // Remove stale plaintext so age can write to the path even if
+        // the previous run left a 0400 file behind.
+        script_lines.push(format!(
+            "rm -f \"{secrets_dir}/{name}\"",
+            name = secret.name,
+        ));
         script_lines.push(format!(
             "\"{age_bin}\" --decrypt --identity \"$HOME/.config/hod/age-identity.txt\" \
              \"{encrypted_path}\" > \"{secrets_dir}/{name}\"",
@@ -1502,6 +1514,7 @@ pasta_path = "{pasta}"
 }
 
 fn write_env_snippets(
+    store: &Store,
     farm_dir: &Path,
     name: &str,
     packages: &[ResolvedPackage],
@@ -1524,6 +1537,27 @@ fn write_env_snippets(
         let x = format!("{farm_path}/pkgs/{}/share", pkg.link_name);
         xdg_parts.push(x);
     }
+
+    // Compose declarative runtime metadata across all packages. Each package
+    // aggregates its own runtime metadata plus the `provides` contributions of
+    // its transitive runtime closure (GTK/GIO/XKB/etc.). This closes the gap
+    // where a profile-launched app previously missed the runtime env that a
+    // directly-launched wrapped binary gets. Packages without declared runtime
+    // metadata contribute nothing, leaving the scripts unchanged.
+    let mut runtime_dirs: Vec<crate::composer::ResolvedDirective> = Vec::new();
+    for pkg in packages {
+        let closure = crate::composer::collect_runtime_closure(store, &pkg.recipe_hash);
+        if closure.is_empty() {
+            continue;
+        }
+        runtime_dirs.extend(crate::composer::compose_closure(
+            &closure,
+            &pkg.staging_path,
+        ));
+    }
+    let runtime_sh = crate::composer::to_posix_exports(&runtime_dirs);
+    let runtime_fish = crate::composer::to_fish_exports(&runtime_dirs);
+    let runtime_systemd = crate::composer::to_systemd_assignments(&runtime_dirs);
 
     // env.sh
     let path_val = path_parts.join(":");
@@ -1550,13 +1584,13 @@ export HOD_PROFILE="{name}"
 export PATH="{path_val}:$PATH"
 export MANPATH="{man_val}${{MANPATH:+:$MANPATH}}"
 export XDG_DATA_DIRS="{xdg_val}${{XDG_DATA_DIRS:+:$XDG_DATA_DIRS}}"
-{extra_env_sh}"#,
+{extra_env_sh}{runtime_sh}"#,
     );
     std::fs::write(farm_dir.join("env.sh"), &env_sh)
         .map_err(|e| format!("cannot write env.sh: {e}"))?;
 
     let env_systemd = format!(
-        "# hod profile: {name}\nHOD_PROFILE={name}\nPATH={path_val}:/usr/local/bin:/usr/bin:/bin\nMANPATH={man_val}\nXDG_DATA_DIRS={xdg_val}\n{extra_env_systemd}",
+        "# hod profile: {name}\nHOD_PROFILE={name}\nPATH={path_val}:/usr/local/bin:/usr/bin:/bin\nMANPATH={man_val}\nXDG_DATA_DIRS={xdg_val}\n{extra_env_systemd}{runtime_systemd}",
     );
     std::fs::write(farm_dir.join("env.systemd"), &env_systemd)
         .map_err(|e| format!("cannot write env.systemd: {e}"))?;
@@ -1572,7 +1606,7 @@ set -gx HOD_PROFILE "{name}"
 set -gx PATH {fish_path} $PATH
 set -gx MANPATH {fish_man} $MANPATH
 set -gx XDG_DATA_DIRS {fish_xdg} $XDG_DATA_DIRS
-"#,
+{runtime_fish}"#,
     );
     std::fs::write(farm_dir.join("env.fish"), &env_fish)
         .map_err(|e| format!("cannot write env.fish: {e}"))?;

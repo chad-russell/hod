@@ -17,16 +17,29 @@ pub fn write(store: &Store, data: &[u8]) -> Result<Hash, StoreError> {
     let hash = hash_bytes(data);
     let hex = hash_to_hex(&hash);
 
-    // Check if already stored
-    if exists(store, &hash)? {
+    let shard = hash_shard(&hash);
+    let dir = store.blobs_dir().join(&shard);
+    let path = dir.join(&hex);
+
+    // Dedup on the actual on-disk blob, not just the DB row. A `blobs` row can
+    // outlive its backing file — e.g. blobs pruned to reclaim space, or a DB
+    // synced from another store (copy-closure / a shared hod.db) without all
+    // the blob files. Trusting the row alone would skip writing here and then
+    // fail later reads with "blob not found", even when we hold the bytes and
+    // could heal the store. Re-derive the file whenever it is absent.
+    if path.exists() {
+        // Make sure the DB knows about it (a prior write may have left only the
+        // file, or the row may already be present — INSERT OR IGNORE is safe).
+        let now = now_iso8601();
+        store.conn().execute(
+            "INSERT OR IGNORE INTO blobs (blob_hash, blob_size, stored_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![hex, data.len() as i64, now],
+        )?;
         return Ok(hash);
     }
 
     // Write file to disk
-    let shard = hash_shard(&hash);
-    let dir = store.blobs_dir().join(&shard);
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join(&hex);
     // Write atomically: write to a temp file then rename
     let tmp_path = path.with_extension("tmp");
     std::fs::write(&tmp_path, data)?;

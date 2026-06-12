@@ -95,7 +95,7 @@ function resticBackupScript(opts: {
   requireRepoDirectory?: boolean;
   retention: string[];
 }) {
-  const environment = opts.environmentFile ? `source "${secretsDir}/${opts.environmentFile}"\n\n` : "";
+  const environment = opts.environmentFile ? `set -a\nsource "${secretsDir}/${opts.environmentFile}"\nset +a\n\n` : "";
   const repoCheck = opts.requireRepoDirectory
     ? `if [ ! -d "$REPO" ]; then\n  echo "${opts.label} backup target not mounted: $REPO"\n  exit 1\nfi\n\n`
     : "";
@@ -168,7 +168,7 @@ const secrets = [
   ageSecret("restic-password", {
     source: new URL("../../cn/secrets/restic-password-think.age", import.meta.url).pathname,
   }),
-  ageSecret("restic-s3-credentials", {
+  ageSecret("s3-credentials", {
     source: new URL("../../cn/secrets/restic-s3-credentials.age", import.meta.url).pathname,
   }),
 ];

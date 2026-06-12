@@ -14,6 +14,7 @@ Active planning notes. Implemented plans are deleted once absorbed into
 | `minimal-hod-vm-roadmap.md` | Top-level product roadmap: bootable QEMU VM with Hod-owned desktop | Active |
 | `niri-desktop-roadmap.md` | Niri compositor + minimal desktop on the Arch VM | Active — Milestone 1 done |
 | `bindgen-infrastructure.md` | Hermetic bindgen for the sandbox | Active |
+| `declarative-runtime-wrappers.md` | **Replace `src/wrap.rs` special-casing:** provider-declared hashed runtime metadata + generic static launcher | Active — Step 1 next |
 | `flatpak-build-plan.md` | Flatpak + deps from source (8 new recipes) | Done — flatpak 1.16.6 builds and runs |
 | `future-tracks.md` | Backlog of well-scoped tracks | Active backlog |
 

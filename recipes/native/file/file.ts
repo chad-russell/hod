@@ -5,7 +5,7 @@
 //! compression support). Dynamically links glibc and all deps (relocated via
 //! runtime_deps).
 
-import { shellBuild, dep, importToStore } from "../../../js/src/index.js";
+import { shellBuild, dep, importToStore, setEnv, selfPath } from "../../../js/src/index.js";
 import { nativeToolchainRecipe } from "../../toolchain/native-toolchain.js";
 import { zlibRecipe } from "../zlib/zlib.js";
 import { bzip2Recipe } from "../bzip2/bzip2.js";
@@ -50,6 +50,18 @@ rmdir $OUT/share 2>/dev/null || true`,
     dep("xz", xzRecipe),
   ],
   runtime_deps: ["bzip2", "toolchain", "xz", "zlib"],
+  // `file` needs MAGIC pointed at its compiled magic database; the compiled-in
+  // path (prefix=/) does not exist in the Hod store layout. Declaring it here
+  // (instead of probing for it in core `wrap.rs`) is the declarative model.
+  //
+  // The static launcher is build-system infrastructure: the build system stamps
+  // it over `bin/file` and writes the manifest derived from `runtime` below.
+  // `hod-launcher` is therefore NOT a dependency of this recipe — it never
+  // appears in file's build deps or runtime closure. The launcher resolves
+  // `self:` against `file`'s own store prefix at runtime.
+  runtime: {
+    wrapper: [setEnv("MAGIC", selfPath("share/misc/magic.mgc"))],
+  },
 });
 
 await importToStore(recipe);

@@ -22,12 +22,16 @@ fi
 if [ -d /deps/musl/x86_64-linux-musl-native/libexec ]; then
   $BB cp -a /deps/musl/x86_64-linux-musl-native/libexec $OUT/
 fi
-if [ -d /deps/musl/x86_64-linux-musl-native/share ]; then
-  $BB cp -a /deps/musl/x86_64-linux-musl-native/share $OUT/
-fi
-if [ -d /deps/musl/x86_64-linux-musl-native/usr ]; then
-  $BB cp -a /deps/musl/x86_64-linux-musl-native/usr $OUT/
-fi
+# Recreate usr/ as lightweight symlinks rather than copying the tarball's usr/
+# tree. The musl.cc native gcc searches <prefix>/usr/include and <prefix>/usr/lib
+# by default (confirmed via \`gcc -print-search-dirs\`), so the seed compiler needs
+# these paths to find stdio.h, crt*.o, and libc. We avoid \`cp -a usr/\` because the
+# tarball's usr/ is a self-recursive tree that inflates to ~22G. share/ stays
+# omitted (only gdb pretty-printers + man pages, unreferenced by /deps/seed/).
+$BB mkdir -p $OUT/usr
+$BB ln -s ../include $OUT/usr/include
+$BB ln -s ../lib $OUT/usr/lib
+$BB ln -s ../bin $OUT/usr/bin
 
 $BB cp /deps/busybox/busybox $OUT/bin/busybox
 $BB chmod +x $OUT/bin/busybox

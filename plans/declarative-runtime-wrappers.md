@@ -1,0 +1,270 @@
+# Plan: Declarative Runtime Metadata + Generic Wrapper Mechanism
+
+**Status:** Active — Steps 1–3 implemented; Step 4 in progress (first vertical
+slice landed **and verified end-to-end via a real `hod` build**, rollout pending
+review)
+**Supersedes the ad hoc policy in:** `src/wrap.rs`
+**Related docs:** `docs/build-environment-and-metadata.md`,
+`docs/relocatable-binaries-guide.md` §7 (Layer 6)
+
+## Problem
+
+`src/wrap.rs` generates POSIX-shell wrapper scripts for built executables and,
+in doing so, hardcodes a large pile of package-ecosystem policy in core Rust:
+
+- **Capability detection → env var.** Probes dep/own staging dirs for magic
+  paths and sets env accordingly: `GIO_LAUNCH_DESKTOP`, `XKB_CONFIG_ROOT`,
+  `XLOCALEDIR`, `LIBGL_DRIVERS_PATH`, `__EGL_VENDOR_LIBRARY_DIRS`, `MAGIC`,
+  `GSK_RENDERER`/`GIO_EXTRA_MODULES` (GTK4 sniff via `libgtk-4.so`),
+  `GHOSTTY_RESOURCES_DIR`, `GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`,
+  `XDG_DATA_DIRS`, `GSETTINGS_SCHEMA_PATH`.
+- **argv/exec-line quirks.** git alias translation (`git-upload-pack` →
+  `git upload-pack`), alacritty `--option env.LD_LIBRARY_PATH=""`, ghostty-bin
+  explicit `ld-linux --library-path` invocation.
+- **Skip-lists.** wrap-everything-then-blocklist `clang`/`gcc`/`cmake`/static
+  ELFs/etc., plus a ghostty shell-launcher special case.
+- **`LD_LIBRARY_PATH` policy.** Name-matched allowlist (`alacritty`,
+  `ghostty-bin`).
+
+This directly violates the repo's stated principle that core Rust must not
+embed ecosystem policy (`docs/build-environment-and-metadata.md`). The heavy
+knowledge also lives **only** in `wrap.rs`: `run.rs` and `profile.rs` do plain
+`XDG_DATA_DIRS` composition, so apps launched via `hod run` / a profile miss
+all of it (e.g. a GTK4 app gets no `GSK_RENDERER`).
+
+## Design principles (confirmed)
+
+1. **Policy → recipe-declared, hashed metadata. Mechanism → generic core.**
+   This mirrors nixpkgs exactly: the wrapper machinery (`makeWrapper` /
+   `makeBinaryWrapper`) is dumb; the knowledge lives in per-dependency setup
+   hooks (`glib`, `gobject-introspection`, `hicolor-icon-theme`, …) and
+   `wrapGAppsHook` just aggregates what they contributed.
+2. **Provider-declared, not app-declared.** Each *dependency* declares the
+   runtime env it contributes ("if you runtime-depend on me, here's my env").
+   Core aggregates over `runtime_deps`. App recipes stay clean and things
+   "just work". App-level overrides/additions are still allowed on top.
+3. **Be as "normal" / low-magic as possible.** Preserve `argv[0]` so `ps`,
+   profilers, and crash reporters see the real application, not a wrapper.
+4. **Hermetic + reproducible + relocatable, always.** Metadata is hashed (it
+   is part of a recipe's interface); the launcher is a content-hashed hod
+   recipe; manifests carry store-relative paths resolved at relocation time.
+
+## Metadata shape
+
+Add a `runtime` block to `RecipeProcess` (backward-compatible tail encoding,
+like `runtime_deps`; absent = unchanged hash). Two facets:
+
+- **`provides`** — env contributions offered to runtime-dependents. Examples:
+  - `xkeyboard-config`: `XKB_CONFIG_ROOT = self:share/X11/xkb`
+  - `glib`: `GSETTINGS_SCHEMA_PATH += self:share/glib-2.0/schemas`,
+    `GIO_LAUNCH_DESKTOP = self:libexec/gio-launch-desktop`
+  - `mesa`: `LIBGL_DRIVERS_PATH`, `__EGL_VENDOR_LIBRARY_DIRS`
+- **`wrapper`** — directives about the output's *own* executables:
+  self-referential env (`GHOSTTY_RESOURCES_DIR`, `GIT_EXEC_PATH`), flag
+  injection, and `set-default`/`unset` (alacritty/ghostty `LD_LIBRARY_PATH`).
+
+### Directive algebra (adopt nixpkgs's proven interface)
+
+Operations: `set`, `set-default`, `unset`, `prefix ENV SEP VAL`,
+`suffix ENV SEP VAL`, `add-flags`, `argv0` / `inherit-argv0`.
+
+Value sources: `literal` | `self:<subpath>` | `dep:<name>:<subpath>` |
+`first-existing[...]`, each with an "only if path exists" guard.
+
+Core resolves `self:`/`dep:` against store shard/hash paths at relocation time
+(the same resolution `wrap.rs` does today, but driven by the directive list
+instead of hardcoded probes).
+
+## Mechanism: tiny static (musl) compiled launcher
+
+Replace generated shell scripts with a single content-hashed **static C
+launcher** (built with the existing musl/toolchain), à la nixpkgs
+`makeBinaryWrapper`:
+
+- Reads `/proc/self/exe` to find itself (no `$0` walk, no `readlink`/`dirname`).
+- Reads a per-binary manifest (env directives with resolved store-relative
+  paths, generated at relocation time).
+- Applies env, then `execv`s the real binary with `argv[0]` preserved
+  (`inherit-argv0`) or set as declared.
+
+### Why this kills the residue
+
+- **argv[0] preserved** → `ps`/profilers show the real app; the **git alias
+  hack dissolves** (git sees `argv[0]=git-upload-pack` and self-dispatches).
+- **No `/bin/sh` dependency** → the static-busybox / sandbox-entry-point guard
+  goes away; works as a kernel entry point.
+- **alacritty/ghostty `LD_LIBRARY_PATH`** → declarative `set-default`/`unset`.
+- **ghostty-bin `ld-linux` invocation** is a relocation fallback; it belongs in
+  `relocate.rs`/`packed.rs`, not in wrap policy.
+
+Shell wrappers stay only as a transitional fallback until the launcher lands.
+
+## Skip-list → opt-in by consequence
+
+Wrap an executable only when its aggregated directive list is non-empty.
+Compilers, `cmake`, the static musl busybox, etc. contribute/aggregate nothing
+→ never wrapped → the entire name blocklist **and** the clang-relative-path
+breakage evaporate (nixpkgs gets this for free: only hook users get wrapped).
+Keep exactly one structural guard: never wrap a non-`PT_INTERP` static ELF.
+
+## Single generic composer, shared by all consumers
+
+Build one Rust composer: walk `runtime_deps`, aggregate provider `provides`,
+merge the output's own `wrapper` directives, resolve sources, emit the manifest.
+Share it so `run.rs` and `profile.rs` use the same logic — closing the gap where
+`hod run` / profiles miss GTK/GIO/XKB env today.
+
+## Incremental plan
+
+1. **Metadata + SDK.** ✅ *Done.* Added the hashed `runtime` block to
+   `RecipeProcess` (tail-encoded), Rust types + validation, SDK types in
+   `js/src/runtime.ts` + `js/src/process.ts`, and builder helpers. No behavior
+   change (absent metadata = unchanged hash).
+2. **Generic composer.** ✅ *Done.* `src/composer.rs` aggregates the output's
+   own `provides`, each runtime-closure provider's `provides` (with `self:`
+   rebased to that provider), then the output's own `wrapper` directives, and
+   resolves sources (`literal`/`self:`/`dep:`/`first_existing`) against the
+   store with an existence guard. Shared consumers wired in:
+   - `run.rs::compose_runtime_env` → `hod run` / `hod shell` env.
+   - `profile.rs::write_env_snippets` → `env.sh` / `env.fish` / `env.systemd`.
+   Because no recipe declares `runtime` yet, output is currently empty (no
+   behavior change); Step 4 lights it up. Resolved directives are produced as a
+   reusable `Vec<ResolvedDirective>`, ready for the Step 3 launcher manifest.
+3. **Static launcher.** ✅ *Done.*
+   - `launcher/hod-launcher.c`: a tiny static (musl) wrapper that resolves
+     `/proc/self/exe`, reads its per-binary manifest, applies env, and `execv`s
+     the real binary with `argv[0]` preserved. Built by
+     `recipes/native/hod-launcher/hod-launcher.ts` (content-addressed source via
+     `fileFromPath`, compiled `-static` with the seed musl toolchain) and
+     installed at `libexec/hod-launcher`.
+   - `src/manifest.rs`: the v1 manifest format + a `ManifestResolver` that emits
+     store-relative tokens (`@self@` → output prefix, `@store@` → staging root,
+     matching the `$ORIGIN/../../../<shard>/<hash>` convention in
+     `relocate.rs`) with build-time existence guards, plus serialization and
+     launcher stamping.
+   - `src/wrap.rs`: `generate_wrappers` now computes the resolved directive list
+     for the output; when it is **non-empty AND a launcher binary is present**
+     among the runtime deps, it stamps `bin/<name>` with the launcher, moves the
+     real binary to `bin/_hod_wrapped/<name>`, and writes the manifest to
+     `bin/.hod-launcher/<name>`. Otherwise it falls back to the existing shell
+     wrapper (the transitional path). Because no recipe declares `runtime`
+     metadata yet, the manifest path is currently never taken — zero behavior
+     change. The launcher's static-ELF nature means it is never itself wrapped.
+   - Coverage: manifest serialization/resolution unit tests, plus
+     `tests/launcher.rs` compiling the real C launcher and verifying argv[0]
+     preservation, flag injection, token expansion, and env ops end-to-end.
+4. **Port providers + delete special cases.** *In progress.* Migrate provider
+   recipes one at a time; remove each `wrap.rs` special case as its recipe
+   adopts the declaration. `wrap.rs` shrinks to a dumb manifest writer.
+
+   ### Authoring levels (chosen ergonomics)
+
+   Runtime metadata composes at three levels via a deliberately simple
+   ordered-concat merge — *not* a Nix-style recursive attribute merge. The
+   composer already resolves precedence through op semantics (`set` vs
+   `set-default`, prefix/suffix order), so concatenating the `provides[]` then
+   `wrapper[]` lists in declaration order is all that is needed:
+
+   - **Core (mechanism):** the static launcher and (rollout step) the generic
+     `XDG_DATA_DIRS` / `GSETTINGS_SCHEMA_PATH` search-path base. No metadata
+     required; applies to every wrapped output.
+   - **Build helper (setup-hook analog):** profile helpers wire in the launcher
+     and may contribute shared `provides`/`wrapper` fragments.
+   - **Recipe (author):** declares its own `runtime: { provides, wrapper }`,
+     composed from fragments with `mergeRuntime(...)`.
+
+   See the module header of `js/src/runtime.ts` for the authoring docs.
+
+   ### Slice landed (this step's first increment)
+
+   A single vertical slice proves the launcher path end-to-end without touching
+   the shell fallback or any other package:
+
+   - **SDK ergonomics:** `mergeRuntime(...)` added to `js/src/runtime.ts`
+     (exported from `js/src/index.ts`); `shellBuild` now accepts and forwards a
+     `runtime?: RuntimeMeta` to `process()` (`js/src/shell.ts`).
+   - **`file` migrated** (`recipes/native/file/file.ts`): declares
+     `runtime.wrapper = [set MAGIC = self:share/misc/magic.mgc]`, adds
+     `hod-launcher` as an explicit dep + runtime dep (so the launcher bytes are
+     present at relocation time and the manifest path engages). This replaces
+     the hardcoded `MAGIC` probe in `wrap.rs` *for this package* — but the
+     `wrap.rs` special case is intentionally **left in place** until the rest of
+     the packages migrate (the shell fallback still serves everything else).
+
+   **Verification status — DONE (full runtime proof).** SDK typechecks clean;
+   `cargo build` + the `composer` / `manifest` / `wrap` unit tests +
+   `tests/launcher.rs` + `tests/wrap_manifest.rs` + `tests/store_basic.rs` pass.
+   `file` was built end-to-end via `hod` (seed pulled from a remote builder with
+   `copy-closure --from`) and verified:
+
+   - `bin/file` is the **static-pie launcher** ELF; the original is moved to
+     `bin/_hod_wrapped/file`; the manifest `bin/.hod-launcher/file` contains
+     exactly `EXEC @self@/bin/_hod_wrapped/file` and
+     `SET MAGIC @self@/share/misc/magic.mgc` — i.e. the `MAGIC` directive came
+     from the recipe's `runtime.wrapper`, not a `wrap.rs` probe.
+   - At runtime `file --version` reports `magic file from <store>/…/magic.mgc`
+     (the `@self@`-resolved DB), and `file` correctly identifies inputs.
+   - **argv[0] preserved:** invoked through a symlink named `identify-thing`,
+     `file` prints `Usage: identify-thing …`.
+   - `hod run …/file.ts -- file <path>` works through the composer/run env path.
+
+   **Latent bugs found + fixed while proving the slice (all pre-existing,
+   surfaced because the launcher is now actually built via `hod`):**
+
+   1. `recipes/native/hod-launcher/hod-launcher.ts` never imported its
+      `fileFromPath` **source recipe** into the store (`fileFromPath` imports the
+      content blob, but `importToStore` stores only the recipe it is handed —
+      dep recipes are referenced by hash). Build failed with `recipe … not in
+      the store`. Fixed by `await importToStore(source)`.
+   2. The launcher source mounts as `/deps/source/source` (no `.c` suffix), so
+      `gcc` handed it to the linker → `file format not recognized`. Fixed by
+      passing `-x c`.
+   3. **Store integrity (`src/store/blobs.rs`):** `write()` deduped on the
+      `blobs` **DB row** via `exists()`, not the on-disk file. A row can outlive
+      its file (pruned blobs, or a `hod.db` synced from another store without all
+      blob files). A deterministic rebuild then skipped writing the file and the
+      later `read()` failed with `blob not found`. Fixed `write()` to dedup on
+      `path.exists()` so the store self-heals for any content we can regenerate;
+      this matches the existing recipe-store guard in `store/recipes.rs`.
+
+   **Known follow-up (not blocking):** `src/closure.rs::parse_destination`
+   cannot parse the `user@host:/abs/path` SSH form (any `/` routes it to the
+   local branch); two `closure::tests::test_parse_destination_*` fail on the
+   baseline. Unrelated to this work (bare-hostname SSH, used by `copy-closure
+   --from bees`, works fine), but worth a separate fix.
+
+   ### Rollout after slice review (remaining Step 4 work)
+
+   1. Move launcher injection into the build helpers (`cProfile`,
+      `mesonProfile`, `cargoBuild`, `goBuild`) so every dynamically-linked app
+      is launcher-wrappable by default; add an opt-out for bootstrap recipes
+      (the launcher itself, toolchain, busybox) to avoid dependency cycles.
+      This is the broad-hash-churn step.
+   2. Add generic `XDG_DATA_DIRS` + `GSETTINGS_SCHEMA_PATH` base composition to
+      `src/composer.rs` as mechanism (own + closure providers' `share`), shared
+      by `wrap.rs` / `run.rs` / `profile.rs`; de-dupe with `run.rs::build_env`.
+   3. Migrate the remaining providers/apps to metadata, one at a time, deleting
+      the matching `wrap.rs` special case as each is confirmed launcher-wrapped:
+      glib (`GIO_LAUNCH_DESKTOP`, schemas), xkeyboard-config (`XKB_CONFIG_ROOT`),
+      libX11 (`XLOCALEDIR`), mesa (`LIBGL_DRIVERS_PATH`,
+      `__EGL_VENDOR_LIBRARY_DIRS`), gtk4 (`GSK_RENDERER`, `GIO_EXTRA_MODULES`),
+      git (`GIT_EXEC_PATH` / `GIT_TEMPLATE_DIR`; the argv0 alias hack dissolves
+      under the launcher), ghostty (`GHOSTTY_RESOURCES_DIR`), alacritty/ghostty
+      `LD_LIBRARY_PATH`.
+   4. Once nothing reaches the shell path, delete the shell-wrapper generator;
+      `wrap.rs` becomes a dumb manifest writer (acceptance criteria below).
+
+## What "done" looks like (acceptance criteria)
+
+- `src/wrap.rs` contains **no** package/ecosystem names and **no** capability
+  probes — only generic directive resolution + manifest emission.
+- GTK4/GNOME apps (Nautilus, Geany), git, alacritty, ghostty, `file` all run
+  after `copy-closure` with identical-or-better behavior, driven by metadata.
+- `ps`/profilers show the real binary name for wrapped apps.
+- `hod run` and profiles compose the same runtime env as the wrappers.
+- Metadata is hashed: changing a provider's contribution re-identifies
+  downstream outputs.
+- Compilers/`cmake`/static busybox are never wrapped, with no name blocklist.
+- Regression coverage for: provider aggregation, directive resolution
+  (`self:`/`dep:`/`first-existing` + existence guard), argv0 preservation,
+  opt-in wrapping.

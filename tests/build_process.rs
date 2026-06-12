@@ -459,6 +459,7 @@ fn build_process_hello_world() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -494,6 +495,7 @@ fn build_process_platform_mismatch() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let result = build_recipe(&store, &process_recipe, &default_opts());
@@ -522,6 +524,7 @@ fn build_process_exits_nonzero() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let result = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -552,6 +555,7 @@ fn build_process_with_env_vars() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -585,6 +589,7 @@ fn build_process_writes_to_out() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -620,6 +625,7 @@ fn build_process_with_dependency() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output = build_recipe(&store, &process_recipe, &BuildOptions { force: false, quiet: true, keep_failed: false });
@@ -683,6 +689,7 @@ fn sandbox_hello_world_writes_to_out() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -729,6 +736,7 @@ fn sandbox_env_vars_set_correctly() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -785,6 +793,7 @@ fn sandbox_user_env_vars_set() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(
@@ -830,6 +839,7 @@ fn sandbox_build_failure_captures_logs() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let result = build_recipe(
@@ -891,6 +901,7 @@ fn sandbox_deps_populated() {
         output_scaffold_hash: None,
         unsafe_flags: 0,
         runtime_deps: None,
+        runtime: None,
     });
 
     let output_hash = build_recipe(

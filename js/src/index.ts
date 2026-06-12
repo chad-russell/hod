@@ -31,11 +31,32 @@ export type { ShellBuildOptions } from "./shell.js";
 export { depPath, depSubpath, pathList, depSubpathList, appendPath, mergeEnv } from "./env.js";
 // cargoBuild has moved to recipes/helpers/rust.ts
 
+// Declarative runtime metadata
+export {
+  literal,
+  selfPath,
+  depRef,
+  firstExisting,
+  setEnv,
+  setDefaultEnv,
+  unsetEnv,
+  prefixEnv,
+  suffixEnv,
+  addFlags,
+  setArgv0,
+  inheritArgv0,
+  mergeRuntime,
+} from "./runtime.js";
+export type { RuntimeMeta, RuntimeDirective, RuntimeSource, WrapOp } from "./runtime.js";
+
 // ELF relocation constants
 export { HOD_DUMMY_RUNPATH, HOD_DUMMY_RPATH_FLAG } from "./elf.js";
 
 // Import helpers
 export { fromHod, importToStore } from "./import.js";
+
+// Launcher infrastructure registration
+export { registerLauncher } from "./cli.js";
 
 // System configuration
 export { defineSystem, buildSystemOutput } from "./system.js";

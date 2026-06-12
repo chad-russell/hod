@@ -252,6 +252,35 @@ impl Store {
         }
     }
 
+    // -- Config key/value --
+
+    /// Set a store-wide config value (upsert).
+    ///
+    /// Used for store-scoped infrastructure pointers such as `launcher_recipe`
+    /// (the recipe hash of the active `hod-launcher`, which the build system
+    /// stamps over wrapped executables). Config is store state, not part of any
+    /// recipe's content-addressed identity.
+    pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO config (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Get a store-wide config value, or `None` if unset.
+    pub fn get_config(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM config WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Flush SQLite WAL content into the main `hod.db` file.
     ///
     /// Copy/archive operations that treat `hod.db` as a regular file need a

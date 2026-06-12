@@ -45,6 +45,11 @@ pub fn migrate(conn: &Connection) -> Result<(), StoreError> {
             blob_size    INTEGER NOT NULL,
             stored_at    TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS config (
+            key    TEXT PRIMARY KEY,
+            value  TEXT NOT NULL
+        );
         ",
     )?;
 

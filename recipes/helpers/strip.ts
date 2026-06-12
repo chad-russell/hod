@@ -53,3 +53,30 @@ for pc in $OUT/lib/pkgconfig/*.pc $OUT/lib64/pkgconfig/*.pc $OUT/share/pkgconfig
   esac
 done
 `;
+
+/**
+ * Patch shebangs in $OUT/bin to #!/usr/bin/env <interpreter>.
+ *
+ * Build systems like Meson hard-code the build-time absolute path to
+ * the interpreter (e.g. /store/staging/XX/<hash>/bin/python3.13) into
+ * installed script shebangs.  These paths are only valid inside the
+ * build sandbox and break when the output is consumed by downstream
+ * recipes.  This is the Hod equivalent of nixpkgs' `patchShebangs`.
+ *
+ * Run after `ninja install` / `make install`, before strip.
+ */
+export const PATCH_SHEBANGS = `
+for f in $OUT/bin/*; do
+  [ -f "$f" ] || continue
+  read -r line < "$f" 2>/dev/null || continue
+  case "$line" in
+    '#!'*/store/*|'#!'*/*python*|'#!'*/*perl*|'#!'*/*wrapped*)
+      base=\`printf '%s' "$line" | sed 's|^#!.*/||'\`
+      case "$base" in
+        sh|bash|dash) continue ;;
+      esac
+      sed -i "1s|^#!.*$|#!/usr/bin/env $base|" "$f"
+      ;;
+  esac
+done
+`;

@@ -88,8 +88,13 @@ export async function shellBuild(opts: ShellBuildOptions): Promise<BuiltRecipe> 
     : opts.sourceDir === false || opts.sourceDir === undefined ? null
     : opts.sourceDir;
 
+  // Source staging runs before the preamble sets up /bin/sh and the glibc
+  // runtime, so it must not invoke PATH tools that may be shell-script wrappers
+  // (e.g. a toolchain's wrapped GNU coreutils, which need /bin/sh + ld.so to
+  // execute). Use the static shell (busybox) applets directly; `cd` is a shell
+  // builtin and needs nothing.
   const sourceSetup = dir
-    ? `mkdir -p ${dir} && cp -a /deps/source/. ${dir} && cd ${dir}`
+    ? `"${opts.shell}" mkdir -p ${dir} && "${opts.shell}" cp -a /deps/source/. ${dir} && cd ${dir}`
     : "";
 
   const fullScript = [

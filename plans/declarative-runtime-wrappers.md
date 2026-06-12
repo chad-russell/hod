@@ -1,8 +1,11 @@
 # Plan: Declarative Runtime Metadata + Generic Wrapper Mechanism
 
-**Status:** Active — Steps 1–3 implemented; Step 4 in progress (first vertical
-slice landed **and verified end-to-end via a real `hod` build**, rollout pending
-review)
+**Status:** Active — Steps 1–3 implemented; Step 4 in progress. First vertical
+slice (`file`) landed and **verified end-to-end on a full from-source toolchain
+bootstrap** (gcc/glibc) on a remote builder, including stamp + run + clean
+closure. Launcher provisioning settled on **Model B (build-system
+infrastructure)**, not a recipe dependency. Remaining: migrate more providers,
+delete shell-wrapper generator.
 **Supersedes the ad hoc policy in:** `src/wrap.rs`
 **Related docs:** `docs/build-environment-and-metadata.md`,
 `docs/relocatable-binaries-guide.md` §7 (Layer 6)
@@ -99,6 +102,28 @@ launcher** (built with the existing musl/toolchain), à la nixpkgs
 
 Shell wrappers stay only as a transitional fallback until the launcher lands.
 
+### Launcher provisioning: Model B (build-system infrastructure)
+
+The launcher is **not** a recipe dependency. Making every app declare
+`hod-launcher` in `deps`/`runtime_deps` would (a) churn the hash of every
+toolchain component the moment the helpers inject it, and (b) leak the launcher
+into every app's runtime closure — dishonest, since the launcher is stamped
+into the binary's bytes, not loaded at runtime.
+
+Instead, hod provisions the launcher the same way it applies relocation and
+wrapping — as a post-build fixup driven by the build system:
+
+- `recipes/native/hod-launcher/hod-launcher.ts` imports the launcher recipe and
+  calls `registerLauncher(recipe.hash)` (SDK → `hod register-launcher`), which
+  records the hash under the store-config key `launcher_recipe`
+  (`config` table; `store.set_config`/`get_config`).
+- At build time, `build.rs::resolve_launcher_bytes` reads that config key,
+  ensures the launcher is built (on demand), and passes its bytes to
+  `wrap::generate_wrappers`. No package declares `hod-launcher`.
+- Consequence: migrating a package to runtime metadata is **incremental** — only
+  that package's hash changes; the toolchain and everything else are untouched.
+  The launcher is absent from app closures (verified: see Step 4).
+
 ## Skip-list → opt-in by consequence
 
 Wrap an executable only when its aggregated directive list is non-empty.
@@ -184,62 +209,80 @@ Share it so `run.rs` and `profile.rs` use the same logic — closing the gap whe
      (exported from `js/src/index.ts`); `shellBuild` now accepts and forwards a
      `runtime?: RuntimeMeta` to `process()` (`js/src/shell.ts`).
    - **`file` migrated** (`recipes/native/file/file.ts`): declares
-     `runtime.wrapper = [set MAGIC = self:share/misc/magic.mgc]`, adds
-     `hod-launcher` as an explicit dep + runtime dep (so the launcher bytes are
-     present at relocation time and the manifest path engages). This replaces
-     the hardcoded `MAGIC` probe in `wrap.rs` *for this package* — but the
-     `wrap.rs` special case is intentionally **left in place** until the rest of
-     the packages migrate (the shell fallback still serves everything else).
+     `runtime.wrapper = [set MAGIC = self:share/misc/magic.mgc]` and **nothing
+     else** — no `hod-launcher` in `deps`/`runtime_deps` (Model B; the build
+     system stamps the launcher from store config). This replaces the hardcoded
+     `MAGIC` probe in `wrap.rs` *for this package* — but the `wrap.rs` special
+     case is intentionally **left in place** until the rest of the packages
+     migrate (the shell fallback still serves everything else).
 
-   **Verification status — DONE (full runtime proof).** SDK typechecks clean;
-   `cargo build` + the `composer` / `manifest` / `wrap` unit tests +
-   `tests/launcher.rs` + `tests/wrap_manifest.rs` + `tests/store_basic.rs` pass.
-   `file` was built end-to-end via `hod` (seed pulled from a remote builder with
-   `copy-closure --from`) and verified:
+   **Verification status — DONE (full from-source bootstrap proof).** SDK
+   typechecks clean; `cargo build` + the `composer` / `manifest` / `wrap` unit
+   tests + `tests/launcher.rs` + `tests/wrap_manifest.rs` + `tests/store_basic.rs`
+   pass. `file` was then built end-to-end on a remote builder (`bees`, 32-core)
+   through a **complete from-source toolchain bootstrap** (musl seed → glibc 2.41
+   → gcc 13.2.0 → binutils/coreutils/make → zlib/bzip2/xz → `file`), and the
+   result synced back to the local store with `copy-closure --from bees`. Both
+   machines computed **identical recipe hashes** (deterministic cross-machine
+   encoding). Verified:
 
-   - `bin/file` is the **static-pie launcher** ELF; the original is moved to
+   - `bin/file` is the **static launcher** ELF; the original is moved to
      `bin/_hod_wrapped/file`; the manifest `bin/.hod-launcher/file` contains
      exactly `EXEC @self@/bin/_hod_wrapped/file` and
      `SET MAGIC @self@/share/misc/magic.mgc` — i.e. the `MAGIC` directive came
      from the recipe's `runtime.wrapper`, not a `wrap.rs` probe.
    - At runtime `file --version` reports `magic file from <store>/…/magic.mgc`
-     (the `@self@`-resolved DB), and `file` correctly identifies inputs.
-   - **argv[0] preserved:** invoked through a symlink named `identify-thing`,
-     `file` prints `Usage: identify-thing …`.
-   - `hod run …/file.ts -- file <path>` works through the composer/run env path.
+     (the `@self@`-resolved DB), and `file /path` / `file <ELF>` correctly
+     identify inputs — on both bees and the local store after sync.
+   - **Clean closure (Model B):** `hod closure file` lists exactly bzip2,
+     toolchain, xz, zlib, glibc — **`hod-launcher` is absent**, confirming the
+     launcher is stamped infrastructure, not a runtime dependency.
 
    **Latent bugs found + fixed while proving the slice (all pre-existing,
-   surfaced because the launcher is now actually built via `hod`):**
+   surfaced because the launcher path now actually builds via `hod`):**
 
    1. `recipes/native/hod-launcher/hod-launcher.ts` never imported its
-      `fileFromPath` **source recipe** into the store (`fileFromPath` imports the
-      content blob, but `importToStore` stores only the recipe it is handed —
-      dep recipes are referenced by hash). Build failed with `recipe … not in
-      the store`. Fixed by `await importToStore(source)`.
+      `fileFromPath` **source recipe** into the store. Fixed by
+      `await importToStore(source)`.
    2. The launcher source mounts as `/deps/source/source` (no `.c` suffix), so
       `gcc` handed it to the linker → `file format not recognized`. Fixed by
       passing `-x c`.
    3. **Store integrity (`src/store/blobs.rs`):** `write()` deduped on the
       `blobs` **DB row** via `exists()`, not the on-disk file. A row can outlive
-      its file (pruned blobs, or a `hod.db` synced from another store without all
-      blob files). A deterministic rebuild then skipped writing the file and the
-      later `read()` failed with `blob not found`. Fixed `write()` to dedup on
-      `path.exists()` so the store self-heals for any content we can regenerate;
-      this matches the existing recipe-store guard in `store/recipes.rs`.
+      its file (pruned blobs, or a `hod.db` synced from another store). A
+      deterministic rebuild then skipped writing the file and the later `read()`
+      failed with `blob not found`. Fixed `write()` to dedup on `path.exists()`.
+   4. **Seed toolchain headers (`recipes/bootstrap/{seed-root,hod-seed-root}.ts`):**
+      a prior local edit dropped the musl tarball's `usr/` entirely (to avoid a
+      `cp -a` recursion that inflates to ~22G), but the musl.cc native gcc
+      searches `<prefix>/usr/{include,lib}` by default (`gcc -print-search-dirs`),
+      so `stdio.h`/crt objects vanished → "cannot run C compiled programs". Fixed
+      by recreating `usr/` as **lightweight symlinks** (`usr/include → ../include`
+      etc.) — no copy, no inflation, headers found.
+   5. **Source staging vs wrapped coreutils (`js/src/shell.ts`):** `shellBuild`'s
+      source-copy (`mkdir`/`cp`) ran **before** the hermetic preamble set up
+      `/bin/sh` + the glibc runtime, resolving `mkdir`/`cp` via `PATH`. When the
+      toolchain ships GNU coreutils as shell-script wrappers (`#!/bin/sh` →
+      `_hod_wrapped/<tool>`), those can't execute until `/bin/sh` + ld.so exist →
+      `sh: mkdir: not found`. Fixed by invoking the source-staging `mkdir`/`cp`
+      via the **static shell (busybox)** applets directly (`cd` is a builtin).
 
    **Known follow-up (not blocking):** `src/closure.rs::parse_destination`
    cannot parse the `user@host:/abs/path` SSH form (any `/` routes it to the
    local branch); two `closure::tests::test_parse_destination_*` fail on the
-   baseline. Unrelated to this work (bare-hostname SSH, used by `copy-closure
-   --from bees`, works fine), but worth a separate fix.
+   baseline. Also, `--remote-hod` must point at an updated `hod` on the remote
+   (the old `~/.cargo/bin/hod` can't decode recipes carrying the new `runtime`
+   tail). Both are unrelated to this work but worth separate fixes.
 
    ### Rollout after slice review (remaining Step 4 work)
 
-   1. Move launcher injection into the build helpers (`cProfile`,
-      `mesonProfile`, `cargoBuild`, `goBuild`) so every dynamically-linked app
-      is launcher-wrappable by default; add an opt-out for bootstrap recipes
-      (the launcher itself, toolchain, busybox) to avoid dependency cycles.
-      This is the broad-hash-churn step.
+   1. ~~Move launcher injection into the build helpers~~ — **superseded by
+      Model B.** The launcher is build-system infrastructure provisioned from
+      store config (`build.rs::resolve_launcher_bytes`), so there is no
+      per-helper injection and no broad hash churn. Bootstrap-cycle concerns are
+      moot: the launcher is never a dependency, and the manifest path simply
+      doesn't engage for recipes with no runtime directives (the toolchain,
+      busybox, etc. take the shell fallback / no wrap, unchanged hashes).
    2. Add generic `XDG_DATA_DIRS` + `GSETTINGS_SCHEMA_PATH` base composition to
       `src/composer.rs` as mechanism (own + closure providers' `share`), shared
       by `wrap.rs` / `run.rs` / `profile.rs`; de-dupe with `run.rs::build_env`.

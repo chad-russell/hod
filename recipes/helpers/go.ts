@@ -73,7 +73,8 @@ export function goProfile(opts: GoProfileOptions = {}): {
       preamble,
       env: {
         ...baseEnv,
-        CC: `${depSubpath(tc, "bin/gcc")} --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
+        CC: depSubpath(tc, "bin/gcc"),
+        CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
         HOD_DUMMY_RPATH: HOD_DUMMY_RPATH_FLAG,
         CGO_LDFLAGS: HOD_DUMMY_RPATH_FLAG,
       },

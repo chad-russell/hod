@@ -89,18 +89,18 @@ export function cProfile(opts: CProfileOptions = {}): Partial<ShellBuildOptions>
 
   const env: Record<string, string> = {
     PATH: pathList(pathEntries),
-    CC: `${depSubpath(tc, "bin/gcc")} --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
+    CC: depSubpath(tc, "bin/gcc"),
     AR: depSubpath(tc, "bin/ar"),
     RANLIB: depSubpath(tc, "bin/ranlib"),
     STRIP: depSubpath(tc, "bin/strip"),
-    CFLAGS: "-O2",
+    CFLAGS: `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`,
     HOD_DUMMY_RPATH: rpathFlag,
     LDFLAGS: rpathFlag,
   };
 
   if (opts.cxx) {
-    env.CXX = `${depSubpath(tc, "bin/g++")} --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`;
-    env.CXXFLAGS = "-O2";
+    env.CXX = depSubpath(tc, "bin/g++");
+    env.CXXFLAGS = `-O2 --sysroot=${depSubpath(tc, "sysroot")} -B${depSubpath(tc, "bin")}`;
   }
 
   const includePath = pathList([

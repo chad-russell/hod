@@ -48,11 +48,11 @@ export function rustProfile(opts: RustProfileOptions = {}): {
     preamble: hermeticPreamble({ shell: tc, glibcLinker: tc }),
     env: {
       PATH: `/deps/${tc}/bin:/deps/${rust}/bin`,
-      CC: `/deps/${tc}/bin/gcc --sysroot=/deps/${tc}/sysroot -B/deps/${tc}/bin`,
+      CC: `/deps/${tc}/bin/gcc`,
       AR: `/deps/${tc}/bin/ar`,
       RANLIB: `/deps/${tc}/bin/ranlib`,
       STRIP: `/deps/${tc}/bin/strip`,
-      CFLAGS: "-O2",
+      CFLAGS: `-O2 --sysroot=/deps/${tc}/sysroot -B/deps/${tc}/bin`,
       C_INCLUDE_PATH: "",
       CARGO_HOME: "/tmp/.cargo",
       HOD_DUMMY_RPATH: HOD_DUMMY_RPATH_FLAG,

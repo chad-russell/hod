@@ -317,6 +317,11 @@ pub fn generate_wrappers(
                 | "x86_64-linux-gnu-gcc"
                 | "x86_64-linux-gnu-g++"
                 | "x86_64-linux-gnu-ld"
+                | "cmake"
+                | "ctest"
+                | "cpack"
+                | "ccmake"
+                | "cmake-gui"
         ) {
             continue;
         }

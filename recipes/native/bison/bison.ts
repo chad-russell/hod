@@ -37,9 +37,6 @@ ${STRIP} $OUT/bin/bison 2>/dev/null || true
 mkdir -p $OUT/libexec/bison
 mv $OUT/bin/bison $OUT/libexec/bison/bison
 
-# Bake the canonical runtime location of the m4 dependency into the wrapper.
-# This is store-shape relative, so it works both in sandboxes (/xx/hash) and
-# from a host/transfer staging root (.../staging/xx/hash).
 m4_abs="$(readlink -f /deps/m4)"
 m4_store_path="\${m4_abs#/store/staging/}"
 
@@ -54,7 +51,11 @@ prefix="\$(cd "\$bin_dir/.." && pwd -P)"
 staging_root="\$(cd "\$bin_dir/../../.." && pwd -P)"
 export BISON_PKGDATADIR="\${BISON_PKGDATADIR:-\$prefix/share/bison}"
 if [ -z "\${M4+x}" ]; then
-  export M4="\$staging_root/@M4_STORE_PATH@/bin/m4"
+  if [ -x /deps/m4/bin/m4 ]; then
+    export M4="/deps/m4/bin/m4"
+  else
+    export M4="\$staging_root/@M4_STORE_PATH@/bin/m4"
+  fi
 fi
 exec "\$prefix/libexec/bison/bison" "\$@"
 EOF
